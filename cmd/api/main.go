@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -194,9 +195,18 @@ func main() {
 			return
 		}
 
-		username := strings.TrimPrefix(r.URL.Path, "/admin/users/")
-		if username == "" {
+		rawUsername := strings.TrimPrefix(r.URL.Path, "/admin/users/")
+		if rawUsername == "" {
 			http.Error(w, "username is required in path", http.StatusBadRequest)
+			return
+		}
+		username, err := url.PathUnescape(rawUsername)
+		if err != nil {
+			http.Error(w, "invalid username encoding in path", http.StatusBadRequest)
+			return
+		}
+		if strings.Contains(username, "/") {
+			http.Error(w, "invalid username in path", http.StatusBadRequest)
 			return
 		}
 
