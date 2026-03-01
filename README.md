@@ -12,7 +12,7 @@ Go API with Keycloak authentication, role-based authorization, and a built-in br
    cd docker
    docker-compose up -d
    ```
-2. Bootstrap Keycloak auth configuration (realm/client/roles/redirects; no users created):
+2. Bootstrap Keycloak auth configuration (realm/client/roles/redirects; no users created): (optional)
   ```bash
   go run ./cmd/auth-bootstrap \
     --admin-username admin \
