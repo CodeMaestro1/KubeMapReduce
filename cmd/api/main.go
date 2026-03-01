@@ -166,6 +166,8 @@ func main() {
 			return
 		}
 
+		request.Role = strings.ToUpper(strings.TrimSpace(request.Role))
+
 		if err := validateCreateUserRequest(request); err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
