@@ -2,7 +2,7 @@ package manager
 
 import "time"
 
-// TaskState defines the current status of a Map or Reduce task [cite: 355]
+// TaskState defines the current status of a Map or Reduce task
 type TaskState int
 
 const (
@@ -12,17 +12,17 @@ const (
 	Failed
 )
 
-// Task represents the metadata the Master needs to track [cite: 355]
+// Task represents the metadata the Master needs to track
 type Task struct {
 	ID        string
 	Type      string // "Map" or "Reduce"
 	State     TaskState
-	WorkerID  string // Identity of the worker machine [cite: 355]
+	WorkerID  string
 	InputFile string
 	StartTime time.Time
 }
 
-// Manager tracks the overall job progress [cite: 355]
+// Manager tracks the overall job progress
 type TaskTracker struct {
 	MapTasks    []Task
 	ReduceTasks []Task
