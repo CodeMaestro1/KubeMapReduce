@@ -9,7 +9,7 @@ const (
 	Idle TaskState = iota
 	InProgress
 	Completed
-	Failed
+	//TODO: add Failed state along with its logic
 )
 
 // Task represents the metadata the Master needs to track
