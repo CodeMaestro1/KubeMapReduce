@@ -7,9 +7,10 @@ import (
 )
 
 var (
-	ErrNoIdleTasks  = errors.New("no idle tasks available right now, please wait")
-	ErrJobCompleted = errors.New("all tasks completed, job is done")
-	ErrTaskNotFound = errors.New("task not found")
+	ErrNoIdleTasks            = errors.New("no idle tasks available right now, please wait")
+	ErrJobCompleted           = errors.New("all tasks completed, job is done")
+	ErrTaskNotFound           = errors.New("task not found")
+	ErrInvalidStateTransition = errors.New("invalid state transition")
 )
 
 type Scheduler struct {
@@ -23,8 +24,17 @@ func NewScheduler(tracker *TaskTracker) *Scheduler {
 	}
 }
 
-// GetNextTask returns the next available idle map task.
-// If all map tasks are completed, it returns the next available idle reduce task.
+// GetNextTask returns the next available idle task for the given worker.
+//
+// Map tasks are always scheduled first: while there are any map tasks that are
+// not yet completed, this method will only return map tasks. Once all map
+// tasks have been completed, it will start returning idle reduce tasks.
+//
+// On success it returns a pointer to the task that was moved to InProgress
+// for the provided worker ID. If there are remaining (map or reduce) tasks
+// but none are currently idle (i.e. all are InProgress), it returns
+// ErrNoIdleTasks. If all map and reduce tasks have completed, it returns
+// ErrJobCompleted.
 func (s *Scheduler) GetNextTask(workerID string) (*Task, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -76,6 +86,9 @@ func (s *Scheduler) CompleteTask(taskID string) error {
 
 	for i := range s.tracker.MapTasks {
 		if s.tracker.MapTasks[i].ID == taskID {
+			if s.tracker.MapTasks[i].State != InProgress {
+				return ErrInvalidStateTransition
+			}
 			s.tracker.MapTasks[i].State = Completed
 			return nil
 		}
@@ -83,6 +96,9 @@ func (s *Scheduler) CompleteTask(taskID string) error {
 
 	for i := range s.tracker.ReduceTasks {
 		if s.tracker.ReduceTasks[i].ID == taskID {
+			if s.tracker.ReduceTasks[i].State != InProgress {
+				return ErrInvalidStateTransition
+			}
 			s.tracker.ReduceTasks[i].State = Completed
 			return nil
 		}
@@ -97,6 +113,9 @@ func (s *Scheduler) FailTask(taskID string) error {
 
 	for i := range s.tracker.MapTasks {
 		if s.tracker.MapTasks[i].ID == taskID {
+			if s.tracker.MapTasks[i].State != InProgress {
+				return ErrInvalidStateTransition
+			}
 			s.tracker.MapTasks[i].State = Idle
 			s.tracker.MapTasks[i].WorkerID = ""
 			return nil
@@ -105,6 +124,9 @@ func (s *Scheduler) FailTask(taskID string) error {
 
 	for i := range s.tracker.ReduceTasks {
 		if s.tracker.ReduceTasks[i].ID == taskID {
+			if s.tracker.ReduceTasks[i].State != InProgress {
+				return ErrInvalidStateTransition
+			}
 			s.tracker.ReduceTasks[i].State = Idle
 			s.tracker.ReduceTasks[i].WorkerID = ""
 			return nil
