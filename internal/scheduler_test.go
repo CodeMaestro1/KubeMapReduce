@@ -114,3 +114,45 @@ func TestScheduler_FailTask(t *testing.T) {
 		t.Errorf("expected worker-2, got %s", task2.WorkerID)
 	}
 }
+
+// Completing an Idle task should be an invalid state transition.
+func TestScheduler_CompleteIdleTask_InvalidTransition(t *testing.T) {
+	tracker := &TaskTracker{
+		MapTasks: []Task{
+			{ID: "m1", Type: "Map", State: Idle},
+		},
+	}
+
+	scheduler := NewScheduler(tracker)
+
+	// Directly completing an Idle task (without assignment) should fail.
+	if err := scheduler.CompleteTask("m1"); err == nil {
+		t.Fatalf("expected error when completing Idle task, got nil")
+	}
+}
+
+// Failing a Completed task should be an invalid state transition.
+func TestScheduler_FailCompletedTask_InvalidTransition(t *testing.T) {
+	tracker := &TaskTracker{
+		MapTasks: []Task{
+			{ID: "m1", Type: "Map", State: Idle},
+		},
+	}
+
+	scheduler := NewScheduler(tracker)
+
+	// Assign task and complete it successfully.
+	_, err := scheduler.GetNextTask("worker-1")
+	if err != nil {
+		t.Fatalf("expected task assignment, got err: %v", err)
+	}
+
+	if err := scheduler.CompleteTask("m1"); err != nil {
+		t.Fatalf("unexpected error completing task: %v", err)
+	}
+
+	// Now failing a Completed task should not be allowed.
+	if err := scheduler.FailTask("m1"); err == nil {
+		t.Fatalf("expected error when failing Completed task, got nil")
+	}
+}
