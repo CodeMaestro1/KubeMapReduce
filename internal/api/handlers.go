@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"net/http"
+	"net/url"
 	"strings"
 
 	"kubemapreduce/internal/models"
@@ -14,9 +15,14 @@ import (
 )
 
 type Handlers struct {
-	adminClient *auth.KeycloakAdminClient
+	adminClient adminClient
 	uiHTML      string
 	keycloakCfg UIConfig
+}
+
+type adminClient interface {
+	CreateUser(req auth.CreateUserRequest) error
+	DeleteUserByUsername(username string) error
 }
 
 type UIConfig struct {
@@ -25,7 +31,7 @@ type UIConfig struct {
 	ClientID        string
 }
 
-func NewHandlers(adminClient *auth.KeycloakAdminClient, uiHTML string, cfg UIConfig) *Handlers {
+func NewHandlers(adminClient adminClient, uiHTML string, cfg UIConfig) *Handlers {
 	return &Handlers{
 		adminClient: adminClient,
 		uiHTML:      uiHTML,
@@ -119,11 +125,13 @@ func (h *Handlers) HandleCreateUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	normalizedRole := normalizeRole(request.Role)
+
 	if err := h.adminClient.CreateUser(auth.CreateUserRequest{
 		Username: request.Username,
 		Email:    request.Email,
 		Password: request.Password,
-		Role:     request.Role,
+		Role:     normalizedRole,
 	}); err != nil {
 		http.Error(w, "failed to create user via authentication service: "+err.Error(), http.StatusBadGateway)
 		return
@@ -132,7 +140,7 @@ func (h *Handlers) HandleCreateUser(w http.ResponseWriter, r *http.Request) {
 	httputil.WriteJSON(w, http.StatusCreated, map[string]string{
 		"status":   "created",
 		"username": request.Username,
-		"role":     request.Role,
+		"role":     normalizedRole,
 	})
 }
 
@@ -142,9 +150,9 @@ func (h *Handlers) HandleDeleteUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	username := strings.TrimPrefix(r.URL.Path, "/admin/users/")
-	if username == "" {
-		http.Error(w, "username is required in path", http.StatusBadRequest)
+	username, err := parseUsernameFromDeletePath(r.URL.Path)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 
@@ -154,6 +162,38 @@ func (h *Handlers) HandleDeleteUser(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func parseUsernameFromDeletePath(path string) (string, error) {
+	const prefix = "/admin/users/"
+
+	rawUsername := strings.TrimPrefix(path, prefix)
+	if rawUsername == "" || rawUsername == path {
+		return "", validation.NewBadRequestError("username is required in path")
+	}
+
+	if strings.Contains(rawUsername, "/") {
+		return "", validation.NewBadRequestError("path must contain a single username segment")
+	}
+
+	username, err := url.PathUnescape(rawUsername)
+	if err != nil {
+		return "", validation.NewBadRequestError("username in path is not valid URL encoding")
+	}
+
+	if strings.TrimSpace(username) == "" {
+		return "", validation.NewBadRequestError("username is required in path")
+	}
+
+	if strings.Contains(username, "/") {
+		return "", validation.NewBadRequestError("username in path cannot contain '/'")
+	}
+
+	return username, nil
+}
+
+func normalizeRole(role string) string {
+	return strings.ToUpper(strings.TrimSpace(role))
 }
 
 func (h *Handlers) HandleWorkerConfig(w http.ResponseWriter, r *http.Request) {
