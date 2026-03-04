@@ -5,9 +5,21 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
+)
+
+const (
+	defaultHTTPTimeout           = 30 * time.Second
+	defaultDialTimeout           = 10 * time.Second
+	defaultKeepAlive             = 30 * time.Second
+	defaultTLSHandshakeTimeout   = 10 * time.Second
+	defaultResponseHeaderTimeout = 15 * time.Second
+	defaultExpectContinueTimeout = 1 * time.Second
+	defaultIdleConnTimeout       = 90 * time.Second
 )
 
 type BootstrapConfig struct {
@@ -69,7 +81,16 @@ func newKeycloakBootstrapper(cfg BootstrapConfig, output io.Writer) (*keycloakBo
 
 	httpClient := cfg.HTTPClient
 	if httpClient == nil {
-		httpClient = &http.Client{}
+		httpClient = newBootstrapHTTPClient()
+	} else {
+		clientCopy := *httpClient
+		if clientCopy.Timeout == 0 {
+			clientCopy.Timeout = defaultHTTPTimeout
+		}
+		if clientCopy.Transport == nil {
+			clientCopy.Transport = newBootstrapTransport()
+		}
+		httpClient = &clientCopy
 	}
 
 	return &keycloakBootstrapper{
@@ -83,6 +104,28 @@ func newKeycloakBootstrapper(cfg BootstrapConfig, output io.Writer) (*keycloakBo
 		httpClient:         httpClient,
 		output:             output,
 	}, nil
+}
+
+func newBootstrapHTTPClient() *http.Client {
+	return &http.Client{
+		Timeout:   defaultHTTPTimeout,
+		Transport: newBootstrapTransport(),
+	}
+}
+
+func newBootstrapTransport() http.RoundTripper {
+	return &http.Transport{
+		Proxy: http.ProxyFromEnvironment,
+		DialContext: (&net.Dialer{
+			Timeout:   defaultDialTimeout,
+			KeepAlive: defaultKeepAlive,
+		}).DialContext,
+		ForceAttemptHTTP2:     true,
+		TLSHandshakeTimeout:   defaultTLSHandshakeTimeout,
+		ResponseHeaderTimeout: defaultResponseHeaderTimeout,
+		ExpectContinueTimeout: defaultExpectContinueTimeout,
+		IdleConnTimeout:       defaultIdleConnTimeout,
+	}
 }
 
 func (b *keycloakBootstrapper) bootstrap() error {
