@@ -1,11 +1,13 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"log"
 	"os"
 	"strings"
+	"time"
 
 	"kubemapreduce/pkg/auth"
 )
@@ -23,7 +25,10 @@ func main() {
 
 	flag.Parse()
 
-	if err := auth.BootstrapKeycloak(cfg, os.Stdout); err != nil {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	if err := auth.BootstrapKeycloakWithContext(ctx, cfg, os.Stdout); err != nil {
 		log.Fatalf("auth bootstrap failed: %v", err)
 	}
 

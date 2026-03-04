@@ -1,11 +1,13 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"log"
 	"os"
 	"strings"
+	"time"
 
 	"kubemapreduce/pkg/auth"
 
@@ -67,7 +69,10 @@ func main() {
 		strings.TrimSpace(*adminPassword),
 	)
 
-	if err := client.CreateUser(auth.CreateUserRequest{
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	if err := client.CreateUser(ctx, auth.CreateUserRequest{
 		Username: strings.TrimSpace(*username),
 		Email:    strings.TrimSpace(*email),
 		Password: userPassword,
