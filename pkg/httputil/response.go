@@ -22,6 +22,3 @@ func WriteJSON(w http.ResponseWriter, status int, payload interface{}) error {
 	return nil
 }
 
-func WriteError(w http.ResponseWriter, status int, message string) {
-	http.Error(w, message, status)
-}

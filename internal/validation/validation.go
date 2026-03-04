@@ -26,7 +26,8 @@ func ValidateJobSubmission(req models.JobSubmissionRequest) error {
 	}
 
 	clean := filepath.Clean(req.Filename)
-	if strings.Contains(clean, "..") || clean == "." {
+	// Enforce that filename is a simple basename (no directories) and not a traversal token.
+	if clean == "." || clean == ".." || filepath.IsAbs(clean) || filepath.Base(clean) != clean {
 		return NewBadRequestError("filename is invalid")
 	}
 
