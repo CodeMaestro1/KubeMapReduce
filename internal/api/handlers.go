@@ -60,11 +60,13 @@ func (h *Handlers) HandleUIConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	httputil.WriteJSON(w, http.StatusOK, map[string]string{
+	if err := httputil.WriteJSON(w, http.StatusOK, map[string]string{
 		"keycloakBaseUrl": h.keycloakCfg.KeycloakBaseURL,
 		"realm":           h.keycloakCfg.Realm,
 		"clientId":        h.keycloakCfg.ClientID,
-	})
+	}); err != nil {
+		return
+	}
 }
 
 func (h *Handlers) HandleHealth(w http.ResponseWriter, r *http.Request) {
@@ -73,7 +75,9 @@ func (h *Handlers) HandleHealth(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	httputil.WriteJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+	if err := httputil.WriteJSON(w, http.StatusOK, map[string]string{"status": "ok"}); err != nil {
+		return
+	}
 }
 
 func (h *Handlers) HandleJobsSubmit(w http.ResponseWriter, r *http.Request) {
@@ -105,7 +109,9 @@ func (h *Handlers) HandleJobsSubmit(w http.ResponseWriter, r *http.Request) {
 		Message: "job specification validated and accepted",
 	}
 
-	httputil.WriteJSON(w, http.StatusAccepted, response)
+	if err := httputil.WriteJSON(w, http.StatusAccepted, response); err != nil {
+		return
+	}
 }
 
 func (h *Handlers) HandleCreateUser(w http.ResponseWriter, r *http.Request) {
@@ -125,7 +131,7 @@ func (h *Handlers) HandleCreateUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	normalizedRole := normalizeRole(request.Role)
+	normalizedRole := validation.NormalizeRole(request.Role)
 
 	if err := h.adminClient.CreateUser(auth.CreateUserRequest{
 		Username: request.Username,
@@ -137,11 +143,13 @@ func (h *Handlers) HandleCreateUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	httputil.WriteJSON(w, http.StatusCreated, map[string]string{
+	if err := httputil.WriteJSON(w, http.StatusCreated, map[string]string{
 		"status":   "created",
 		"username": request.Username,
 		"role":     normalizedRole,
-	})
+	}); err != nil {
+		return
+	}
 }
 
 func (h *Handlers) HandleDeleteUser(w http.ResponseWriter, r *http.Request) {
@@ -192,10 +200,6 @@ func parseUsernameFromDeletePath(path string) (string, error) {
 	return username, nil
 }
 
-func normalizeRole(role string) string {
-	return strings.ToUpper(strings.TrimSpace(role))
-}
-
 func (h *Handlers) HandleWorkerConfig(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPut {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -213,11 +217,13 @@ func (h *Handlers) HandleWorkerConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	httputil.WriteJSON(w, http.StatusAccepted, map[string]interface{}{
+	if err := httputil.WriteJSON(w, http.StatusAccepted, map[string]interface{}{
 		"status":         "accepted",
 		"workerReplicas": request.WorkerReplicas,
 		"maxJobsPerNode": request.MaxJobsPerNode,
-	})
+	}); err != nil {
+		return
+	}
 }
 
 func generateJobID() (string, error) {
