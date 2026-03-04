@@ -11,13 +11,13 @@ import (
 )
 
 type KeycloakAdminClient struct {
-	baseURL      string
-	targetRealm  string
-	adminRealm   string
-	adminUser    string
-	adminPass    string
-	httpClient   *http.Client
-	tokenClient  string
+	baseURL     string
+	targetRealm string
+	adminRealm  string
+	adminUser   string
+	adminPass   string
+	httpClient  *http.Client
+	tokenClient string
 }
 
 type CreateUserRequest struct {
@@ -219,7 +219,12 @@ func (c *KeycloakAdminClient) setUserPassword(token string, userID string, passw
 }
 
 func (c *KeycloakAdminClient) assignRealmRole(token string, userID string, roleName string) error {
-	roleURL := fmt.Sprintf("%s/admin/realms/%s/roles/%s", c.baseURL, c.targetRealm, roleName)
+	roleName = strings.ToUpper(strings.TrimSpace(roleName))
+	if roleName == "" {
+		return fmt.Errorf("role name is required")
+	}
+
+	roleURL := fmt.Sprintf("%s/admin/realms/%s/roles/%s", c.baseURL, c.targetRealm, url.PathEscape(roleName))
 	httpReq, err := http.NewRequest(http.MethodGet, roleURL, nil)
 	if err != nil {
 		return err
