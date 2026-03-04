@@ -71,12 +71,16 @@ func ValidateCreateUserRequest(req models.CreateUserRequest) error {
 		return NewBadRequestError("password is required")
 	}
 
-	role := strings.ToUpper(req.Role)
+	role := NormalizeRole(req.Role)
 	if role != "USER" && role != "ADMIN" {
 		return NewBadRequestError("role must be USER or ADMIN")
 	}
 
 	return nil
+}
+
+func NormalizeRole(role string) string {
+	return strings.ToUpper(strings.TrimSpace(role))
 }
 
 type BadRequestError struct {
