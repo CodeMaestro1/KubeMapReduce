@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -21,8 +22,8 @@ type Handlers struct {
 }
 
 type adminClient interface {
-	CreateUser(req auth.CreateUserRequest) error
-	DeleteUserByUsername(username string) error
+	CreateUser(ctx context.Context, req auth.CreateUserRequest) error
+	DeleteUserByUsername(ctx context.Context, username string) error
 }
 
 type UIConfig struct {
@@ -133,13 +134,18 @@ func (h *Handlers) HandleCreateUser(w http.ResponseWriter, r *http.Request) {
 
 	normalizedRole := validation.NormalizeRole(request.Role)
 
-	if err := h.adminClient.CreateUser(auth.CreateUserRequest{
+	if err := h.adminClient.CreateUser(r.Context(), auth.CreateUserRequest{
 		Username: request.Username,
 		Email:    request.Email,
 		Password: request.Password,
 		Role:     normalizedRole,
 	}); err != nil {
-		http.Error(w, "failed to create user via authentication service: "+err.Error(), http.StatusBadGateway)
+		status := http.StatusBadGateway
+		if auth.IsServiceUnavailable(err) {
+			status = http.StatusServiceUnavailable
+		}
+
+		http.Error(w, "failed to create user via authentication service: "+err.Error(), status)
 		return
 	}
 
@@ -164,8 +170,13 @@ func (h *Handlers) HandleDeleteUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := h.adminClient.DeleteUserByUsername(username); err != nil {
-		http.Error(w, "failed to delete user via authentication service: "+err.Error(), http.StatusBadGateway)
+	if err := h.adminClient.DeleteUserByUsername(r.Context(), username); err != nil {
+		status := http.StatusBadGateway
+		if auth.IsServiceUnavailable(err) {
+			status = http.StatusServiceUnavailable
+		}
+
+		http.Error(w, "failed to delete user via authentication service: "+err.Error(), status)
 		return
 	}
 

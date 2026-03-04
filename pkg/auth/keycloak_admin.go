@@ -2,12 +2,22 @@ package auth
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
+)
+
+const (
+	defaultAdminHTTPTimeout = 10 * time.Second
+	defaultRetryAttempts    = 3
+	defaultRetryBaseDelay   = 200 * time.Millisecond
 )
 
 type KeycloakAdminClient struct {
@@ -18,6 +28,9 @@ type KeycloakAdminClient struct {
 	adminPass   string
 	httpClient  *http.Client
 	tokenClient string
+
+	retryAttempts  int
+	retryBaseDelay time.Duration
 }
 
 type CreateUserRequest struct {
@@ -43,6 +56,46 @@ type roleMapping struct {
 	Name string `json:"name"`
 }
 
+type ServiceUnavailableError struct {
+	Operation string
+	Err       error
+}
+
+func (e *ServiceUnavailableError) Error() string {
+	if e == nil {
+		return "authentication service unavailable"
+	}
+
+	if e.Operation == "" {
+		if e.Err == nil {
+			return "authentication service unavailable"
+		}
+		return fmt.Sprintf("authentication service unavailable: %v", e.Err)
+	}
+
+	if e.Err == nil {
+		return fmt.Sprintf("authentication service unavailable while %s", e.Operation)
+	}
+
+	return fmt.Sprintf("authentication service unavailable while %s: %v", e.Operation, e.Err)
+}
+
+func (e *ServiceUnavailableError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.Err
+}
+
+func IsServiceUnavailable(err error) bool {
+	var unavailableErr *ServiceUnavailableError
+	return errors.As(err, &unavailableErr)
+}
+
+func NewServiceUnavailableError(operation string, err error) error {
+	return &ServiceUnavailableError{Operation: operation, Err: err}
+}
+
 func NewKeycloakAdminClient(baseURL string, targetRealm string, adminUser string, adminPass string) *KeycloakAdminClient {
 	return &KeycloakAdminClient{
 		baseURL:     strings.TrimRight(baseURL, "/"),
@@ -51,16 +104,19 @@ func NewKeycloakAdminClient(baseURL string, targetRealm string, adminUser string
 		adminUser:   adminUser,
 		adminPass:   adminPass,
 		tokenClient: "admin-cli",
-		httpClient:  &http.Client{},
+		httpClient:  &http.Client{Timeout: defaultAdminHTTPTimeout},
+
+		retryAttempts:  defaultRetryAttempts,
+		retryBaseDelay: defaultRetryBaseDelay,
 	}
 }
 
-func (c *KeycloakAdminClient) CreateUser(req CreateUserRequest) error {
+func (c *KeycloakAdminClient) CreateUser(ctx context.Context, req CreateUserRequest) error {
 	if req.Username == "" || req.Password == "" || req.Role == "" {
 		return fmt.Errorf("username, password and role are required")
 	}
 
-	token, err := c.getAdminAccessToken()
+	token, err := c.getAdminAccessToken(ctx)
 	if err != nil {
 		return err
 	}
@@ -77,23 +133,14 @@ func (c *KeycloakAdminClient) CreateUser(req CreateUserRequest) error {
 	}
 
 	createURL := fmt.Sprintf("%s/admin/realms/%s/users", c.baseURL, c.targetRealm)
-	httpReq, err := http.NewRequest(http.MethodPost, createURL, bytes.NewReader(payload))
-	if err != nil {
-		return err
-	}
-
-	httpReq.Header.Set("Authorization", "Bearer "+token)
-	httpReq.Header.Set("Content-Type", "application/json")
-
-	httpResp, err := c.httpClient.Do(httpReq)
+	httpResp, err := c.doRequest(ctx, http.MethodPost, createURL, token, "application/json", payload)
 	if err != nil {
 		return err
 	}
 	defer httpResp.Body.Close()
 
-	if httpResp.StatusCode != http.StatusCreated {
-		body, _ := io.ReadAll(httpResp.Body)
-		return fmt.Errorf("failed to create user: status %d: %s", httpResp.StatusCode, string(body))
+	if err := ensureStatus(httpResp, http.StatusCreated, "create user"); err != nil {
+		return err
 	}
 
 	userID, err := extractUserIDFromLocation(httpResp.Header.Get("Location"))
@@ -101,54 +148,47 @@ func (c *KeycloakAdminClient) CreateUser(req CreateUserRequest) error {
 		return err
 	}
 
-	if err := c.setUserPassword(token, userID, req.Password); err != nil {
+	if err := c.setUserPassword(ctx, token, userID, req.Password); err != nil {
 		return err
 	}
 
-	if err := c.assignRealmRole(token, userID, req.Role); err != nil {
+	if err := c.assignRealmRole(ctx, token, userID, req.Role); err != nil {
 		return err
 	}
 
 	return nil
 }
 
-func (c *KeycloakAdminClient) DeleteUserByUsername(username string) error {
+func (c *KeycloakAdminClient) DeleteUserByUsername(ctx context.Context, username string) error {
 	if username == "" {
 		return fmt.Errorf("username is required")
 	}
 
-	token, err := c.getAdminAccessToken()
+	token, err := c.getAdminAccessToken(ctx)
 	if err != nil {
 		return err
 	}
 
-	userID, err := c.findUserID(token, username)
+	userID, err := c.findUserID(ctx, token, username)
 	if err != nil {
 		return err
 	}
 
 	deleteURL := fmt.Sprintf("%s/admin/realms/%s/users/%s", c.baseURL, c.targetRealm, userID)
-	httpReq, err := http.NewRequest(http.MethodDelete, deleteURL, nil)
-	if err != nil {
-		return err
-	}
-
-	httpReq.Header.Set("Authorization", "Bearer "+token)
-	httpResp, err := c.httpClient.Do(httpReq)
+	httpResp, err := c.doRequest(ctx, http.MethodDelete, deleteURL, token, "", nil)
 	if err != nil {
 		return err
 	}
 	defer httpResp.Body.Close()
 
-	if httpResp.StatusCode != http.StatusNoContent {
-		body, _ := io.ReadAll(httpResp.Body)
-		return fmt.Errorf("failed to delete user: status %d: %s", httpResp.StatusCode, string(body))
+	if err := ensureStatus(httpResp, http.StatusNoContent, "delete user"); err != nil {
+		return err
 	}
 
 	return nil
 }
 
-func (c *KeycloakAdminClient) getAdminAccessToken() (string, error) {
+func (c *KeycloakAdminClient) getAdminAccessToken(ctx context.Context) (string, error) {
 	if c.adminUser == "" || c.adminPass == "" {
 		return "", fmt.Errorf("keycloak admin credentials are missing")
 	}
@@ -160,15 +200,14 @@ func (c *KeycloakAdminClient) getAdminAccessToken() (string, error) {
 	form.Set("password", c.adminPass)
 
 	tokenURL := fmt.Sprintf("%s/realms/%s/protocol/openid-connect/token", c.baseURL, c.adminRealm)
-	httpResp, err := c.httpClient.Post(tokenURL, "application/x-www-form-urlencoded", strings.NewReader(form.Encode()))
+	httpResp, err := c.doRequest(ctx, http.MethodPost, tokenURL, "", "application/x-www-form-urlencoded", []byte(form.Encode()))
 	if err != nil {
 		return "", err
 	}
 	defer httpResp.Body.Close()
 
-	if httpResp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(httpResp.Body)
-		return "", fmt.Errorf("failed to get admin token: status %d: %s", httpResp.StatusCode, string(body))
+	if err := ensureStatus(httpResp, http.StatusOK, "get admin token"); err != nil {
+		return "", err
 	}
 
 	var tokenResponse keycloakTokenResponse
@@ -183,7 +222,7 @@ func (c *KeycloakAdminClient) getAdminAccessToken() (string, error) {
 	return tokenResponse.AccessToken, nil
 }
 
-func (c *KeycloakAdminClient) setUserPassword(token string, userID string, password string) error {
+func (c *KeycloakAdminClient) setUserPassword(ctx context.Context, token string, userID string, password string) error {
 	resetURL := fmt.Sprintf("%s/admin/realms/%s/users/%s/reset-password", c.baseURL, c.targetRealm, userID)
 	payload := map[string]interface{}{
 		"type":      "password",
@@ -196,50 +235,34 @@ func (c *KeycloakAdminClient) setUserPassword(token string, userID string, passw
 		return err
 	}
 
-	httpReq, err := http.NewRequest(http.MethodPut, resetURL, bytes.NewReader(data))
-	if err != nil {
-		return err
-	}
-
-	httpReq.Header.Set("Authorization", "Bearer "+token)
-	httpReq.Header.Set("Content-Type", "application/json")
-
-	httpResp, err := c.httpClient.Do(httpReq)
+	httpResp, err := c.doRequest(ctx, http.MethodPut, resetURL, token, "application/json", data)
 	if err != nil {
 		return err
 	}
 	defer httpResp.Body.Close()
 
-	if httpResp.StatusCode != http.StatusNoContent {
-		body, _ := io.ReadAll(httpResp.Body)
-		return fmt.Errorf("failed to set password: status %d: %s", httpResp.StatusCode, string(body))
+	if err := ensureStatus(httpResp, http.StatusNoContent, "set password"); err != nil {
+		return err
 	}
 
 	return nil
 }
 
-func (c *KeycloakAdminClient) assignRealmRole(token string, userID string, roleName string) error {
+func (c *KeycloakAdminClient) assignRealmRole(ctx context.Context, token string, userID string, roleName string) error {
 	roleName = strings.ToUpper(strings.TrimSpace(roleName))
 	if roleName == "" {
 		return fmt.Errorf("role name is required")
 	}
 
 	roleURL := fmt.Sprintf("%s/admin/realms/%s/roles/%s", c.baseURL, c.targetRealm, url.PathEscape(roleName))
-	httpReq, err := http.NewRequest(http.MethodGet, roleURL, nil)
-	if err != nil {
-		return err
-	}
-
-	httpReq.Header.Set("Authorization", "Bearer "+token)
-	httpResp, err := c.httpClient.Do(httpReq)
+	httpResp, err := c.doRequest(ctx, http.MethodGet, roleURL, token, "", nil)
 	if err != nil {
 		return err
 	}
 	defer httpResp.Body.Close()
 
-	if httpResp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(httpResp.Body)
-		return fmt.Errorf("failed to fetch role %s: status %d: %s", roleName, httpResp.StatusCode, string(body))
+	if err := ensureStatus(httpResp, http.StatusOK, fmt.Sprintf("fetch role %s", roleName)); err != nil {
+		return err
 	}
 
 	var role roleMapping
@@ -253,45 +276,29 @@ func (c *KeycloakAdminClient) assignRealmRole(token string, userID string, roleN
 		return err
 	}
 
-	assignReq, err := http.NewRequest(http.MethodPost, assignURL, bytes.NewReader(payload))
-	if err != nil {
-		return err
-	}
-
-	assignReq.Header.Set("Authorization", "Bearer "+token)
-	assignReq.Header.Set("Content-Type", "application/json")
-
-	assignResp, err := c.httpClient.Do(assignReq)
+	assignResp, err := c.doRequest(ctx, http.MethodPost, assignURL, token, "application/json", payload)
 	if err != nil {
 		return err
 	}
 	defer assignResp.Body.Close()
 
-	if assignResp.StatusCode != http.StatusNoContent {
-		body, _ := io.ReadAll(assignResp.Body)
-		return fmt.Errorf("failed to assign role: status %d: %s", assignResp.StatusCode, string(body))
+	if err := ensureStatus(assignResp, http.StatusNoContent, "assign role"); err != nil {
+		return err
 	}
 
 	return nil
 }
 
-func (c *KeycloakAdminClient) findUserID(token string, username string) (string, error) {
+func (c *KeycloakAdminClient) findUserID(ctx context.Context, token string, username string) (string, error) {
 	searchURL := fmt.Sprintf("%s/admin/realms/%s/users?username=%s&exact=true", c.baseURL, c.targetRealm, url.QueryEscape(username))
-	httpReq, err := http.NewRequest(http.MethodGet, searchURL, nil)
-	if err != nil {
-		return "", err
-	}
-
-	httpReq.Header.Set("Authorization", "Bearer "+token)
-	httpResp, err := c.httpClient.Do(httpReq)
+	httpResp, err := c.doRequest(ctx, http.MethodGet, searchURL, token, "", nil)
 	if err != nil {
 		return "", err
 	}
 	defer httpResp.Body.Close()
 
-	if httpResp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(httpResp.Body)
-		return "", fmt.Errorf("failed to search user: status %d: %s", httpResp.StatusCode, string(body))
+	if err := ensureStatus(httpResp, http.StatusOK, "search user"); err != nil {
+		return "", err
 	}
 
 	var users []keycloakUser
@@ -304,6 +311,158 @@ func (c *KeycloakAdminClient) findUserID(token string, username string) (string,
 	}
 
 	return users[0].ID, nil
+}
+
+func (c *KeycloakAdminClient) doRequest(ctx context.Context, method string, endpoint string, token string, contentType string, body []byte) (*http.Response, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	attempts := c.retryAttempts
+	if attempts < 1 {
+		attempts = 1
+	}
+
+	var lastErr error
+	var lastStatus int
+	operation := method + " " + endpoint
+
+	for attempt := 0; attempt < attempts; attempt++ {
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+
+		var reader io.Reader
+		if len(body) > 0 {
+			reader = bytes.NewReader(body)
+		}
+
+		httpReq, err := http.NewRequestWithContext(ctx, method, endpoint, reader)
+		if err != nil {
+			return nil, err
+		}
+
+		if token != "" {
+			httpReq.Header.Set("Authorization", "Bearer "+token)
+		}
+		if contentType != "" {
+			httpReq.Header.Set("Content-Type", contentType)
+		}
+
+		httpResp, err := c.httpClient.Do(httpReq)
+		if err != nil {
+			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+				return nil, err
+			}
+
+			if !isRetryableError(err) || attempt == attempts-1 {
+				if isRetryableError(err) {
+					return nil, NewServiceUnavailableError(operation, err)
+				}
+				return nil, err
+			}
+
+			lastErr = err
+			if err := sleepWithContext(ctx, c.backoffDelay(attempt)); err != nil {
+				return nil, err
+			}
+			continue
+		}
+
+		if !isRetryableStatus(httpResp.StatusCode) {
+			return httpResp, nil
+		}
+
+		lastStatus = httpResp.StatusCode
+		_ = httpResp.Body.Close()
+
+		if attempt == attempts-1 {
+			return nil, NewServiceUnavailableError(operation, fmt.Errorf("received status %d", lastStatus))
+		}
+
+		if err := sleepWithContext(ctx, c.backoffDelay(attempt)); err != nil {
+			return nil, err
+		}
+	}
+
+	if lastErr != nil {
+		return nil, NewServiceUnavailableError(operation, lastErr)
+	}
+
+	if lastStatus != 0 {
+		return nil, NewServiceUnavailableError(operation, fmt.Errorf("received status %d", lastStatus))
+	}
+
+	return nil, NewServiceUnavailableError(operation, fmt.Errorf("request failed"))
+}
+
+func (c *KeycloakAdminClient) backoffDelay(attempt int) time.Duration {
+	base := c.retryBaseDelay
+	if base <= 0 {
+		base = defaultRetryBaseDelay
+	}
+
+	delay := base << attempt
+	maxDelay := 2 * time.Second
+	if delay > maxDelay {
+		return maxDelay
+	}
+
+	return delay
+}
+
+func isRetryableStatus(status int) bool {
+	switch status {
+	case http.StatusTooManyRequests, http.StatusInternalServerError, http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout:
+		return true
+	default:
+		return false
+	}
+}
+
+func isRetryableError(err error) bool {
+	var netErr net.Error
+	if errors.As(err, &netErr) {
+		return true
+	}
+
+	var opErr *net.OpError
+	if errors.As(err, &opErr) {
+		return true
+	}
+
+	var urlErr *url.Error
+	if errors.As(err, &urlErr) {
+		var nestedNetErr net.Error
+		return errors.As(urlErr.Err, &nestedNetErr)
+	}
+
+	return false
+}
+
+func sleepWithContext(ctx context.Context, delay time.Duration) error {
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
+}
+
+func ensureStatus(resp *http.Response, expectedStatus int, operation string) error {
+	if resp.StatusCode == expectedStatus {
+		return nil
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return fmt.Errorf("failed to %s: status %d (failed to read response body: %v)", operation, resp.StatusCode, err)
+	}
+
+	return fmt.Errorf("failed to %s: status %d: %s", operation, resp.StatusCode, string(body))
 }
 
 func extractUserIDFromLocation(location string) (string, error) {

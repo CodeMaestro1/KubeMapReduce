@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -13,16 +14,18 @@ import (
 type fakeAdminClient struct {
 	createdRequests []auth.CreateUserRequest
 	deletedUsers    []string
+	createErr       error
+	deleteErr       error
 }
 
-func (f *fakeAdminClient) CreateUser(req auth.CreateUserRequest) error {
+func (f *fakeAdminClient) CreateUser(ctx context.Context, req auth.CreateUserRequest) error {
 	f.createdRequests = append(f.createdRequests, req)
-	return nil
+	return f.createErr
 }
 
-func (f *fakeAdminClient) DeleteUserByUsername(username string) error {
+func (f *fakeAdminClient) DeleteUserByUsername(ctx context.Context, username string) error {
 	f.deletedUsers = append(f.deletedUsers, username)
-	return nil
+	return f.deleteErr
 }
 
 func TestHandleCreateUser_NormalizesRoleForAdminClientAndResponse(t *testing.T) {
@@ -108,5 +111,38 @@ func TestHandleDeleteUser_RejectsExtraSegments(t *testing.T) {
 
 	if len(fakeClient.deletedUsers) != 0 {
 		t.Fatalf("expected no delete call on bad path, got %d", len(fakeClient.deletedUsers))
+	}
+}
+
+func TestHandleCreateUser_ReturnsServiceUnavailableForUnavailableAuthService(t *testing.T) {
+	fakeClient := &fakeAdminClient{
+		createErr: auth.NewServiceUnavailableError("create user", context.DeadlineExceeded),
+	}
+	h := NewHandlers(fakeClient, "", UIConfig{})
+
+	body := `{"username":"alice","email":"alice@example.com","password":"secret","role":"admin"}`
+	req := httptest.NewRequest(http.MethodPost, "/admin/users", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+
+	h.HandleCreateUser(rec, req)
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected status %d, got %d", http.StatusServiceUnavailable, rec.Code)
+	}
+}
+
+func TestHandleDeleteUser_ReturnsServiceUnavailableForUnavailableAuthService(t *testing.T) {
+	fakeClient := &fakeAdminClient{
+		deleteErr: auth.NewServiceUnavailableError("delete user", context.DeadlineExceeded),
+	}
+	h := NewHandlers(fakeClient, "", UIConfig{})
+
+	req := httptest.NewRequest(http.MethodDelete, "/admin/users/alice", nil)
+	rec := httptest.NewRecorder()
+
+	h.HandleDeleteUser(rec, req)
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected status %d, got %d", http.StatusServiceUnavailable, rec.Code)
 	}
 }
