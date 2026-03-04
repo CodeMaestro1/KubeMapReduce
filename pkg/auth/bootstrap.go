@@ -2,6 +2,7 @@ package auth
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -42,6 +43,8 @@ type keycloakBootstrapper struct {
 	adminPassword      string
 	enableRegistration bool
 	httpClient         *http.Client
+	retryAttempts      int
+	retryBaseDelay     time.Duration
 	token              string
 	output             io.Writer
 }
@@ -55,12 +58,16 @@ type keycloakClient struct {
 }
 
 func BootstrapKeycloak(cfg BootstrapConfig, output io.Writer) error {
+	return BootstrapKeycloakWithContext(context.Background(), cfg, output)
+}
+
+func BootstrapKeycloakWithContext(ctx context.Context, cfg BootstrapConfig, output io.Writer) error {
 	bootstrapper, err := newKeycloakBootstrapper(cfg, output)
 	if err != nil {
 		return err
 	}
 
-	return bootstrapper.bootstrap()
+	return bootstrapper.bootstrap(ctx)
 }
 
 func newKeycloakBootstrapper(cfg BootstrapConfig, output io.Writer) (*keycloakBootstrapper, error) {
@@ -102,6 +109,8 @@ func newKeycloakBootstrapper(cfg BootstrapConfig, output io.Writer) (*keycloakBo
 		adminPassword:      adminPassword,
 		enableRegistration: cfg.EnableRegistration,
 		httpClient:         httpClient,
+		retryAttempts:      defaultRetryAttempts,
+		retryBaseDelay:     defaultRetryBaseDelay,
 		output:             output,
 	}, nil
 }
@@ -128,52 +137,53 @@ func newBootstrapTransport() http.RoundTripper {
 	}
 }
 
-func (b *keycloakBootstrapper) bootstrap() error {
-	token, err := b.getAdminToken()
+func (b *keycloakBootstrapper) bootstrap(ctx context.Context) error {
+	token, err := b.getAdminToken(ctx)
 	if err != nil {
 		return err
 	}
 	b.token = token
 
-	if err := b.ensureRealm(); err != nil {
+	if err := b.ensureRealm(ctx); err != nil {
 		return err
 	}
-	if err := b.ensureRealmSettings(); err != nil {
+	if err := b.ensureRealmSettings(ctx); err != nil {
 		return err
 	}
-	if err := b.ensureClient(); err != nil {
+	if err := b.ensureClient(ctx); err != nil {
 		return err
 	}
-	if err := b.ensureRole("USER"); err != nil {
+	if err := b.ensureRole(ctx, "USER"); err != nil {
 		return err
 	}
-	if err := b.ensureRole("ADMIN"); err != nil {
+	if err := b.ensureRole(ctx, "ADMIN"); err != nil {
 		return err
 	}
 
 	return nil
 }
 
-func (b *keycloakBootstrapper) getAdminToken() (string, error) {
+func (b *keycloakBootstrapper) getAdminToken(ctx context.Context) (string, error) {
 	form := url.Values{}
 	form.Set("grant_type", "password")
 	form.Set("client_id", "admin-cli")
 	form.Set("username", b.adminUsername)
 	form.Set("password", b.adminPassword)
 
-	resp, err := b.httpClient.Post(
+	resp, err := b.doRequest(ctx,
+		http.MethodPost,
 		b.baseURL+"/realms/master/protocol/openid-connect/token",
+		"",
 		"application/x-www-form-urlencoded",
-		strings.NewReader(form.Encode()),
+		[]byte(form.Encode()),
 	)
 	if err != nil {
 		return "", err
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return "", fmt.Errorf("failed to get admin token: status %d: %s", resp.StatusCode, string(body))
+	if err := ensureStatus(resp, http.StatusOK, "get admin token"); err != nil {
+		return "", err
 	}
 
 	var tr tokenResponse
@@ -187,8 +197,8 @@ func (b *keycloakBootstrapper) getAdminToken() (string, error) {
 	return tr.AccessToken, nil
 }
 
-func (b *keycloakBootstrapper) ensureRealm() error {
-	status, body, err := b.callJSON(http.MethodGet, "/admin/realms/"+b.realm, nil)
+func (b *keycloakBootstrapper) ensureRealm(ctx context.Context) error {
+	status, body, err := b.callJSON(ctx, http.MethodGet, "/admin/realms/"+b.realm, nil)
 	if err != nil {
 		return err
 	}
@@ -196,30 +206,30 @@ func (b *keycloakBootstrapper) ensureRealm() error {
 		b.logf("realm %q already exists", b.realm)
 		return nil
 	}
-	if status != http.StatusNotFound {
-		return fmt.Errorf("failed checking realm %q: status %d: %s", b.realm, status, string(body))
+	if err := ensureCallStatus(status, body, http.StatusNotFound, fmt.Sprintf("check realm %q", b.realm)); err != nil {
+		return err
 	}
 
 	payload := map[string]any{"realm": b.realm, "enabled": true}
-	createStatus, createBody, err := b.callJSON(http.MethodPost, "/admin/realms", payload)
+	createStatus, createBody, err := b.callJSON(ctx, http.MethodPost, "/admin/realms", payload)
 	if err != nil {
 		return err
 	}
-	if createStatus != http.StatusCreated {
-		return fmt.Errorf("failed creating realm %q: status %d: %s", b.realm, createStatus, string(createBody))
+	if err := ensureCallStatus(createStatus, createBody, http.StatusCreated, fmt.Sprintf("create realm %q", b.realm)); err != nil {
+		return err
 	}
 
 	b.logf("created realm %q", b.realm)
 	return nil
 }
 
-func (b *keycloakBootstrapper) ensureRealmSettings() error {
-	status, body, err := b.callJSON(http.MethodGet, "/admin/realms/"+b.realm, nil)
+func (b *keycloakBootstrapper) ensureRealmSettings(ctx context.Context) error {
+	status, body, err := b.callJSON(ctx, http.MethodGet, "/admin/realms/"+b.realm, nil)
 	if err != nil {
 		return err
 	}
-	if status != http.StatusOK {
-		return fmt.Errorf("failed reading realm settings: status %d: %s", status, string(body))
+	if err := ensureCallStatus(status, body, http.StatusOK, "read realm settings"); err != nil {
+		return err
 	}
 
 	var cfg map[string]any
@@ -230,20 +240,20 @@ func (b *keycloakBootstrapper) ensureRealmSettings() error {
 	cfg["registrationAllowed"] = b.enableRegistration
 	cfg["loginWithEmailAllowed"] = true
 
-	putStatus, putBody, err := b.callJSON(http.MethodPut, "/admin/realms/"+b.realm, cfg)
+	putStatus, putBody, err := b.callJSON(ctx, http.MethodPut, "/admin/realms/"+b.realm, cfg)
 	if err != nil {
 		return err
 	}
-	if putStatus != http.StatusNoContent {
-		return fmt.Errorf("failed updating realm settings: status %d: %s", putStatus, string(putBody))
+	if err := ensureCallStatus(putStatus, putBody, http.StatusNoContent, "update realm settings"); err != nil {
+		return err
 	}
 
 	b.logf("ensured realm settings (registration=%t)", b.enableRegistration)
 	return nil
 }
 
-func (b *keycloakBootstrapper) ensureClient() error {
-	clientUUID, err := b.findClientUUID()
+func (b *keycloakBootstrapper) ensureClient(ctx context.Context) error {
+	clientUUID, err := b.findClientUUID(ctx)
 	if err != nil {
 		return err
 	}
@@ -265,16 +275,16 @@ func (b *keycloakBootstrapper) ensureClient() error {
 			"webOrigins":                []string{b.uiOrigin},
 		}
 
-		status, createBody, err := b.callJSON(http.MethodPost, "/admin/realms/"+b.realm+"/clients", payload)
+		status, createBody, err := b.callJSON(ctx, http.MethodPost, "/admin/realms/"+b.realm+"/clients", payload)
 		if err != nil {
 			return err
 		}
-		if status != http.StatusCreated {
-			return fmt.Errorf("failed creating client %q: status %d: %s", b.clientID, status, string(createBody))
+		if err := ensureCallStatus(status, createBody, http.StatusCreated, fmt.Sprintf("create client %q", b.clientID)); err != nil {
+			return err
 		}
 		b.logf("created client %q", b.clientID)
 
-		clientUUID, err = b.findClientUUID()
+		clientUUID, err = b.findClientUUID(ctx)
 		if err != nil {
 			return err
 		}
@@ -285,12 +295,12 @@ func (b *keycloakBootstrapper) ensureClient() error {
 		b.logf("client %q already exists", b.clientID)
 	}
 
-	status, body, err := b.callJSON(http.MethodGet, "/admin/realms/"+b.realm+"/clients/"+clientUUID, nil)
+	status, body, err := b.callJSON(ctx, http.MethodGet, "/admin/realms/"+b.realm+"/clients/"+clientUUID, nil)
 	if err != nil {
 		return err
 	}
-	if status != http.StatusOK {
-		return fmt.Errorf("failed reading client %q: status %d: %s", b.clientID, status, string(body))
+	if err := ensureCallStatus(status, body, http.StatusOK, fmt.Sprintf("read client %q", b.clientID)); err != nil {
+		return err
 	}
 
 	var cfg map[string]any
@@ -307,25 +317,25 @@ func (b *keycloakBootstrapper) ensureClient() error {
 	cfg["redirectUris"] = []string{b.uiOrigin + "/*"}
 	cfg["webOrigins"] = []string{b.uiOrigin}
 
-	putStatus, putBody, err := b.callJSON(http.MethodPut, "/admin/realms/"+b.realm+"/clients/"+clientUUID, cfg)
+	putStatus, putBody, err := b.callJSON(ctx, http.MethodPut, "/admin/realms/"+b.realm+"/clients/"+clientUUID, cfg)
 	if err != nil {
 		return err
 	}
-	if putStatus != http.StatusNoContent {
-		return fmt.Errorf("failed updating client %q: status %d: %s", b.clientID, putStatus, string(putBody))
+	if err := ensureCallStatus(putStatus, putBody, http.StatusNoContent, fmt.Sprintf("update client %q", b.clientID)); err != nil {
+		return err
 	}
 
 	b.logf("ensured client redirects/web-origins for %q", b.clientID)
 	return nil
 }
 
-func (b *keycloakBootstrapper) findClientUUID() (string, error) {
-	status, body, err := b.callJSON(http.MethodGet, "/admin/realms/"+b.realm+"/clients?clientId="+url.QueryEscape(b.clientID), nil)
+func (b *keycloakBootstrapper) findClientUUID(ctx context.Context) (string, error) {
+	status, body, err := b.callJSON(ctx, http.MethodGet, "/admin/realms/"+b.realm+"/clients?clientId="+url.QueryEscape(b.clientID), nil)
 	if err != nil {
 		return "", err
 	}
-	if status != http.StatusOK {
-		return "", fmt.Errorf("failed querying client %q: status %d: %s", b.clientID, status, string(body))
+	if err := ensureCallStatus(status, body, http.StatusOK, fmt.Sprintf("query client %q", b.clientID)); err != nil {
+		return "", err
 	}
 
 	var clients []keycloakClient
@@ -339,8 +349,8 @@ func (b *keycloakBootstrapper) findClientUUID() (string, error) {
 	return clients[0].ID, nil
 }
 
-func (b *keycloakBootstrapper) ensureRole(roleName string) error {
-	status, body, err := b.callJSON(http.MethodGet, "/admin/realms/"+b.realm+"/roles/"+url.PathEscape(roleName), nil)
+func (b *keycloakBootstrapper) ensureRole(ctx context.Context, roleName string) error {
+	status, body, err := b.callJSON(ctx, http.MethodGet, "/admin/realms/"+b.realm+"/roles/"+url.PathEscape(roleName), nil)
 	if err != nil {
 		return err
 	}
@@ -348,44 +358,38 @@ func (b *keycloakBootstrapper) ensureRole(roleName string) error {
 		b.logf("role %q already exists", roleName)
 		return nil
 	}
-	if status != http.StatusNotFound {
-		return fmt.Errorf("failed checking role %q: status %d: %s", roleName, status, string(body))
+	if err := ensureCallStatus(status, body, http.StatusNotFound, fmt.Sprintf("check role %q", roleName)); err != nil {
+		return err
 	}
 
-	createStatus, createBody, err := b.callJSON(http.MethodPost, "/admin/realms/"+b.realm+"/roles", map[string]any{"name": roleName})
+	createStatus, createBody, err := b.callJSON(ctx, http.MethodPost, "/admin/realms/"+b.realm+"/roles", map[string]any{"name": roleName})
 	if err != nil {
 		return err
 	}
-	if createStatus != http.StatusCreated {
-		return fmt.Errorf("failed creating role %q: status %d: %s", roleName, createStatus, string(createBody))
+	if err := ensureCallStatus(createStatus, createBody, http.StatusCreated, fmt.Sprintf("create role %q", roleName)); err != nil {
+		return err
 	}
 
 	b.logf("created role %q", roleName)
 	return nil
 }
 
-func (b *keycloakBootstrapper) callJSON(method string, path string, payload any) (int, []byte, error) {
-	var bodyReader io.Reader
+func (b *keycloakBootstrapper) callJSON(ctx context.Context, method string, path string, payload any) (int, []byte, error) {
+	var requestBody []byte
 	if payload != nil {
 		data, err := json.Marshal(payload)
 		if err != nil {
 			return 0, nil, err
 		}
-		bodyReader = bytes.NewReader(data)
+		requestBody = data
 	}
 
-	req, err := http.NewRequest(method, b.baseURL+path, bodyReader)
-	if err != nil {
-		return 0, nil, err
-	}
-	if b.token != "" {
-		req.Header.Set("Authorization", "Bearer "+b.token)
-	}
+	contentType := ""
 	if payload != nil {
-		req.Header.Set("Content-Type", "application/json")
+		contentType = "application/json"
 	}
 
-	resp, err := b.httpClient.Do(req)
+	resp, err := b.doRequest(ctx, method, b.baseURL+path, b.token, contentType, requestBody)
 	if err != nil {
 		return 0, nil, err
 	}
@@ -399,10 +403,116 @@ func (b *keycloakBootstrapper) callJSON(method string, path string, payload any)
 	return resp.StatusCode, respBody, nil
 }
 
+func (b *keycloakBootstrapper) doRequest(ctx context.Context, method string, endpoint string, token string, contentType string, body []byte) (*http.Response, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	attempts := b.retryAttempts
+	if attempts < 1 {
+		attempts = 1
+	}
+
+	var lastErr error
+	var lastStatus int
+	operation := method + " " + endpoint
+
+	for attempt := 0; attempt < attempts; attempt++ {
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+
+		var reader io.Reader
+		if len(body) > 0 {
+			reader = bytes.NewReader(body)
+		}
+
+		req, err := http.NewRequestWithContext(ctx, method, endpoint, reader)
+		if err != nil {
+			return nil, err
+		}
+
+		if token != "" {
+			req.Header.Set("Authorization", "Bearer "+token)
+		}
+		if contentType != "" {
+			req.Header.Set("Content-Type", contentType)
+		}
+
+		resp, err := b.httpClient.Do(req)
+		if err != nil {
+			if ctx.Err() != nil {
+				return nil, ctx.Err()
+			}
+
+			if !isRetryableError(err) || attempt == attempts-1 {
+				if isRetryableError(err) {
+					return nil, NewServiceUnavailableError(operation, err)
+				}
+				return nil, err
+			}
+
+			lastErr = err
+			if err := sleepWithContext(ctx, b.backoffDelay(attempt)); err != nil {
+				return nil, err
+			}
+			continue
+		}
+
+		if !isRetryableStatus(resp.StatusCode) {
+			return resp, nil
+		}
+
+		lastStatus = resp.StatusCode
+		_ = resp.Body.Close()
+
+		if attempt == attempts-1 {
+			return nil, NewServiceUnavailableError(operation, fmt.Errorf("received status %d", lastStatus))
+		}
+
+		if err := sleepWithContext(ctx, b.backoffDelay(attempt)); err != nil {
+			return nil, err
+		}
+	}
+
+	if lastErr != nil {
+		return nil, NewServiceUnavailableError(operation, lastErr)
+	}
+
+	if lastStatus != 0 {
+		return nil, NewServiceUnavailableError(operation, fmt.Errorf("received status %d", lastStatus))
+	}
+
+	return nil, NewServiceUnavailableError(operation, fmt.Errorf("request failed"))
+}
+
+func (b *keycloakBootstrapper) backoffDelay(attempt int) time.Duration {
+	base := b.retryBaseDelay
+	if base <= 0 {
+		base = defaultRetryBaseDelay
+	}
+
+	delay := base << attempt
+	maxDelay := 2 * time.Second
+	if delay > maxDelay {
+		return maxDelay
+	}
+
+	return delay
+}
+
 func (b *keycloakBootstrapper) logf(format string, args ...any) {
 	if b.output == nil {
 		return
 	}
 
 	_, _ = fmt.Fprintf(b.output, format+"\n", args...)
+}
+
+func ensureCallStatus(status int, body []byte, expectedStatus int, operation string) error {
+	if status == expectedStatus {
+		return nil
+	}
+
+	return fmt.Errorf("failed to %s: status %d: %s", operation, status, string(body))
 }

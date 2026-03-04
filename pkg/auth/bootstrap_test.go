@@ -1,14 +1,24 @@
 package auth
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"sync/atomic"
 	"strings"
 	"testing"
 	"time"
 )
+
+type roundTripFunc func(req *http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
+}
 
 func TestNewKeycloakBootstrapperRequiresCoreFields(t *testing.T) {
 	tests := []struct {
@@ -246,7 +256,7 @@ func TestGetAdminTokenSuccess(t *testing.T) {
 		httpClient:    server.Client(),
 	}
 
-	token, err := b.getAdminToken()
+	token, err := b.getAdminToken(context.Background())
 	if err != nil {
 		t.Fatalf("expected no error, got %v", err)
 	}
@@ -269,7 +279,7 @@ func TestGetAdminTokenReturnsErrorForNonOKStatus(t *testing.T) {
 		httpClient:    server.Client(),
 	}
 
-	_, err := b.getAdminToken()
+	_, err := b.getAdminToken(context.Background())
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -292,7 +302,7 @@ func TestGetAdminTokenReturnsErrorWhenAccessTokenMissing(t *testing.T) {
 		httpClient:    server.Client(),
 	}
 
-	_, err := b.getAdminToken()
+	_, err := b.getAdminToken(context.Background())
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -339,7 +349,7 @@ func TestCallJSONSendsAuthAndJSONPayload(t *testing.T) {
 		httpClient: server.Client(),
 	}
 
-	status, body, err := b.callJSON(http.MethodPut, "/admin/check", map[string]any{"name": "worker-1"})
+	status, body, err := b.callJSON(context.Background(), http.MethodPut, "/admin/check", map[string]any{"name": "worker-1"})
 	if err != nil {
 		t.Fatalf("expected no error, got %v", err)
 	}
@@ -368,7 +378,7 @@ func TestCallJSONWithoutPayloadOmitsContentType(t *testing.T) {
 		httpClient: server.Client(),
 	}
 
-	status, body, err := b.callJSON(http.MethodGet, "/ping", nil)
+	status, body, err := b.callJSON(context.Background(), http.MethodGet, "/ping", nil)
 	if err != nil {
 		t.Fatalf("expected no error, got %v", err)
 	}
@@ -377,6 +387,98 @@ func TestCallJSONWithoutPayloadOmitsContentType(t *testing.T) {
 	}
 	if string(body) != "ok" {
 		t.Fatalf("expected body ok, got %q", string(body))
+	}
+}
+
+func TestCallJSONRetriesAndReturnsServiceUnavailable(t *testing.T) {
+	var requestCount int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&requestCount, 1)
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = w.Write([]byte("temporarily unavailable"))
+	}))
+	defer server.Close()
+
+	b := &keycloakBootstrapper{
+		baseURL:        server.URL,
+		httpClient:     server.Client(),
+		retryAttempts:  3,
+		retryBaseDelay: time.Millisecond,
+	}
+
+	_, _, err := b.callJSON(context.Background(), http.MethodGet, "/ping", nil)
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !IsServiceUnavailable(err) {
+		t.Fatalf("expected service unavailable error, got %v", err)
+	}
+	if got := atomic.LoadInt32(&requestCount); got != 3 {
+		t.Fatalf("expected 3 attempts, got %d", got)
+	}
+}
+
+func TestCallJSONHonorsCanceledContext(t *testing.T) {
+	b := &keycloakBootstrapper{
+		baseURL:        "http://example.invalid",
+		httpClient:     newBootstrapHTTPClient(),
+		retryAttempts:  3,
+		retryBaseDelay: time.Millisecond,
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, _, err := b.callJSON(ctx, http.MethodGet, "/ping", nil)
+	if err == nil {
+		t.Fatal("expected context cancellation error, got nil")
+	}
+	if err != context.Canceled {
+		t.Fatalf("expected context.Canceled, got %v", err)
+	}
+}
+
+func TestBootstrapKeycloakWithContextCanceled(t *testing.T) {
+	b, err := newKeycloakBootstrapper(validBootstrapConfig(), nil)
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	err = b.bootstrap(ctx)
+	if err == nil {
+		t.Fatal("expected context cancellation error, got nil")
+	}
+	if err != context.Canceled {
+		t.Fatalf("expected context.Canceled, got %v", err)
+	}
+}
+
+func TestCallJSONRetriesNetworkErrorsAndReturnsServiceUnavailable(t *testing.T) {
+	var attempts int32
+	transport := roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		atomic.AddInt32(&attempts, 1)
+		return nil, &url.Error{Op: req.Method, URL: req.URL.String(), Err: errors.New("connection reset")}
+	})
+
+	b := &keycloakBootstrapper{
+		baseURL:        "http://example.invalid",
+		httpClient:     &http.Client{Transport: transport},
+		retryAttempts:  3,
+		retryBaseDelay: time.Millisecond,
+	}
+
+	_, _, err := b.callJSON(context.Background(), http.MethodGet, "/ping", nil)
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !IsServiceUnavailable(err) {
+		t.Fatalf("expected service unavailable error, got %v", err)
+	}
+	if got := atomic.LoadInt32(&attempts); got != 3 {
+		t.Fatalf("expected 3 attempts, got %d", got)
 	}
 }
 

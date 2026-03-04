@@ -79,3 +79,17 @@ func TestWriteJSON_WriteFailureReturnsError(t *testing.T) {
 		t.Fatalf("expected status %d before write failure, got %d", http.StatusOK, rw.status)
 	}
 }
+
+func TestWriteError_WritesStatusAndMessage(t *testing.T) {
+	rec := httptest.NewRecorder()
+
+	WriteError(rec, http.StatusBadGateway, "upstream auth failed")
+
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("expected status %d, got %d", http.StatusBadGateway, rec.Code)
+	}
+
+	if !strings.Contains(rec.Body.String(), "upstream auth failed") {
+		t.Fatalf("expected response body to contain message, got %q", rec.Body.String())
+	}
+}
