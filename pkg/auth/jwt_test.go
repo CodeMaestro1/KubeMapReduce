@@ -17,7 +17,7 @@ func TestGetRoles_ValidClaims(t *testing.T) {
 	}
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
-	ctx := context.WithValue(req.Context(), "claims", claims)
+	ctx := context.WithValue(req.Context(), claimsKey, claims)
 	req = req.WithContext(ctx)
 
 	roles, err := GetRoles(req)
@@ -48,7 +48,7 @@ func TestGetRoles_NoRealmAccess(t *testing.T) {
 	}
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
-	ctx := context.WithValue(req.Context(), "claims", claims)
+	ctx := context.WithValue(req.Context(), claimsKey, claims)
 	req = req.WithContext(ctx)
 
 	_, err := GetRoles(req)
@@ -63,7 +63,7 @@ func TestGetRoles_NoRolesKey(t *testing.T) {
 	}
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
-	ctx := context.WithValue(req.Context(), "claims", claims)
+	ctx := context.WithValue(req.Context(), claimsKey, claims)
 	req = req.WithContext(ctx)
 
 	_, err := GetRoles(req)
