@@ -55,8 +55,8 @@ func TestLoad_CustomEnvVars(t *testing.T) {
 	t.Setenv("KEYCLOAK_JWKS_URL", "http://kc:9090/jwks")
 	t.Setenv("KEYCLOAK_ISSUER", "http://kc:9090/issuer")
 	t.Setenv("SERVER_ADDR", ":9999")
-	t.Setenv("KEYCLOAK_ADMIN_USERNAME", "myadmin")
-	t.Setenv("KEYCLOAK_ADMIN_PASSWORD", "secret123")
+	t.Setenv("KEYCLOAK_ADMIN_USERNAME", "test-admin-user")
+	t.Setenv("KEYCLOAK_ADMIN_PASSWORD", "test-admin-pass")
 
 	cfg := Load()
 
@@ -78,11 +78,11 @@ func TestLoad_CustomEnvVars(t *testing.T) {
 	if cfg.ServerAddr != ":9999" {
 		t.Errorf("ServerAddr = %q, want %q", cfg.ServerAddr, ":9999")
 	}
-	if cfg.AdminUsername != "myadmin" {
-		t.Errorf("AdminUsername = %q, want %q", cfg.AdminUsername, "myadmin")
+	if cfg.AdminUsername != "test-admin-user" {
+		t.Errorf("AdminUsername = %q, want %q", cfg.AdminUsername, "test-admin-user")
 	}
-	if cfg.AdminPassword != "secret123" {
-		t.Errorf("AdminPassword = %q, want %q", cfg.AdminPassword, "secret123")
+	if cfg.AdminPassword != "test-admin-pass" {
+		t.Errorf("AdminPassword = %q, want %q", cfg.AdminPassword, "test-admin-pass")
 	}
 }
 
