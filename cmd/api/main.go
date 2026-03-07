@@ -1,7 +1,6 @@
 package main
 
 import (
-	_ "embed"
 	"log"
 	"net/http"
 	"strings"
@@ -10,9 +9,6 @@ import (
 	"kubemapreduce/internal/config"
 	"kubemapreduce/pkg/auth"
 )
-
-//go:embed ui/index.html
-var uiHTML string
 
 func main() {
 	cfg := config.Load()
@@ -27,18 +23,7 @@ func main() {
 			cfg.JWKSURL, cfg.Issuer, cfg.Audience, err)
 	}
 
-	adminClient := auth.NewKeycloakAdminClient(
-		cfg.KeycloakBaseURL,
-		cfg.Realm,
-		cfg.AdminUsername,
-		cfg.AdminPassword,
-	)
-
-	handlers := api.NewHandlers(adminClient, uiHTML, api.UIConfig{
-		KeycloakBaseURL: cfg.KeycloakBaseURL,
-		Realm:           cfg.Realm,
-		ClientID:        cfg.Audience,
-	})
+	handlers := api.NewHandlers()
 
 	mux := http.NewServeMux()
 	api.RegisterRoutes(mux, handlers, validator)
