@@ -1,27 +1,14 @@
 package api
 
 import (
-	"context"
-	"encoding/json"
-	"kubemapreduce/internal/models"
-	"kubemapreduce/pkg/auth"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
-	"time"
 )
 
-func newTestHandlers() *Handlers {
-	return NewHandlers(nil)
-}
-
-func newTestHandlersWithRetention(now func() time.Time, ttl time.Duration, max int) *Handlers {
-	return newHandlersWithOptions(nil, ttl, max, now)
-}
-
 func TestHandleHealth(t *testing.T) {
-	h := newTestHandlers()
+	h := NewHandlers()
 
 	req := httptest.NewRequest(http.MethodGet, "/health", nil)
 	rec := httptest.NewRecorder()
@@ -38,7 +25,7 @@ func TestHandleHealth(t *testing.T) {
 }
 
 func TestHandleHealth_RejectsNonGet(t *testing.T) {
-	h := newTestHandlers()
+	h := NewHandlers()
 
 	req := httptest.NewRequest(http.MethodPost, "/health", nil)
 	rec := httptest.NewRecorder()
@@ -51,7 +38,7 @@ func TestHandleHealth_RejectsNonGet(t *testing.T) {
 }
 
 func TestHandleJobsSubmit_RejectsInvalidPayload(t *testing.T) {
-	h := newTestHandlers()
+	h := NewHandlers()
 
 	req := httptest.NewRequest(http.MethodPost, "/jobs", strings.NewReader("not-json"))
 	rec := httptest.NewRecorder()
@@ -64,7 +51,7 @@ func TestHandleJobsSubmit_RejectsInvalidPayload(t *testing.T) {
 }
 
 func TestHandleJobsSubmit_RejectsEmptyFilename(t *testing.T) {
-	h := newTestHandlers()
+	h := NewHandlers()
 
 	body := `{"filename":"","mapper":{"language":"python","artifact":"m.py","entrypoint":"map","interface":"map(key,value)->[]KeyValue"},"reducer":{"language":"python","artifact":"r.py","entrypoint":"reduce","interface":"reduce(key,values)->Value"}}`
 	req := httptest.NewRequest(http.MethodPost, "/jobs", strings.NewReader(body))
@@ -78,7 +65,7 @@ func TestHandleJobsSubmit_RejectsEmptyFilename(t *testing.T) {
 }
 
 func TestHandleJobsSubmit_AcceptsValidJob(t *testing.T) {
-	h := newTestHandlers()
+	h := NewHandlers()
 
 	body := `{"filename":"data.csv","mapper":{"language":"python","artifact":"m.py","entrypoint":"map","interface":"map(key,value)->[]KeyValue"},"reducer":{"language":"python","artifact":"r.py","entrypoint":"reduce","interface":"reduce(key,values)->Value"}}`
 	req := httptest.NewRequest(http.MethodPost, "/jobs", strings.NewReader(body))
@@ -92,6 +79,34 @@ func TestHandleJobsSubmit_AcceptsValidJob(t *testing.T) {
 
 	if !strings.Contains(rec.Body.String(), `"status":"accepted"`) {
 		t.Fatalf("expected accepted status in body, got %q", rec.Body.String())
+	}
+}
+
+func TestHandleWorkerConfig_RejectsInvalidValues(t *testing.T) {
+	h := NewHandlers()
+
+	body := `{"workerReplicas":0,"maxJobsPerNode":5}`
+	req := httptest.NewRequest(http.MethodPut, "/admin/workers/config", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+
+	h.HandleWorkerConfig(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected status %d, got %d", http.StatusBadRequest, rec.Code)
+	}
+}
+
+func TestHandleWorkerConfig_AcceptsValidConfig(t *testing.T) {
+	h := NewHandlers()
+
+	body := `{"workerReplicas":4,"maxJobsPerNode":8}`
+	req := httptest.NewRequest(http.MethodPut, "/admin/workers/config", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+
+	h.HandleWorkerConfig(rec, req)
+
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("expected status %d, got %d", http.StatusAccepted, rec.Code)
 	}
 }
 

@@ -12,8 +12,6 @@ type Config struct {
 	Issuer          string
 	Audience        string
 	ServerAddr      string
-	AdminUsername   string
-	AdminPassword   string
 }
 
 func Load() (*Config, error) {

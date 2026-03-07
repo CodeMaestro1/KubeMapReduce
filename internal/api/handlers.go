@@ -1,66 +1,21 @@
 package api
 
 import (
-	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"net/http"
-	"sort"
-	"strings"
-	"sync"
-	"time"
 
 	"kubemapreduce/internal/models"
 	"kubemapreduce/internal/validation"
-	"kubemapreduce/pkg/auth"
 	"kubemapreduce/pkg/httputil"
 )
 
-// Handlers holds HTTP handler state for the API server.
-//
-// TEMPORARY: Job storage uses an in-memory sync.Map. This means:
-//   - All job data is lost on server restart.
-//   - Job visibility is not shared across multiple replicas.
-//
-// This will be replaced with a persistent store (e.g. database) in a future release.
-type Handlers struct {
-	adminClient   *auth.KeycloakAdminClient
-	jobs          sync.Map // key: string (jobID) → models.JobStatusResponse [interim: in-memory only]
-	jobsMu        sync.Mutex
-	jobStatusTTL  time.Duration
-	maxStoredJobs int
-	now           func() time.Time
-}
+type Handlers struct{}
 
-const (
-	defaultReducers      = 1
-	defaultJobStatusTTL  = 24 * time.Hour
-	defaultMaxStoredJobs = 10000
-)
-
-func NewHandlers(adminClient *auth.KeycloakAdminClient) *Handlers {
-	return newHandlersWithOptions(adminClient, defaultJobStatusTTL, defaultMaxStoredJobs, time.Now)
-}
-
-func newHandlersWithOptions(adminClient *auth.KeycloakAdminClient, jobStatusTTL time.Duration, maxStoredJobs int, now func() time.Time) *Handlers {
-	if jobStatusTTL <= 0 {
-		jobStatusTTL = defaultJobStatusTTL
-	}
-	if maxStoredJobs <= 0 {
-		maxStoredJobs = defaultMaxStoredJobs
-	}
-	if now == nil {
-		now = time.Now
-	}
-
-	return &Handlers{
-		adminClient:   adminClient,
-		jobStatusTTL:  jobStatusTTL,
-		maxStoredJobs: maxStoredJobs,
-		now:           now,
-	}
+func NewHandlers() *Handlers {
+	return &Handlers{}
 }
 
 func (h *Handlers) HandleRoot(w http.ResponseWriter, r *http.Request) {
@@ -142,116 +97,6 @@ func (h *Handlers) HandleJobsSubmit(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := httputil.WriteJSON(w, http.StatusAccepted, response); err != nil {
-		return
-	}
-}
-
-func (h *Handlers) HandleJobsList(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
-	h.cleanupJobsStore()
-
-	var list []models.JobStatusResponse
-	h.jobs.Range(func(_, v any) bool {
-		list = append(list, v.(models.JobStatusResponse))
-		return true
-	})
-	sort.Slice(list, func(i, j int) bool {
-		return list[i].CreatedAt.After(list[j].CreatedAt)
-	})
-	if list == nil {
-		list = []models.JobStatusResponse{}
-	}
-
-	if err := httputil.WriteJSON(w, http.StatusOK, list); err != nil {
-		return
-	}
-}
-
-func (h *Handlers) HandleJobsGet(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
-	h.cleanupJobsStore()
-
-	jobID := r.PathValue("job_id")
-	if jobID == "" {
-		http.Error(w, "job id required", http.StatusBadRequest)
-		return
-	}
-
-	v, ok := h.jobs.Load(jobID)
-	if !ok {
-		http.Error(w, "job not found", http.StatusNotFound)
-		return
-	}
-
-	if err := httputil.WriteJSON(w, http.StatusOK, v.(models.JobStatusResponse)); err != nil {
-		return
-	}
-}
-
-func (h *Handlers) HandleJobsDownload(w http.ResponseWriter, r *http.Request) {
-	h.cleanupJobsStore()
-
-	jobID := r.PathValue("job_id")
-	if jobID == "" {
-		http.Error(w, "job id required", http.StatusBadRequest)
-		return
-	}
-
-	_, ok := h.jobs.Load(jobID)
-	if !ok {
-		http.Error(w, "job not found", http.StatusNotFound)
-		return
-	}
-
-	if err := httputil.WriteJSON(w, http.StatusNotImplemented, map[string]interface{}{
-		"status":  "not_implemented",
-		"message": "result download is not available yet; job processing backend is not implemented",
-		"jobId":   jobID,
-	}); err != nil {
-		return
-	}
-}
-
-func (h *Handlers) HandleConfigureNodes(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPut {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
-	var req models.NodeConfigRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "invalid node config payload", http.StatusBadRequest)
-		return
-	}
-
-	if req.MaxPods < 1 {
-		http.Error(w, "maxPods must be a positive integer", http.StatusBadRequest)
-		return
-	}
-	if strings.TrimSpace(req.CPULimit) == "" {
-		http.Error(w, "cpuLimit is required", http.StatusBadRequest)
-		return
-	}
-	if strings.TrimSpace(req.MemoryLimit) == "" {
-		http.Error(w, "memoryLimit is required", http.StatusBadRequest)
-		return
-	}
-
-	if err := httputil.WriteJSON(w, http.StatusNotImplemented, map[string]interface{}{
-		"status":      "not_implemented",
-		"message":     "node configuration backend integration is not implemented yet",
-		"maxPods":     req.MaxPods,
-		"cpuLimit":    req.CPULimit,
-		"memoryLimit": req.MemoryLimit,
-	}); err != nil {
 		return
 	}
 }
