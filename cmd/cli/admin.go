@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -10,7 +9,6 @@ import (
 	"net/http"
 	"os"
 	"strings"
-	"time"
 
 	"kubemapreduce/pkg/auth"
 
@@ -46,7 +44,7 @@ func requireAdminRole() {
 }
 
 // ── admin create-user ──────────────────────────────────────
-// Talks directly to Keycloak — no API server round-trip needed.
+// Routes through the API server, which proxies to Keycloak.
 
 func cmdAdminCreateUser(args []string) {
 	requireAdminRole()
@@ -56,8 +54,6 @@ func cmdAdminCreateUser(args []string) {
 	password := fs.String("password", "", "Password for the new user")
 	promptPw := fs.Bool("prompt-password", false, "Prompt for password (hidden input)")
 	role := fs.String("role", "USER", "Role to assign: ADMIN or USER")
-	adminUser := fs.String("admin-username", getEnv("KEYCLOAK_ADMIN_USERNAME", "admin"), "Keycloak admin username")
-	adminPass := fs.String("admin-password", getEnv("KEYCLOAK_ADMIN_PASSWORD", "admin"), "Keycloak admin password")
 	_ = fs.Parse(args)
 
 	if *username == "" {
@@ -86,58 +82,60 @@ func cmdAdminCreateUser(args []string) {
 		log.Fatal("password is required: use --password or --prompt-password")
 	}
 
-	client := auth.NewKeycloakAdminClient(
-		keycloakBaseURL(),
-		keycloakRealm(),
-		strings.TrimSpace(*adminUser),
-		strings.TrimSpace(*adminPass),
-	)
+	payload, _ := json.Marshal(map[string]string{
+		"username": strings.TrimSpace(*username),
+		"email":    strings.TrimSpace(*email),
+		"password": userPw,
+		"role":     normalizedRole,
+	})
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	token, serverURL := getValidToken()
+	resp, err := doAuthRequest(http.MethodPost, serverURL+"/admin/users", token, payload)
+	if err != nil {
+		log.Fatalf("request failed: %v", err)
+	}
+	defer resp.Body.Close()
 
-	if err := client.CreateUser(ctx, auth.CreateUserRequest{
-		Username: strings.TrimSpace(*username),
-		Email:    strings.TrimSpace(*email),
-		Password: userPw,
-		Role:     normalizedRole,
-	}); err != nil {
-		log.Fatalf("failed to create user: %v", err)
+	if resp.StatusCode != http.StatusCreated {
+		body, _ := io.ReadAll(resp.Body)
+		log.Fatalf("create user failed (HTTP %d): %s", resp.StatusCode, string(body))
 	}
 
-	fmt.Printf("Created %s user %q in realm %q.\n", normalizedRole, *username, keycloakRealm())
+	fmt.Printf("Created %s user %q.\n", normalizedRole, *username)
+	printResponse(resp)
 }
 
 // ── admin delete-user ──────────────────────────────────────
-// Talks directly to Keycloak — no API server round-trip needed.
+// Routes through the API server, which proxies to Keycloak.
 
 func cmdAdminDeleteUser(args []string) {
 	requireAdminRole()
 	fs := flag.NewFlagSet("admin delete-user", flag.ExitOnError)
 	username := fs.String("username", "", "Username to delete (required)")
-	adminUser := fs.String("admin-username", getEnv("KEYCLOAK_ADMIN_USERNAME", "admin"), "Keycloak admin username")
-	adminPass := fs.String("admin-password", getEnv("KEYCLOAK_ADMIN_PASSWORD", "admin"), "Keycloak admin password")
 	_ = fs.Parse(args)
 
 	if *username == "" {
 		log.Fatal("--username is required")
 	}
 
-	client := auth.NewKeycloakAdminClient(
-		keycloakBaseURL(),
-		keycloakRealm(),
-		strings.TrimSpace(*adminUser),
-		strings.TrimSpace(*adminPass),
-	)
+	payload, _ := json.Marshal(map[string]string{
+		"username": strings.TrimSpace(*username),
+	})
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	token, serverURL := getValidToken()
+	resp, err := doAuthRequest(http.MethodDelete, serverURL+"/admin/users", token, payload)
+	if err != nil {
+		log.Fatalf("request failed: %v", err)
+	}
+	defer resp.Body.Close()
 
-	if err := client.DeleteUserByUsername(ctx, strings.TrimSpace(*username)); err != nil {
-		log.Fatalf("failed to delete user: %v", err)
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		log.Fatalf("delete user failed (HTTP %d): %s", resp.StatusCode, string(body))
 	}
 
-	fmt.Printf("User %q deleted from realm %q.\n", *username, keycloakRealm())
+	fmt.Printf("User %q deleted.\n", *username)
+	printResponse(resp)
 }
 
 // ── admin worker-config ────────────────────────────────────
