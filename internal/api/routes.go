@@ -46,12 +46,6 @@ func RegisterRoutes(mux *http.ServeMux, h *Handlers, validator *auth.JWTValidato
 		http.HandlerFunc(h.HandleWorkerConfig),
 	))
 
-	mux.Handle("/admin/nodes/config", auth.RequireRole(
-		"ADMIN",
-		validator,
-		http.HandlerFunc(h.HandleConfigureNodes),
-	))
-
 	mux.Handle("/admin/users", auth.RequireRole(
 		"ADMIN",
 		validator,
@@ -59,17 +53,6 @@ func RegisterRoutes(mux *http.ServeMux, h *Handlers, validator *auth.JWTValidato
 			switch r.Method {
 			case http.MethodPost:
 				h.HandleAdminCreateUser(w, r)
-			default:
-				http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-			}
-		}),
-	))
-
-	mux.Handle("/admin/users/{username}", auth.RequireRole(
-		"ADMIN",
-		validator,
-		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			switch r.Method {
 			case http.MethodDelete:
 				h.HandleAdminDeleteUser(w, r)
 			default:

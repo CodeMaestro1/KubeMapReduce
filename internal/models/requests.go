@@ -56,3 +56,7 @@ type NodeConfigRequest struct {
 type DeleteUserRequest struct {
 	Username string `json:"username"`
 }
+
+type DeleteUserRequest struct {
+	Username string `json:"username"`
+}

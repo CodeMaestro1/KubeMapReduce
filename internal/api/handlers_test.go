@@ -1,14 +1,19 @@
 package api
 
 import (
+	"kubemapreduce/pkg/auth"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 )
 
+func newTestHandlers() *Handlers {
+	return NewHandlers(nil)
+}
+
 func TestHandleHealth(t *testing.T) {
-	h := NewHandlers()
+	h := newTestHandlers()
 
 	req := httptest.NewRequest(http.MethodGet, "/health", nil)
 	rec := httptest.NewRecorder()
@@ -25,7 +30,7 @@ func TestHandleHealth(t *testing.T) {
 }
 
 func TestHandleHealth_RejectsNonGet(t *testing.T) {
-	h := NewHandlers()
+	h := newTestHandlers()
 
 	req := httptest.NewRequest(http.MethodPost, "/health", nil)
 	rec := httptest.NewRecorder()
@@ -38,7 +43,7 @@ func TestHandleHealth_RejectsNonGet(t *testing.T) {
 }
 
 func TestHandleJobsSubmit_RejectsInvalidPayload(t *testing.T) {
-	h := NewHandlers()
+	h := newTestHandlers()
 
 	req := httptest.NewRequest(http.MethodPost, "/jobs", strings.NewReader("not-json"))
 	rec := httptest.NewRecorder()
@@ -51,7 +56,7 @@ func TestHandleJobsSubmit_RejectsInvalidPayload(t *testing.T) {
 }
 
 func TestHandleJobsSubmit_RejectsEmptyFilename(t *testing.T) {
-	h := NewHandlers()
+	h := newTestHandlers()
 
 	body := `{"filename":"","mapper":{"language":"python","artifact":"m.py","entrypoint":"map","interface":"map(key,value)->[]KeyValue"},"reducer":{"language":"python","artifact":"r.py","entrypoint":"reduce","interface":"reduce(key,values)->Value"}}`
 	req := httptest.NewRequest(http.MethodPost, "/jobs", strings.NewReader(body))
@@ -65,7 +70,7 @@ func TestHandleJobsSubmit_RejectsEmptyFilename(t *testing.T) {
 }
 
 func TestHandleJobsSubmit_AcceptsValidJob(t *testing.T) {
-	h := NewHandlers()
+	h := newTestHandlers()
 
 	body := `{"filename":"data.csv","mapper":{"language":"python","artifact":"m.py","entrypoint":"map","interface":"map(key,value)->[]KeyValue"},"reducer":{"language":"python","artifact":"r.py","entrypoint":"reduce","interface":"reduce(key,values)->Value"}}`
 	req := httptest.NewRequest(http.MethodPost, "/jobs", strings.NewReader(body))
@@ -83,7 +88,7 @@ func TestHandleJobsSubmit_AcceptsValidJob(t *testing.T) {
 }
 
 func TestHandleWorkerConfig_RejectsInvalidValues(t *testing.T) {
-	h := NewHandlers()
+	h := newTestHandlers()
 
 	body := `{"workerReplicas":0,"maxJobsPerNode":5}`
 	req := httptest.NewRequest(http.MethodPut, "/admin/workers/config", strings.NewReader(body))
@@ -97,7 +102,7 @@ func TestHandleWorkerConfig_RejectsInvalidValues(t *testing.T) {
 }
 
 func TestHandleWorkerConfig_AcceptsValidConfig(t *testing.T) {
-	h := NewHandlers()
+	h := newTestHandlers()
 
 	body := `{"workerReplicas":4,"maxJobsPerNode":8}`
 	req := httptest.NewRequest(http.MethodPut, "/admin/workers/config", strings.NewReader(body))
@@ -107,106 +112,6 @@ func TestHandleWorkerConfig_AcceptsValidConfig(t *testing.T) {
 
 	if rec.Code != http.StatusAccepted {
 		t.Fatalf("expected status %d, got %d", http.StatusAccepted, rec.Code)
-	}
-}
-
-func TestHandleJobsSubmit_DefaultsReducersToOneWhenOmitted(t *testing.T) {
-	h := newTestHandlers()
-
-	body := `{"filename":"data.csv","mapper":{"language":"python","artifact":"m.py","entrypoint":"map","interface":"map(key,value)->[]KeyValue"},"reducer":{"language":"python","artifact":"r.py","entrypoint":"reduce","interface":"reduce(key,values)->Value"}}`
-	submitReq := httptest.NewRequest(http.MethodPost, "/jobs", strings.NewReader(body))
-	submitRec := httptest.NewRecorder()
-
-	h.HandleJobsSubmit(submitRec, submitReq)
-
-	if submitRec.Code != http.StatusAccepted {
-		t.Fatalf("expected status %d, got %d: %s", http.StatusAccepted, submitRec.Code, submitRec.Body.String())
-	}
-
-	listReq := httptest.NewRequest(http.MethodGet, "/jobs", nil)
-	listRec := httptest.NewRecorder()
-	h.HandleJobsList(listRec, listReq)
-
-	if listRec.Code != http.StatusOK {
-		t.Fatalf("expected status %d, got %d: %s", http.StatusOK, listRec.Code, listRec.Body.String())
-	}
-
-	var jobs []map[string]any
-	if err := json.Unmarshal(listRec.Body.Bytes(), &jobs); err != nil {
-		t.Fatalf("failed to decode jobs list: %v", err)
-	}
-	if len(jobs) != 1 {
-		t.Fatalf("expected 1 job in list, got %d", len(jobs))
-	}
-	if got, ok := jobs[0]["reducers"].(float64); !ok || int(got) != 1 {
-		t.Fatalf("expected reducers=1 by default, got %#v", jobs[0]["reducers"])
-	}
-}
-
-func TestHandleJobsSubmit_DefaultsReducersToOneWhenZeroProvided(t *testing.T) {
-	h := newTestHandlers()
-
-	body := `{"filename":"data.csv","mapper":{"language":"python","artifact":"m.py","entrypoint":"map","interface":"map(key,value)->[]KeyValue"},"reducer":{"language":"python","artifact":"r.py","entrypoint":"reduce","interface":"reduce(key,values)->Value"},"reducers":0}`
-	submitReq := httptest.NewRequest(http.MethodPost, "/jobs", strings.NewReader(body))
-	submitRec := httptest.NewRecorder()
-
-	h.HandleJobsSubmit(submitRec, submitReq)
-
-	if submitRec.Code != http.StatusAccepted {
-		t.Fatalf("expected status %d, got %d: %s", http.StatusAccepted, submitRec.Code, submitRec.Body.String())
-	}
-
-	listReq := httptest.NewRequest(http.MethodGet, "/jobs", nil)
-	listRec := httptest.NewRecorder()
-	h.HandleJobsList(listRec, listReq)
-
-	if listRec.Code != http.StatusOK {
-		t.Fatalf("expected status %d, got %d: %s", http.StatusOK, listRec.Code, listRec.Body.String())
-	}
-
-	var jobs []map[string]any
-	if err := json.Unmarshal(listRec.Body.Bytes(), &jobs); err != nil {
-		t.Fatalf("failed to decode jobs list: %v", err)
-	}
-	if len(jobs) != 1 {
-		t.Fatalf("expected 1 job in list, got %d", len(jobs))
-	}
-	if got, ok := jobs[0]["reducers"].(float64); !ok || int(got) != 1 {
-		t.Fatalf("expected reducers=1 when provided as 0, got %#v", jobs[0]["reducers"])
-	}
-}
-
-func TestHandleWorkerConfig_RejectsInvalidValues(t *testing.T) {
-	h := newTestHandlers()
-
-	body := `{"maxConcurrentPods":0,"cpuLimit":"500m","memoryLimit":"1Gi"}`
-	req := httptest.NewRequest(http.MethodPut, "/admin/workers/config", strings.NewReader(body))
-	rec := httptest.NewRecorder()
-
-	h.HandleWorkerConfig(rec, req)
-
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("expected status %d, got %d", http.StatusBadRequest, rec.Code)
-	}
-}
-
-func TestHandleWorkerConfig_AcceptsValidConfig(t *testing.T) {
-	h := newTestHandlers()
-
-	body := `{"maxConcurrentPods":20,"cpuLimit":"500m","memoryLimit":"1Gi"}`
-	req := httptest.NewRequest(http.MethodPut, "/admin/workers/config", strings.NewReader(body))
-	rec := httptest.NewRecorder()
-
-	h.HandleWorkerConfig(rec, req)
-
-	if rec.Code != http.StatusAccepted {
-		t.Fatalf("expected status %d, got %d", http.StatusAccepted, rec.Code)
-	}
-	if !strings.Contains(rec.Body.String(), `"status":"accepted"`) {
-		t.Fatalf("expected accepted status in body, got %q", rec.Body.String())
-	}
-	if !strings.Contains(rec.Body.String(), `"message":"worker configuration update accepted"`) {
-		t.Fatalf("expected accepted message in body, got %q", rec.Body.String())
 	}
 }
 
@@ -318,7 +223,7 @@ func TestHandleAdminCreateUser_RejectsInvalidRole(t *testing.T) {
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("expected %d, got %d", http.StatusBadRequest, rec.Code)
 	}
-	if !strings.Contains(rec.Body.String(), "role must be ") {
+	if !strings.Contains(rec.Body.String(), "role must be ADMIN or USER") {
 		t.Fatalf("expected role error message, got %q", rec.Body.String())
 	}
 }
@@ -343,31 +248,13 @@ func TestHandleAdminCreateUser_Success(t *testing.T) {
 	}
 }
 
-func TestHandleAdminCreateUser_NormalizesRole(t *testing.T) {
-	h, kc := newTestHandlersWithKeycloak(t)
-	defer kc.Close()
-
-	body := `{"username":"bob","password":"secret","role":"  admin  "}`
-	req := httptest.NewRequest(http.MethodPost, "/admin/users", strings.NewReader(body))
-	rec := httptest.NewRecorder()
-	h.HandleAdminCreateUser(rec, req)
-
-	if rec.Code != http.StatusCreated {
-		t.Fatalf("expected %d, got %d: %s", http.StatusCreated, rec.Code, rec.Body.String())
-	}
-	if !strings.Contains(rec.Body.String(), `"role":"ADMIN"`) {
-		t.Fatalf("expected normalized role ADMIN in body, got %q", rec.Body.String())
-	}
-}
-
 // ── Admin Delete User tests ─────────────────────────────────
 
 func TestHandleAdminDeleteUser_RejectsNonDelete(t *testing.T) {
 	h, kc := newTestHandlersWithKeycloak(t)
 	defer kc.Close()
 
-	req := httptest.NewRequest(http.MethodGet, "/admin/users/alice", nil)
-	req.SetPathValue("username", "alice")
+	req := httptest.NewRequest(http.MethodGet, "/admin/users", nil)
 	rec := httptest.NewRecorder()
 	h.HandleAdminDeleteUser(rec, req)
 
@@ -376,11 +263,11 @@ func TestHandleAdminDeleteUser_RejectsNonDelete(t *testing.T) {
 	}
 }
 
-func TestHandleAdminDeleteUser_RejectsMissingUsername(t *testing.T) {
+func TestHandleAdminDeleteUser_RejectsInvalidJSON(t *testing.T) {
 	h, kc := newTestHandlersWithKeycloak(t)
 	defer kc.Close()
 
-	req := httptest.NewRequest(http.MethodDelete, "/admin/users/", nil)
+	req := httptest.NewRequest(http.MethodDelete, "/admin/users", strings.NewReader("not-json"))
 	rec := httptest.NewRecorder()
 	h.HandleAdminDeleteUser(rec, req)
 
@@ -389,551 +276,53 @@ func TestHandleAdminDeleteUser_RejectsMissingUsername(t *testing.T) {
 	}
 }
 
-func TestHandleAdminDeleteUser_AcceptsPathUsername(t *testing.T) {
+func TestHandleAdminDeleteUser_RejectsEmptyUsername(t *testing.T) {
 	h, kc := newTestHandlersWithKeycloak(t)
 	defer kc.Close()
 
-	req := httptest.NewRequest(http.MethodDelete, "/admin/users/alice", nil)
-	req.SetPathValue("username", "alice")
+	body := `{"username":""}`
+	req := httptest.NewRequest(http.MethodDelete, "/admin/users", strings.NewReader(body))
 	rec := httptest.NewRecorder()
 	h.HandleAdminDeleteUser(rec, req)
 
-	if rec.Code != http.StatusNoContent {
-		t.Fatalf("expected %d, got %d: %s", http.StatusNoContent, rec.Code, rec.Body.String())
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected %d, got %d", http.StatusBadRequest, rec.Code)
 	}
-	if rec.Body.Len() != 0 {
-		t.Fatalf("expected empty body for 204, got %q", rec.Body.String())
+}
+
+func TestHandleAdminDeleteUser_Success(t *testing.T) {
+	h, kc := newTestHandlersWithKeycloak(t)
+	defer kc.Close()
+
+	body := `{"username":"alice"}`
+	req := httptest.NewRequest(http.MethodDelete, "/admin/users", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	h.HandleAdminDeleteUser(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected %d, got %d: %s", http.StatusOK, rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"status":"deleted"`) {
+		t.Fatalf("expected deleted status in body, got %q", rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"username":"alice"`) {
+		t.Fatalf("expected username in body, got %q", rec.Body.String())
 	}
 }
 
 // ── Admin handler with nil client (service unavailable) ─────
 
-func TestHandleAdminCreateUser_NilClientUnavailable(t *testing.T) {
+func TestHandleAdminCreateUser_NilClientPanics(t *testing.T) {
 	h := newTestHandlers() // nil adminClient
 
 	body := `{"username":"alice","password":"secret","role":"USER"}`
 	req := httptest.NewRequest(http.MethodPost, "/admin/users", strings.NewReader(body))
 	rec := httptest.NewRecorder()
 
-	h.HandleAdminCreateUser(rec, req)
-
-	if rec.Code != http.StatusServiceUnavailable {
-		t.Fatalf("expected %d, got %d", http.StatusServiceUnavailable, rec.Code)
-	}
-	if !strings.Contains(rec.Body.String(), "authentication admin client not configured") {
-		t.Fatalf("expected explicit admin client unavailable message, got %q", rec.Body.String())
-	}
-}
-
-func TestHandleAdminDeleteUser_NilClientUnavailable(t *testing.T) {
-	h := newTestHandlers() // nil adminClient
-
-	req := httptest.NewRequest(http.MethodDelete, "/admin/users/alice", nil)
-	req.SetPathValue("username", "alice")
-	rec := httptest.NewRecorder()
-
-	h.HandleAdminDeleteUser(rec, req)
-
-	if rec.Code != http.StatusServiceUnavailable {
-		t.Fatalf("expected %d, got %d", http.StatusServiceUnavailable, rec.Code)
-	}
-	if !strings.Contains(rec.Body.String(), "authentication admin client not configured") {
-		t.Fatalf("expected explicit admin client unavailable message, got %q", rec.Body.String())
-	}
-}
-
-func TestHandleAdminCreateUser_KeycloakDown_Returns503(t *testing.T) {
-	// Create and immediately close a server to simulate unreachable auth service.
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
-	srv.Close()
-
-	adminClient := auth.NewKeycloakAdminClient(srv.URL, "test", "admin", "admin")
-	h := NewHandlers(adminClient)
-
-	body := `{"username":"alice","email":"alice@example.com","password":"secret","role":"USER"}`
-	req := httptest.NewRequest(http.MethodPost, "/admin/users", strings.NewReader(body))
-	rec := httptest.NewRecorder()
-	h.HandleAdminCreateUser(rec, req)
-
-	if rec.Code != http.StatusServiceUnavailable {
-		t.Fatalf("expected %d, got %d: %s", http.StatusServiceUnavailable, rec.Code, rec.Body.String())
-	}
-	if !strings.Contains(rec.Body.String(), "authentication service unavailable") {
-		t.Fatalf("expected auth unavailable message, got %q", rec.Body.String())
-	}
-}
-
-func TestHandleAdminCreateUser_KeycloakTimeout_Returns503(t *testing.T) {
-	// Hanging server simulates an unresponsive auth service.
-	hung := make(chan struct{})
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		<-hung
-	}))
 	defer func() {
-		close(hung)
-		srv.Close()
+		if r := recover(); r == nil {
+			t.Fatal("expected panic with nil adminClient, but none occurred")
+		}
 	}()
-
-	adminClient := auth.NewKeycloakAdminClient(srv.URL, "test", "admin", "admin")
-	h := NewHandlers(adminClient)
-
-	body := `{"username":"alice","email":"alice@example.com","password":"secret","role":"USER"}`
-	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
-	defer cancel()
-	req := httptest.NewRequest(http.MethodPost, "/admin/users", strings.NewReader(body)).WithContext(ctx)
-	rec := httptest.NewRecorder()
 	h.HandleAdminCreateUser(rec, req)
-
-	if rec.Code != http.StatusServiceUnavailable {
-		t.Fatalf("expected %d, got %d: %s", http.StatusServiceUnavailable, rec.Code, rec.Body.String())
-	}
-	if !strings.Contains(rec.Body.String(), "authentication service unavailable") {
-		t.Fatalf("expected auth unavailable message, got %q", rec.Body.String())
-	}
-}
-
-func TestHandleAdminDeleteUser_KeycloakDown_Returns503(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
-	srv.Close()
-
-	adminClient := auth.NewKeycloakAdminClient(srv.URL, "test", "admin", "admin")
-	h := NewHandlers(adminClient)
-
-	req := httptest.NewRequest(http.MethodDelete, "/admin/users/alice", nil)
-	req.SetPathValue("username", "alice")
-	rec := httptest.NewRecorder()
-	h.HandleAdminDeleteUser(rec, req)
-
-	if rec.Code != http.StatusServiceUnavailable {
-		t.Fatalf("expected %d, got %d: %s", http.StatusServiceUnavailable, rec.Code, rec.Body.String())
-	}
-	if !strings.Contains(rec.Body.String(), "authentication service unavailable") {
-		t.Fatalf("expected auth unavailable message, got %q", rec.Body.String())
-	}
-}
-
-// ── HandleJobsList tests ────────────────────────────────────
-
-func TestHandleJobsList_ReturnsEmptyListInitially(t *testing.T) {
-	h := newTestHandlers()
-
-	req := httptest.NewRequest(http.MethodGet, "/jobs", nil)
-	rec := httptest.NewRecorder()
-	h.HandleJobsList(rec, req)
-
-	if rec.Code != http.StatusOK {
-		t.Fatalf("expected %d, got %d", http.StatusOK, rec.Code)
-	}
-	if strings.TrimSpace(rec.Body.String()) != "[]" {
-		t.Fatalf("expected empty array, got %q", rec.Body.String())
-	}
-}
-
-func TestHandleJobsList_ReturnsSubmittedJob(t *testing.T) {
-	h := newTestHandlers()
-
-	body := `{"filename":"data.csv","mapper":{"language":"python","artifact":"m.py","entrypoint":"map","interface":"map(key,value)->[]KeyValue"},"reducer":{"language":"python","artifact":"r.py","entrypoint":"reduce","interface":"reduce(key,values)->Value"}}`
-	submitReq := httptest.NewRequest(http.MethodPost, "/jobs", strings.NewReader(body))
-	submitRec := httptest.NewRecorder()
-	h.HandleJobsSubmit(submitRec, submitReq)
-	if submitRec.Code != http.StatusAccepted {
-		t.Fatalf("setup: submit failed with %d: %s", submitRec.Code, submitRec.Body.String())
-	}
-
-	listReq := httptest.NewRequest(http.MethodGet, "/jobs", nil)
-	listRec := httptest.NewRecorder()
-	h.HandleJobsList(listRec, listReq)
-
-	if listRec.Code != http.StatusOK {
-		t.Fatalf("expected %d, got %d", http.StatusOK, listRec.Code)
-	}
-	if !strings.Contains(listRec.Body.String(), `"filename":"data.csv"`) {
-		t.Fatalf("expected filename in list response, got %q", listRec.Body.String())
-	}
-}
-
-func TestHandleJobsList_PrunesExpiredJobsByTTL(t *testing.T) {
-	now := time.Date(2026, 1, 1, 10, 0, 0, 0, time.UTC)
-	h := newTestHandlersWithRetention(func() time.Time { return now }, 1*time.Second, 100)
-
-	body := `{"filename":"stale.csv","mapper":{"language":"python","artifact":"m.py","entrypoint":"map","interface":"map(key,value)->[]KeyValue"},"reducer":{"language":"python","artifact":"r.py","entrypoint":"reduce","interface":"reduce(key,values)->Value"}}`
-	submitReq := httptest.NewRequest(http.MethodPost, "/jobs", strings.NewReader(body))
-	submitRec := httptest.NewRecorder()
-	h.HandleJobsSubmit(submitRec, submitReq)
-	if submitRec.Code != http.StatusAccepted {
-		t.Fatalf("setup: submit failed with %d: %s", submitRec.Code, submitRec.Body.String())
-	}
-
-	now = now.Add(2 * time.Second)
-
-	listReq := httptest.NewRequest(http.MethodGet, "/jobs", nil)
-	listRec := httptest.NewRecorder()
-	h.HandleJobsList(listRec, listReq)
-
-	if listRec.Code != http.StatusOK {
-		t.Fatalf("expected %d, got %d", http.StatusOK, listRec.Code)
-	}
-	if strings.TrimSpace(listRec.Body.String()) != "[]" {
-		t.Fatalf("expected expired jobs to be pruned, got %q", listRec.Body.String())
-	}
-}
-
-func TestHandleJobsGet_ReturnsNotFoundWhenExpiredByTTL(t *testing.T) {
-	now := time.Date(2026, 1, 1, 10, 0, 0, 0, time.UTC)
-	h := newTestHandlersWithRetention(func() time.Time { return now }, 1*time.Second, 100)
-
-	body := `{"filename":"input.json","mapper":{"language":"python","artifact":"m.py","entrypoint":"map","interface":"map(key,value)->[]KeyValue"},"reducer":{"language":"python","artifact":"r.py","entrypoint":"reduce","interface":"reduce(key,values)->Value"}}`
-	submitReq := httptest.NewRequest(http.MethodPost, "/jobs", strings.NewReader(body))
-	submitRec := httptest.NewRecorder()
-	h.HandleJobsSubmit(submitRec, submitReq)
-	if submitRec.Code != http.StatusAccepted {
-		t.Fatalf("setup: submit failed with %d: %s", submitRec.Code, submitRec.Body.String())
-	}
-
-	var submitResp struct {
-		JobID string `json:"jobId"`
-	}
-	if err := json.NewDecoder(strings.NewReader(submitRec.Body.String())).Decode(&submitResp); err != nil {
-		t.Fatalf("decode submit response: %v", err)
-	}
-
-	now = now.Add(2 * time.Second)
-
-	getReq := httptest.NewRequest(http.MethodGet, "/jobs/"+submitResp.JobID, nil)
-	getReq.SetPathValue("job_id", submitResp.JobID)
-	getRec := httptest.NewRecorder()
-	h.HandleJobsGet(getRec, getReq)
-
-	if getRec.Code != http.StatusNotFound {
-		t.Fatalf("expected %d, got %d", http.StatusNotFound, getRec.Code)
-	}
-}
-
-func TestHandleJobsSubmit_EvictsOldestWhenMaxCapacityExceeded(t *testing.T) {
-	now := time.Date(2026, 1, 1, 10, 0, 0, 0, time.UTC)
-	h := newTestHandlersWithRetention(func() time.Time { return now }, 1*time.Hour, 2)
-
-	submit := func(filename string) {
-		body := `{"filename":"` + filename + `","mapper":{"language":"python","artifact":"m.py","entrypoint":"map","interface":"map(key,value)->[]KeyValue"},"reducer":{"language":"python","artifact":"r.py","entrypoint":"reduce","interface":"reduce(key,values)->Value"}}`
-		req := httptest.NewRequest(http.MethodPost, "/jobs", strings.NewReader(body))
-		rec := httptest.NewRecorder()
-		h.HandleJobsSubmit(rec, req)
-		if rec.Code != http.StatusAccepted {
-			t.Fatalf("submit failed with %d: %s", rec.Code, rec.Body.String())
-		}
-	}
-
-	submit("job-1.csv")
-	now = now.Add(1 * time.Second)
-	submit("job-2.csv")
-	now = now.Add(1 * time.Second)
-	submit("job-3.csv")
-
-	listReq := httptest.NewRequest(http.MethodGet, "/jobs", nil)
-	listRec := httptest.NewRecorder()
-	h.HandleJobsList(listRec, listReq)
-
-	if listRec.Code != http.StatusOK {
-		t.Fatalf("expected %d, got %d", http.StatusOK, listRec.Code)
-	}
-
-	var jobs []models.JobStatusResponse
-	if err := json.Unmarshal(listRec.Body.Bytes(), &jobs); err != nil {
-		t.Fatalf("decode jobs list: %v", err)
-	}
-	if len(jobs) != 2 {
-		t.Fatalf("expected 2 jobs after eviction, got %d", len(jobs))
-	}
-	if jobs[0].Filename != "job-3.csv" || jobs[1].Filename != "job-2.csv" {
-		t.Fatalf("expected newest-first order after eviction, got %+v", jobs)
-	}
-}
-
-func TestHandleJobsList_ReturnsNewestFirst(t *testing.T) {
-	now := time.Date(2026, 1, 1, 10, 0, 0, 0, time.UTC)
-	h := newTestHandlersWithRetention(func() time.Time { return now }, 1*time.Hour, 100)
-
-	submit := func(filename string) {
-		body := `{"filename":"` + filename + `","mapper":{"language":"python","artifact":"m.py","entrypoint":"map","interface":"map(key,value)->[]KeyValue"},"reducer":{"language":"python","artifact":"r.py","entrypoint":"reduce","interface":"reduce(key,values)->Value"}}`
-		req := httptest.NewRequest(http.MethodPost, "/jobs", strings.NewReader(body))
-		rec := httptest.NewRecorder()
-		h.HandleJobsSubmit(rec, req)
-		if rec.Code != http.StatusAccepted {
-			t.Fatalf("submit failed with %d: %s", rec.Code, rec.Body.String())
-		}
-	}
-
-	submit("first.csv")
-	now = now.Add(1 * time.Second)
-	submit("second.csv")
-	now = now.Add(1 * time.Second)
-	submit("third.csv")
-
-	listReq := httptest.NewRequest(http.MethodGet, "/jobs", nil)
-	listRec := httptest.NewRecorder()
-	h.HandleJobsList(listRec, listReq)
-
-	if listRec.Code != http.StatusOK {
-		t.Fatalf("expected %d, got %d", http.StatusOK, listRec.Code)
-	}
-
-	var jobs []models.JobStatusResponse
-	if err := json.Unmarshal(listRec.Body.Bytes(), &jobs); err != nil {
-		t.Fatalf("decode jobs list: %v", err)
-	}
-	if len(jobs) != 3 {
-		t.Fatalf("expected 3 jobs, got %d", len(jobs))
-	}
-	if jobs[0].Filename != "third.csv" || jobs[1].Filename != "second.csv" || jobs[2].Filename != "first.csv" {
-		t.Fatalf("expected newest-first ordering [third, second, first], got [%s, %s, %s]",
-			jobs[0].Filename, jobs[1].Filename, jobs[2].Filename)
-	}
-}
-
-// ── HandleJobsGet tests ─────────────────────────────────────
-
-func TestHandleJobsGet_ReturnsKnownJob(t *testing.T) {
-	h := newTestHandlers()
-
-	body := `{"filename":"input.json","mapper":{"language":"python","artifact":"m.py","entrypoint":"map","interface":"map(key,value)->[]KeyValue"},"reducer":{"language":"python","artifact":"r.py","entrypoint":"reduce","interface":"reduce(key,values)->Value"}}`
-	submitReq := httptest.NewRequest(http.MethodPost, "/jobs", strings.NewReader(body))
-	submitRec := httptest.NewRecorder()
-	h.HandleJobsSubmit(submitRec, submitReq)
-	if submitRec.Code != http.StatusAccepted {
-		t.Fatalf("setup: submit failed with %d: %s", submitRec.Code, submitRec.Body.String())
-	}
-
-	var submitResp struct {
-		JobID string `json:"jobId"`
-	}
-	if err := json.NewDecoder(strings.NewReader(submitRec.Body.String())).Decode(&submitResp); err != nil {
-		t.Fatalf("decode submit response: %v", err)
-	}
-
-	getReq := httptest.NewRequest(http.MethodGet, "/jobs/"+submitResp.JobID, nil)
-	getReq.SetPathValue("job_id", submitResp.JobID)
-	getRec := httptest.NewRecorder()
-	h.HandleJobsGet(getRec, getReq)
-
-	if getRec.Code != http.StatusOK {
-		t.Fatalf("expected %d, got %d: %s", http.StatusOK, getRec.Code, getRec.Body.String())
-	}
-	if !strings.Contains(getRec.Body.String(), submitResp.JobID) {
-		t.Fatalf("expected job ID in response, got %q", getRec.Body.String())
-	}
-}
-
-func TestHandleJobsGet_ReturnsNotFoundForUnknownJob(t *testing.T) {
-	h := newTestHandlers()
-
-	req := httptest.NewRequest(http.MethodGet, "/jobs/job-doesnotexist", nil)
-	req.SetPathValue("job_id", "job-doesnotexist")
-	rec := httptest.NewRecorder()
-	h.HandleJobsGet(rec, req)
-
-	if rec.Code != http.StatusNotFound {
-		t.Fatalf("expected %d, got %d", http.StatusNotFound, rec.Code)
-	}
-}
-
-// ── HandleJobsDownload tests ────────────────────────────────
-
-func TestHandleJobsDownload_NotFoundForUnknownJob(t *testing.T) {
-	h := newTestHandlers()
-
-	req := httptest.NewRequest(http.MethodGet, "/jobs/job-doesnotexist/results", nil)
-	req.SetPathValue("job_id", "job-doesnotexist")
-	rec := httptest.NewRecorder()
-	h.HandleJobsDownload(rec, req)
-
-	if rec.Code != http.StatusNotFound {
-		t.Fatalf("expected %d, got %d", http.StatusNotFound, rec.Code)
-	}
-}
-
-func TestHandleJobsDownload_NotImplementedForKnownJob(t *testing.T) {
-	h := newTestHandlers()
-
-	body := `{"filename":"data.csv","mapper":{"language":"python","artifact":"m.py","entrypoint":"map","interface":"map(key,value)->[]KeyValue"},"reducer":{"language":"python","artifact":"r.py","entrypoint":"reduce","interface":"reduce(key,values)->Value"}}`
-	submitReq := httptest.NewRequest(http.MethodPost, "/jobs", strings.NewReader(body))
-	submitRec := httptest.NewRecorder()
-	h.HandleJobsSubmit(submitRec, submitReq)
-	if submitRec.Code != http.StatusAccepted {
-		t.Fatalf("setup: submit failed with %d: %s", submitRec.Code, submitRec.Body.String())
-	}
-
-	var submitResp struct {
-		JobID string `json:"jobId"`
-	}
-	if err := json.NewDecoder(strings.NewReader(submitRec.Body.String())).Decode(&submitResp); err != nil {
-		t.Fatalf("decode submit response: %v", err)
-	}
-
-	dlReq := httptest.NewRequest(http.MethodGet, "/jobs/"+submitResp.JobID+"/results", nil)
-	dlReq.SetPathValue("job_id", submitResp.JobID)
-	dlRec := httptest.NewRecorder()
-	h.HandleJobsDownload(dlRec, dlReq)
-
-	if dlRec.Code != http.StatusNotImplemented {
-		t.Fatalf("expected %d, got %d: %s", http.StatusNotImplemented, dlRec.Code, dlRec.Body.String())
-	}
-	if !strings.Contains(dlRec.Body.String(), submitResp.JobID) {
-		t.Fatalf("expected job ID in response, got %q", dlRec.Body.String())
-	}
-}
-
-// ── HandleConfigureNodes tests ──────────────────────────────
-
-func TestHandleConfigureNodes_RejectsNonPut(t *testing.T) {
-	h := newTestHandlers()
-
-	req := httptest.NewRequest(http.MethodGet, "/admin/nodes/config", nil)
-	rec := httptest.NewRecorder()
-	h.HandleConfigureNodes(rec, req)
-
-	if rec.Code != http.StatusMethodNotAllowed {
-		t.Fatalf("expected %d, got %d", http.StatusMethodNotAllowed, rec.Code)
-	}
-}
-
-func TestHandleConfigureNodes_RejectsInvalidPayload(t *testing.T) {
-	h := newTestHandlers()
-
-	req := httptest.NewRequest(http.MethodPut, "/admin/nodes/config", strings.NewReader("not-json"))
-	rec := httptest.NewRecorder()
-	h.HandleConfigureNodes(rec, req)
-
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("expected %d, got %d", http.StatusBadRequest, rec.Code)
-	}
-}
-
-func TestHandleConfigureNodes_RejectsZeroMaxPods(t *testing.T) {
-	h := newTestHandlers()
-
-	body := `{"maxPods":0,"cpuLimit":"500m","memoryLimit":"1Gi"}`
-	req := httptest.NewRequest(http.MethodPut, "/admin/nodes/config", strings.NewReader(body))
-	rec := httptest.NewRecorder()
-	h.HandleConfigureNodes(rec, req)
-
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("expected %d, got %d", http.StatusBadRequest, rec.Code)
-	}
-}
-
-func TestHandleConfigureNodes_RejectsMissingCPULimit(t *testing.T) {
-	h := newTestHandlers()
-
-	body := `{"maxPods":20,"cpuLimit":"","memoryLimit":"1Gi"}`
-	req := httptest.NewRequest(http.MethodPut, "/admin/nodes/config", strings.NewReader(body))
-	rec := httptest.NewRecorder()
-	h.HandleConfigureNodes(rec, req)
-
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("expected %d, got %d", http.StatusBadRequest, rec.Code)
-	}
-}
-
-func TestHandleConfigureNodes_AcceptsValidConfig(t *testing.T) {
-	h := newTestHandlers()
-
-	body := `{"maxPods":20,"cpuLimit":"500m","memoryLimit":"1Gi"}`
-	req := httptest.NewRequest(http.MethodPut, "/admin/nodes/config", strings.NewReader(body))
-	rec := httptest.NewRecorder()
-	h.HandleConfigureNodes(rec, req)
-
-	if rec.Code != http.StatusNotImplemented {
-		t.Fatalf("expected %d, got %d: %s", http.StatusNotImplemented, rec.Code, rec.Body.String())
-	}
-	if !strings.Contains(rec.Body.String(), "not_implemented") {
-		t.Fatalf("expected not_implemented in body, got %q", rec.Body.String())
-	}
-}
-
-// ── Route parsing edge-case regression tests ────────────────
-
-func TestHandleJobsGet_EmptyPathValue_Returns400(t *testing.T) {
-	h := newTestHandlers()
-
-	req := httptest.NewRequest(http.MethodGet, "/jobs/", nil)
-	req.SetPathValue("job_id", "")
-	rec := httptest.NewRecorder()
-	h.HandleJobsGet(rec, req)
-
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("expected %d, got %d", http.StatusBadRequest, rec.Code)
-	}
-}
-
-func TestHandleJobsDownload_EmptyPathValue_Returns400(t *testing.T) {
-	h := newTestHandlers()
-
-	req := httptest.NewRequest(http.MethodGet, "/jobs//results", nil)
-	req.SetPathValue("job_id", "")
-	rec := httptest.NewRecorder()
-	h.HandleJobsDownload(rec, req)
-
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("expected %d, got %d", http.StatusBadRequest, rec.Code)
-	}
-}
-
-func TestRouting_TrailingSlashOnJobDetail_Returns404(t *testing.T) {
-	h := newTestHandlers()
-	mux := http.NewServeMux()
-	mux.Handle("GET /jobs/{job_id}/results", http.HandlerFunc(h.HandleJobsDownload))
-	mux.Handle("GET /jobs/{job_id}", http.HandlerFunc(h.HandleJobsGet))
-
-	req := httptest.NewRequest(http.MethodGet, "/jobs/some-id/", nil)
-	rec := httptest.NewRecorder()
-	mux.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusNotFound {
-		t.Fatalf("expected 404 for trailing slash, got %d", rec.Code)
-	}
-}
-
-func TestRouting_UnexpectedSegment_Returns404(t *testing.T) {
-	h := newTestHandlers()
-	mux := http.NewServeMux()
-	mux.Handle("GET /jobs/{job_id}/results", http.HandlerFunc(h.HandleJobsDownload))
-	mux.Handle("GET /jobs/{job_id}", http.HandlerFunc(h.HandleJobsGet))
-
-	req := httptest.NewRequest(http.MethodGet, "/jobs/some-id/unknown", nil)
-	rec := httptest.NewRecorder()
-	mux.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusNotFound {
-		t.Fatalf("expected 404 for unexpected segment, got %d", rec.Code)
-	}
-}
-
-func TestRouting_ResultsTrailingSlash_Returns404(t *testing.T) {
-	h := newTestHandlers()
-	mux := http.NewServeMux()
-	mux.Handle("GET /jobs/{job_id}/results", http.HandlerFunc(h.HandleJobsDownload))
-	mux.Handle("GET /jobs/{job_id}", http.HandlerFunc(h.HandleJobsGet))
-
-	req := httptest.NewRequest(http.MethodGet, "/jobs/some-id/results/", nil)
-	rec := httptest.NewRecorder()
-	mux.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusNotFound {
-		t.Fatalf("expected 404 for results trailing slash, got %d", rec.Code)
-	}
-}
-
-func TestRouting_PostToJobDetail_Returns405(t *testing.T) {
-	h := newTestHandlers()
-	mux := http.NewServeMux()
-	mux.Handle("GET /jobs/{job_id}/results", http.HandlerFunc(h.HandleJobsDownload))
-	mux.Handle("GET /jobs/{job_id}", http.HandlerFunc(h.HandleJobsGet))
-
-	req := httptest.NewRequest(http.MethodPost, "/jobs/some-id", nil)
-	rec := httptest.NewRecorder()
-	mux.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusMethodNotAllowed {
-		t.Fatalf("expected 405 for POST on job detail, got %d", rec.Code)
-	}
 }

@@ -12,6 +12,8 @@ type Config struct {
 	Issuer          string
 	Audience        string
 	ServerAddr      string
+	AdminUsername   string
+	AdminPassword   string
 }
 
 func Load() (*Config, error) {
@@ -28,9 +30,9 @@ func Load() (*Config, error) {
 		Issuer:          getEnv("KEYCLOAK_ISSUER", keycloakBaseURL+"/realms/"+realm),
 		Audience:        audience,
 		ServerAddr:      getEnv("SERVER_ADDR", ":8081"),
-		AdminUsername:   adminUsername,
-		AdminPassword:   adminPassword,
-	}, nil
+		AdminUsername:   getEnv("KEYCLOAK_ADMIN_USERNAME", "admin"),
+		AdminPassword:   getEnv("KEYCLOAK_ADMIN_PASSWORD", "admin"),
+	}
 }
 
 func getEnv(key string, fallback string) string {

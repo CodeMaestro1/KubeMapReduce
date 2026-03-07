@@ -1,21 +1,26 @@
 package api
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"net/http"
+	"time"
 
 	"kubemapreduce/internal/models"
 	"kubemapreduce/internal/validation"
+	"kubemapreduce/pkg/auth"
 	"kubemapreduce/pkg/httputil"
 )
 
-type Handlers struct{}
+type Handlers struct {
+	adminClient *auth.KeycloakAdminClient
+}
 
-func NewHandlers() *Handlers {
-	return &Handlers{}
+func NewHandlers(adminClient *auth.KeycloakAdminClient) *Handlers {
+	return &Handlers{adminClient: adminClient}
 }
 
 func (h *Handlers) HandleRoot(w http.ResponseWriter, r *http.Request) {
@@ -145,74 +150,11 @@ func generateJobID() (string, error) {
 	return "job-" + hex.EncodeToString(raw), nil
 }
 
-func (h *Handlers) cleanupJobsStore() {
-	h.jobsMu.Lock()
-	defer h.jobsMu.Unlock()
-
-	now := h.now().UTC()
-	h.jobs.Range(func(k, v any) bool {
-		jobID, ok := k.(string)
-		if !ok {
-			return true
-		}
-		status, ok := v.(models.JobStatusResponse)
-		if !ok {
-			h.jobs.Delete(jobID)
-			return true
-		}
-		if now.Sub(status.CreatedAt) > h.jobStatusTTL {
-			h.jobs.Delete(jobID)
-		}
-		return true
-	})
-
-	if h.maxStoredJobs <= 0 {
-		return
-	}
-
-	type jobRecord struct {
-		jobID   string
-		created time.Time
-	}
-
-	records := make([]jobRecord, 0)
-	h.jobs.Range(func(k, v any) bool {
-		jobID, ok := k.(string)
-		if !ok {
-			return true
-		}
-		status, ok := v.(models.JobStatusResponse)
-		if !ok {
-			h.jobs.Delete(jobID)
-			return true
-		}
-		records = append(records, jobRecord{jobID: jobID, created: status.CreatedAt})
-		return true
-	})
-
-	if len(records) <= h.maxStoredJobs {
-		return
-	}
-
-	sort.Slice(records, func(i, j int) bool {
-		return records[i].created.Before(records[j].created)
-	})
-
-	for _, record := range records[:len(records)-h.maxStoredJobs] {
-		h.jobs.Delete(record.jobID)
-	}
-}
-
 // ── Admin user management ──────────────────────────────────
 
 func (h *Handlers) HandleAdminCreateUser(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
-	if h.adminClient == nil {
-		http.Error(w, "authentication admin client not configured", http.StatusServiceUnavailable)
 		return
 	}
 
@@ -222,12 +164,15 @@ func (h *Handlers) HandleAdminCreateUser(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	if err := validation.ValidateCreateUserRequest(req); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+	if req.Username == "" || req.Password == "" || req.Role == "" {
+		http.Error(w, "username, password and role are required", http.StatusBadRequest)
 		return
 	}
 
-	normalizedRole := validation.NormalizeRole(req.Role)
+	if req.Role != "ADMIN" && req.Role != "USER" {
+		http.Error(w, "role must be ADMIN or USER", http.StatusBadRequest)
+		return
+	}
 
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
@@ -236,10 +181,10 @@ func (h *Handlers) HandleAdminCreateUser(w http.ResponseWriter, r *http.Request)
 		Username: req.Username,
 		Email:    req.Email,
 		Password: req.Password,
-		Role:     normalizedRole,
+		Role:     req.Role,
 	}); err != nil {
-		if isAuthDependencyError(err) {
-			http.Error(w, "authentication service unavailable", http.StatusServiceUnavailable)
+		if auth.IsServiceUnavailable(err) {
+			http.Error(w, "authentication service unavailable", http.StatusBadGateway)
 			return
 		}
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -249,7 +194,7 @@ func (h *Handlers) HandleAdminCreateUser(w http.ResponseWriter, r *http.Request)
 	if err := httputil.WriteJSON(w, http.StatusCreated, map[string]string{
 		"status":   "created",
 		"username": req.Username,
-		"role":     normalizedRole,
+		"role":     req.Role,
 	}); err != nil {
 		return
 	}
@@ -261,13 +206,13 @@ func (h *Handlers) HandleAdminDeleteUser(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	if h.adminClient == nil {
-		http.Error(w, "authentication admin client not configured", http.StatusServiceUnavailable)
+	var req models.DeleteUserRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid request payload", http.StatusBadRequest)
 		return
 	}
 
-	username := strings.TrimSpace(r.PathValue("username"))
-	if username == "" {
+	if req.Username == "" {
 		http.Error(w, "username is required", http.StatusBadRequest)
 		return
 	}
@@ -275,22 +220,19 @@ func (h *Handlers) HandleAdminDeleteUser(w http.ResponseWriter, r *http.Request)
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
 
-	if err := h.adminClient.DeleteUserByUsername(ctx, username); err != nil {
-		if isAuthDependencyError(err) {
-			http.Error(w, "authentication service unavailable", http.StatusServiceUnavailable)
+	if err := h.adminClient.DeleteUserByUsername(ctx, req.Username); err != nil {
+		if auth.IsServiceUnavailable(err) {
+			http.Error(w, "authentication service unavailable", http.StatusBadGateway)
 			return
 		}
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
-	w.WriteHeader(http.StatusNoContent)
-}
-
-// isAuthDependencyError reports whether the error indicates the authentication
-// service could not be reached or timed out.
-func isAuthDependencyError(err error) bool {
-	return auth.IsServiceUnavailable(err) ||
-		errors.Is(err, context.DeadlineExceeded) ||
-		errors.Is(err, context.Canceled)
+	if err := httputil.WriteJSON(w, http.StatusOK, map[string]string{
+		"status":   "deleted",
+		"username": req.Username,
+	}); err != nil {
+		return
+	}
 }
