@@ -10,19 +10,12 @@ func TestLoad_Defaults(t *testing.T) {
 	envVars := []string{
 		"KEYCLOAK_BASE_URL", "KEYCLOAK_REALM", "KEYCLOAK_AUDIENCE",
 		"KEYCLOAK_JWKS_URL", "KEYCLOAK_ISSUER", "SERVER_ADDR",
-		"KEYCLOAK_ADMIN_USERNAME", "KEYCLOAK_ADMIN_PASSWORD",
 	}
 	for _, key := range envVars {
 		t.Setenv(key, "")
 	}
 
-	t.Setenv("KEYCLOAK_ADMIN_USERNAME", "admin")
-	t.Setenv("KEYCLOAK_ADMIN_PASSWORD", "admin")
-
-	cfg, err := Load()
-	if err != nil {
-		t.Fatalf("Load() returned error: %v", err)
-	}
+	cfg := Load()
 
 	if cfg.KeycloakBaseURL != "http://localhost:8080" {
 		t.Errorf("KeycloakBaseURL = %q, want %q", cfg.KeycloakBaseURL, "http://localhost:8080")
@@ -35,12 +28,6 @@ func TestLoad_Defaults(t *testing.T) {
 	}
 	if cfg.ServerAddr != ":8081" {
 		t.Errorf("ServerAddr = %q, want %q", cfg.ServerAddr, ":8081")
-	}
-	if cfg.AdminUsername != "admin" {
-		t.Errorf("AdminUsername = %q, want %q", cfg.AdminUsername, "admin")
-	}
-	if cfg.AdminPassword != "admin" {
-		t.Errorf("AdminPassword = %q, want %q", cfg.AdminPassword, "admin")
 	}
 
 	expectedJWKS := "http://localhost:8080/realms/mapreduce/protocol/openid-connect/certs"
@@ -61,13 +48,8 @@ func TestLoad_CustomEnvVars(t *testing.T) {
 	t.Setenv("KEYCLOAK_JWKS_URL", "http://kc:9090/jwks")
 	t.Setenv("KEYCLOAK_ISSUER", "http://kc:9090/issuer")
 	t.Setenv("SERVER_ADDR", ":9999")
-	t.Setenv("KEYCLOAK_ADMIN_USERNAME", "u")
-	t.Setenv("KEYCLOAK_ADMIN_PASSWORD", "p")
 
-	cfg, err := Load()
-	if err != nil {
-		t.Fatalf("Load() returned error: %v", err)
-	}
+	cfg := Load()
 
 	if cfg.KeycloakBaseURL != "http://kc:9090" {
 		t.Errorf("KeycloakBaseURL = %q, want %q", cfg.KeycloakBaseURL, "http://kc:9090")
@@ -87,25 +69,13 @@ func TestLoad_CustomEnvVars(t *testing.T) {
 	if cfg.ServerAddr != ":9999" {
 		t.Errorf("ServerAddr = %q, want %q", cfg.ServerAddr, ":9999")
 	}
-	if cfg.AdminUsername != "u" {
-		t.Errorf("AdminUsername = %q, want %q", cfg.AdminUsername, "u")
-	}
-	if cfg.AdminPassword != "p" {
-		t.Errorf("AdminPassword = %q, want %q", cfg.AdminPassword, "p")
-	}
 }
 
 func TestLoad_WhitespaceEnvTreatedAsEmpty(t *testing.T) {
 	t.Setenv("KEYCLOAK_BASE_URL", "   ")
 	t.Setenv("KEYCLOAK_REALM", "  ")
 
-	t.Setenv("KEYCLOAK_ADMIN_USERNAME", "admin")
-	t.Setenv("KEYCLOAK_ADMIN_PASSWORD", "admin")
-
-	cfg, err := Load()
-	if err != nil {
-		t.Fatalf("Load() returned error: %v", err)
-	}
+	cfg := Load()
 
 	// Whitespace-only values should fall back to defaults.
 	if cfg.KeycloakBaseURL != "http://localhost:8080" {
@@ -123,13 +93,7 @@ func TestLoad_JWKSAndIssuerDeriveFromBaseAndRealm(t *testing.T) {
 	os.Unsetenv("KEYCLOAK_JWKS_URL")
 	os.Unsetenv("KEYCLOAK_ISSUER")
 
-	t.Setenv("KEYCLOAK_ADMIN_USERNAME", "admin")
-	t.Setenv("KEYCLOAK_ADMIN_PASSWORD", "admin")
-
-	cfg, err := Load()
-	if err != nil {
-		t.Fatalf("Load() returned error: %v", err)
-	}
+	cfg := Load()
 
 	expectedJWKS := "http://myhost:1234/realms/myrealm/protocol/openid-connect/certs"
 	if cfg.JWKSURL != expectedJWKS {
@@ -139,50 +103,5 @@ func TestLoad_JWKSAndIssuerDeriveFromBaseAndRealm(t *testing.T) {
 	expectedIssuer := "http://myhost:1234/realms/myrealm"
 	if cfg.Issuer != expectedIssuer {
 		t.Errorf("Issuer = %q, want %q", cfg.Issuer, expectedIssuer)
-	}
-}
-
-func TestLoad_MissingAdminUsernameFails(t *testing.T) {
-	t.Setenv("KEYCLOAK_ADMIN_USERNAME", "")
-	t.Setenv("KEYCLOAK_ADMIN_PASSWORD", "secret")
-
-	cfg, err := Load()
-	if err != nil {
-		t.Fatalf("Load() returned error: %v", err)
-	}
-	if cfg.AdminUsername != "" {
-		t.Fatalf("expected empty AdminUsername when KEYCLOAK_ADMIN_USERNAME is missing, got %q", cfg.AdminUsername)
-	}
-	if cfg.AdminPassword != "secret" {
-		t.Fatalf("expected AdminPassword to remain set, got %q", cfg.AdminPassword)
-	}
-}
-
-func TestLoad_MissingAdminPasswordFails(t *testing.T) {
-	t.Setenv("KEYCLOAK_ADMIN_USERNAME", "admin")
-	t.Setenv("KEYCLOAK_ADMIN_PASSWORD", "")
-
-	cfg, err := Load()
-	if err != nil {
-		t.Fatalf("Load() returned error: %v", err)
-	}
-	if cfg.AdminUsername != "admin" {
-		t.Fatalf("expected AdminUsername to remain set, got %q", cfg.AdminUsername)
-	}
-	if cfg.AdminPassword != "" {
-		t.Fatalf("expected empty AdminPassword when KEYCLOAK_ADMIN_PASSWORD is missing, got %q", cfg.AdminPassword)
-	}
-}
-
-func TestLoad_MissingBothAdminCredentialsDoesNotFail(t *testing.T) {
-	t.Setenv("KEYCLOAK_ADMIN_USERNAME", "")
-	t.Setenv("KEYCLOAK_ADMIN_PASSWORD", "")
-
-	cfg, err := Load()
-	if err != nil {
-		t.Fatalf("Load() returned error: %v", err)
-	}
-	if cfg.AdminUsername != "" || cfg.AdminPassword != "" {
-		t.Fatalf("expected empty admin credentials, got username=%q password=%q", cfg.AdminUsername, cfg.AdminPassword)
 	}
 }

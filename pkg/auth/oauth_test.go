@@ -1,14 +1,10 @@
 package auth
 
 import (
-	"context"
 	"encoding/json"
-	"errors"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"testing"
-	"time"
 )
 
 func TestRequestTokens_Success(t *testing.T) {
@@ -93,26 +89,6 @@ func TestRequestTokens_ConnectionError(t *testing.T) {
 	}
 }
 
-func TestRequestTokensWithContext_CanceledContext(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		time.Sleep(200 * time.Millisecond)
-		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(`{"access_token":"tok"}`))
-	}))
-	defer server.Close()
-
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-
-	_, err := RequestTokensWithContext(ctx, nil, server.URL, "testrealm", "my-client", "alice", "pw")
-	if err == nil {
-		t.Fatal("expected cancellation error, got nil")
-	}
-	if !errors.Is(err, context.Canceled) && !strings.Contains(err.Error(), context.Canceled.Error()) {
-		t.Fatalf("expected context cancellation error, got %v", err)
-	}
-}
-
 func TestRefreshTokens_Success(t *testing.T) {
 	expected := OAuthTokenResponse{
 		AccessToken:  "new-access",
@@ -167,26 +143,6 @@ func TestRefreshTokens_ConnectionError(t *testing.T) {
 	_, err := RefreshTokens("http://127.0.0.1:1", "testrealm", "my-client", "tok")
 	if err == nil {
 		t.Fatal("expected error for unreachable server, got nil")
-	}
-}
-
-func TestRefreshTokensWithContext_DeadlineExceeded(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		time.Sleep(200 * time.Millisecond)
-		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(`{"access_token":"tok"}`))
-	}))
-	defer server.Close()
-
-	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Millisecond)
-	defer cancel()
-
-	_, err := RefreshTokensWithContext(ctx, nil, server.URL, "testrealm", "my-client", "tok")
-	if err == nil {
-		t.Fatal("expected timeout error, got nil")
-	}
-	if !errors.Is(err, context.DeadlineExceeded) && !strings.Contains(err.Error(), context.DeadlineExceeded.Error()) {
-		t.Fatalf("expected deadline exceeded error, got %v", err)
 	}
 }
 
