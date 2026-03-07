@@ -153,9 +153,6 @@ func (b *keycloakBootstrapper) bootstrap(ctx context.Context) error {
 	if err := b.ensureClient(ctx); err != nil {
 		return err
 	}
-	if err := b.ensureAudienceMapper(ctx); err != nil {
-		return err
-	}
 	if err := b.ensureRole(ctx, "USER"); err != nil {
 		return err
 	}
@@ -329,88 +326,6 @@ func (b *keycloakBootstrapper) ensureClient(ctx context.Context) error {
 	}
 
 	b.logf("ensured client redirects/web-origins for %q", b.clientID)
-	return nil
-}
-
-func (b *keycloakBootstrapper) ensureAudienceMapper(ctx context.Context) error {
-	clientUUID, err := b.findClientUUID(ctx)
-	if err != nil {
-		return err
-	}
-	if clientUUID == "" {
-		return fmt.Errorf("cannot add audience mapper: client %q not found", b.clientID)
-	}
-
-	// Check if the audience mapper already exists.
-	mappersPath := "/admin/realms/" + b.realm + "/clients/" + clientUUID + "/protocol-mappers/models"
-	status, body, err := b.callJSON(ctx, http.MethodGet, mappersPath, nil)
-	if err != nil {
-		return err
-	}
-	if err := ensureCallStatus(status, body, http.StatusOK, "list protocol mappers"); err != nil {
-		return err
-	}
-
-	var mappers []map[string]any
-	if err := json.Unmarshal(body, &mappers); err != nil {
-		return err
-	}
-
-	mapperName := b.clientID + "-audience"
-
-	// Desired mapper config.
-	mapperConfig := map[string]string{
-		"included.custom.audience": b.clientID,
-		"id.token.claim":           "false",
-		"access.token.claim":       "true",
-	}
-
-	// Check if it already exists; if so, update it in place.
-	for _, m := range mappers {
-		if name, _ := m["name"].(string); name == mapperName {
-			mapperID, _ := m["id"].(string)
-			if mapperID == "" {
-				b.logf("audience mapper %q exists but has no id — recreating", mapperName)
-				break
-			}
-
-			// Update existing mapper to ensure config is correct.
-			updated := map[string]any{
-				"id":             mapperID,
-				"name":           mapperName,
-				"protocol":       "openid-connect",
-				"protocolMapper": "oidc-audience-mapper",
-				"config":         mapperConfig,
-			}
-			putStatus, putBody, putErr := b.callJSON(ctx, http.MethodPut, mappersPath+"/"+mapperID, updated)
-			if putErr != nil {
-				return putErr
-			}
-			if err := ensureCallStatus(putStatus, putBody, http.StatusNoContent, "update audience mapper"); err != nil {
-				return err
-			}
-			b.logf("updated audience mapper %q for client %q", mapperName, b.clientID)
-			return nil
-		}
-	}
-
-	// Create an audience mapper so the access token includes our client ID in the "aud" claim.
-	mapper := map[string]any{
-		"name":           mapperName,
-		"protocol":       "openid-connect",
-		"protocolMapper": "oidc-audience-mapper",
-		"config":         mapperConfig,
-	}
-
-	createStatus, createBody, err := b.callJSON(ctx, http.MethodPost, mappersPath, mapper)
-	if err != nil {
-		return err
-	}
-	if err := ensureCallStatus(createStatus, createBody, http.StatusCreated, "create audience mapper"); err != nil {
-		return err
-	}
-
-	b.logf("created audience mapper %q for client %q", mapperName, b.clientID)
 	return nil
 }
 

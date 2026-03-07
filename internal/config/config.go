@@ -11,6 +11,8 @@ type Config struct {
 	JWKSURL         string
 	Issuer          string
 	Audience        string
+	AdminUsername   string
+	AdminPassword   string
 	ServerAddr      string
 }
 
@@ -25,6 +27,8 @@ func Load() *Config {
 		JWKSURL:         getEnv("KEYCLOAK_JWKS_URL", keycloakBaseURL+"/realms/"+realm+"/protocol/openid-connect/certs"),
 		Issuer:          getEnv("KEYCLOAK_ISSUER", keycloakBaseURL+"/realms/"+realm),
 		Audience:        audience,
+		AdminUsername:   strings.TrimSpace(os.Getenv("KEYCLOAK_ADMIN_USERNAME")),
+		AdminPassword:   strings.TrimSpace(os.Getenv("KEYCLOAK_ADMIN_PASSWORD")),
 		ServerAddr:      getEnv("SERVER_ADDR", ":8081"),
 	}
 }
