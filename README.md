@@ -1,6 +1,6 @@
 # KubeMapReduce
 
-Go API with Keycloak authentication, role-based authorization, and a dedicated CLI for authentication and job submission.
+Go API with Keycloak authentication, role-based authorization, and a dedicated CLI for authentication, job submission, and user management.
 
 ## Prerequisites
 
@@ -51,14 +51,26 @@ Go API with Keycloak authentication, role-based authorization, and a dedicated C
 
 ## Authentication and Roles
 
-The CLI authenticates with Keycloak using **email/password** and stores a
-dual-token pair (short-lived access token + longer-lived refresh token) in a
-local credentials file. Tokens are refreshed automatically when they expire.
+The CLI authenticates with Keycloak using **username/password** (Resource Owner
+Password Credentials grant) and stores a dual-token pair (short-lived access
+token + longer-lived refresh token) in a local credentials file. Tokens are
+refreshed automatically when they expire.
 
-- Self-registration creates regular realm users.
 - API role rules:
   - `/jobs`: `USER` or `ADMIN`
   - `/admin/*`: `ADMIN` only
+
+### Architecture
+
+All admin user management flows through the API server:
+
+```
+Admin ──▶ CLI ──▶ API Server (POST/DELETE /admin/users) ──▶ Keycloak
+```
+
+The API server holds the Keycloak admin credentials and proxies create/delete
+requests. The CLI never talks directly to Keycloak for user management — it
+only needs a valid JWT with the `ADMIN` role.
 
 ## CLI Usage
 
@@ -98,8 +110,8 @@ go run ./cmd/cli jobs submit job.json
 
 ### Admin Commands
 
-User management commands talk directly to Keycloak (no API server needed).
-The `--admin-username` / `--admin-password` flags default to `admin`/`admin`.
+Admin commands require the `ADMIN` role. User management routes through the
+API server, which proxies to Keycloak:
 
 ```bash
 # Create a user (prompts for the new user's password)
@@ -108,9 +120,13 @@ go run ./cmd/cli admin create-user --username bob --email bob@example.com --prom
 # Delete a user
 go run ./cmd/cli admin delete-user --username bob
 
-# Worker config goes through the API (requires ADMIN JWT)
+# Update worker configuration
 go run ./cmd/cli admin worker-config --replicas 4 --max-jobs 8
 ```
+
+All three commands check the local token for the `ADMIN` role before making
+the request. The API server re-validates the JWT and enforces the role
+server-side as well.
 
 ### Who Am I
 
@@ -161,6 +177,9 @@ Environment variables used by the API server (defaults shown):
 - `KEYCLOAK_JWKS_URL` (`http://localhost:8080/realms/mapreduce/protocol/openid-connect/certs`)
 - `KEYCLOAK_ISSUER` (`http://localhost:8080/realms/mapreduce`)
 - `KEYCLOAK_AUDIENCE` (`mapreduce-api`)
+- `KEYCLOAK_ADMIN_USERNAME` (`admin`) — Keycloak admin user for proxied user management
+- `KEYCLOAK_ADMIN_PASSWORD` (`admin`) — Keycloak admin password
+- `SERVER_ADDR` (`:8081`)
 
 Environment variables used by the CLI:
 
@@ -193,10 +212,14 @@ again.
 
 ## API Endpoints
 
-- `GET /` - API info (JSON)
-- `GET /health` - liveness
-- `POST /jobs` - submit job spec (`USER` or `ADMIN`)
-- `PUT /admin/workers/config` - update worker config (`ADMIN`)
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| `GET` | `/` | None | API info (JSON) |
+| `GET` | `/health` | None | Liveness check |
+| `POST` | `/jobs` | `USER` or `ADMIN` | Submit a MapReduce job spec |
+| `PUT` | `/admin/workers/config` | `ADMIN` | Update worker configuration |
+| `POST` | `/admin/users` | `ADMIN` | Create a user in Keycloak |
+| `DELETE` | `/admin/users` | `ADMIN` | Delete a user from Keycloak |
 
 All protected endpoints require a Bearer token from Keycloak.
 
