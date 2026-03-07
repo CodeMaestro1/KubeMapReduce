@@ -68,11 +68,13 @@ kubemapreduce <command> [flags]
 Commands:
   login                  Authenticate with Keycloak and store tokens
   logout                 Clear stored authentication tokens
+  whoami                 Show the currently logged-in user
   health                 Check API server health
   jobs submit <file>     Submit a MapReduce job specification (use "-" for stdin)
   admin create-user      Create a user in Keycloak (ADMIN)
   admin delete-user      Delete a user from Keycloak (ADMIN)
   admin worker-config    Update worker configuration (ADMIN)
+  token inspect          Show raw JWT claims for the stored access token
   help                   Show this help message
 ```
 
@@ -108,6 +110,24 @@ go run ./cmd/cli admin delete-user --username bob
 
 # Worker config goes through the API (requires ADMIN JWT)
 go run ./cmd/cli admin worker-config --replicas 4 --max-jobs 8
+```
+
+### Who Am I
+
+```bash
+go run ./cmd/cli whoami
+# Username: platform-admin
+# Email:    platform-admin@example.com
+# Subject:  a1b2c3d4-...
+# Roles:    ADMIN, default-roles-mapreduce
+```
+
+### Token Inspect
+
+Dump the full raw JWT claims (useful for debugging):
+
+```bash
+go run ./cmd/cli token inspect
 ```
 
 ## Initial Setup

@@ -54,6 +54,8 @@ func main() {
 		default:
 			log.Fatalf("unknown admin subcommand: %s", os.Args[2])
 		}
+	case "whoami":
+		cmdWhoAmI()
 	case "token":
 		if len(os.Args) >= 3 && os.Args[2] == "inspect" {
 			cmdTokenInspect()
@@ -78,9 +80,11 @@ Commands:
   logout                 Clear stored authentication tokens
   health                 Check API server health
   jobs submit <file>     Submit a MapReduce job specification (use "-" for stdin)
+  whoami                 Show the currently logged-in user
   admin create-user      Create a user in Keycloak (ADMIN)
   admin delete-user      Delete a user from Keycloak (ADMIN)
   admin worker-config    Update worker configuration (ADMIN)
+  token inspect          Show raw JWT claims for the stored access token
   help                   Show this help message
 
 Environment Variables:
@@ -164,21 +168,54 @@ func cmdLogout() {
 
 // ── token inspect ──────────────────────────────────────────
 
-func cmdTokenInspect() {
+func cmdWhoAmI() {
 	tokens, err := auth.LoadTokens()
 	if err != nil {
-		log.Fatalf("%v", err)
+		log.Fatal("not logged in — run 'kubemapreduce login' first")
 	}
 
-	// Decode the JWT payload (second segment) without verification.
-	parts := strings.Split(tokens.AccessToken, ".")
+	claims, err := decodeTokenClaims(tokens.AccessToken)
+	if err != nil {
+		log.Fatalf("failed to read token: %v", err)
+	}
+
+	username, _ := claims["preferred_username"].(string)
+	email, _ := claims["email"].(string)
+	sub, _ := claims["sub"].(string)
+
+	var roles []string
+	if ra, ok := claims["realm_access"].(map[string]any); ok {
+		if r, ok := ra["roles"].([]any); ok {
+			for _, v := range r {
+				if s, ok := v.(string); ok {
+					roles = append(roles, s)
+				}
+			}
+		}
+	}
+
+	fmt.Printf("Username: %s\n", username)
+	if email != "" {
+		fmt.Printf("Email:    %s\n", email)
+	}
+	fmt.Printf("Subject:  %s\n", sub)
+	if len(roles) > 0 {
+		fmt.Printf("Roles:    %s\n", strings.Join(roles, ", "))
+	}
+
+	if tokens.IsAccessExpired() {
+		fmt.Println("\nAccess token is expired — it will be refreshed on the next API call.")
+	}
+}
+
+// decodeTokenClaims decodes the JWT payload without verification.
+func decodeTokenClaims(token string) (map[string]any, error) {
+	parts := strings.Split(token, ".")
 	if len(parts) != 3 {
-		log.Fatal("stored access token is not a valid JWT")
+		return nil, fmt.Errorf("not a valid JWT")
 	}
 
-	// JWT uses base64url without padding.
 	payload := parts[1]
-	// Add padding if needed.
 	switch len(payload) % 4 {
 	case 2:
 		payload += "=="
@@ -188,12 +225,25 @@ func cmdTokenInspect() {
 
 	decoded, err := base64.URLEncoding.DecodeString(payload)
 	if err != nil {
-		log.Fatalf("failed to decode token payload: %v", err)
+		return nil, err
 	}
 
 	var claims map[string]any
 	if err := json.Unmarshal(decoded, &claims); err != nil {
-		log.Fatalf("failed to parse token claims: %v", err)
+		return nil, err
+	}
+	return claims, nil
+}
+
+func cmdTokenInspect() {
+	tokens, err := auth.LoadTokens()
+	if err != nil {
+		log.Fatalf("%v", err)
+	}
+
+	claims, err := decodeTokenClaims(tokens.AccessToken)
+	if err != nil {
+		log.Fatalf("failed to decode token: %v", err)
 	}
 
 	formatted, _ := json.MarshalIndent(claims, "", "  ")
