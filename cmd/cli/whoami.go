@@ -13,13 +13,30 @@ import (
 // ── whoami ─────────────────────────────────────────────────
 
 func cmdWhoAmI() {
-	tokens, claims := loadTokensAndClaims("not logged in — run 'kubemapreduce login' first", "failed to read token")
+	tokens, err := auth.LoadTokens()
+	if err != nil {
+		log.Fatal("not logged in — run 'kubemapreduce login' first")
+	}
+
+	claims, err := decodeTokenClaims(tokens.AccessToken)
+	if err != nil {
+		log.Fatalf("failed to read token: %v", err)
+	}
 
 	username, _ := claims["preferred_username"].(string)
 	email, _ := claims["email"].(string)
 	sub, _ := claims["sub"].(string)
 
-	roles := extractRealmRoles(claims)
+	var roles []string
+	if ra, ok := claims["realm_access"].(map[string]any); ok {
+		if r, ok := ra["roles"].([]any); ok {
+			for _, v := range r {
+				if s, ok := v.(string); ok {
+					roles = append(roles, s)
+				}
+			}
+		}
+	}
 
 	fmt.Printf("Username: %s\n", username)
 	if email != "" {
@@ -38,7 +55,15 @@ func cmdWhoAmI() {
 // ── token inspect ──────────────────────────────────────────
 
 func cmdTokenInspect() {
-	tokens, claims := loadTokensAndClaims("not logged in — run 'kubemapreduce login' first", "failed to decode token")
+	tokens, err := auth.LoadTokens()
+	if err != nil {
+		log.Fatalf("%v", err)
+	}
+
+	claims, err := decodeTokenClaims(tokens.AccessToken)
+	if err != nil {
+		log.Fatalf("failed to decode token: %v", err)
+	}
 
 	formatted, _ := json.MarshalIndent(claims, "", "  ")
 	fmt.Println(string(formatted))
@@ -61,20 +86,6 @@ func cmdTokenInspect() {
 }
 
 // ── helpers ────────────────────────────────────────────────
-
-func loadTokensAndClaims(notLoggedInMsg string, decodeErrPrefix string) (*auth.StoredTokens, map[string]any) {
-	tokens, err := auth.LoadTokens()
-	if err != nil {
-		log.Fatal(notLoggedInMsg)
-	}
-
-	claims, err := decodeTokenClaims(tokens.AccessToken)
-	if err != nil {
-		log.Fatalf("%s: %v", decodeErrPrefix, err)
-	}
-
-	return tokens, claims
-}
 
 // decodeTokenClaims decodes the JWT payload without verification.
 func decodeTokenClaims(token string) (map[string]any, error) {
@@ -101,43 +112,4 @@ func decodeTokenClaims(token string) (map[string]any, error) {
 		return nil, err
 	}
 	return claims, nil
-}
-
-func extractRealmRoles(claims map[string]any) []string {
-	var roles []string
-	ra, ok := claims["realm_access"].(map[string]any)
-	if !ok {
-		return roles
-	}
-
-	r, ok := ra["roles"].([]any)
-	if !ok {
-		return roles
-	}
-
-	for _, v := range r {
-		if s, ok := v.(string); ok {
-			roles = append(roles, s)
-		}
-	}
-
-	return roles
-}
-
-func hasRealmRole(claims map[string]any, role string) bool {
-	targetRole := strings.TrimSpace(role)
-	if targetRole == "" {
-		return false
-	}
-
-	for _, r := range extractRealmRoles(claims) {
-		if strings.EqualFold(strings.TrimSpace(r), targetRole) {
-			return true
-		}
-	}
-	return false
-}
-
-func hasAdminRole(claims map[string]any) bool {
-	return hasRealmRole(claims, "ADMIN")
 }
