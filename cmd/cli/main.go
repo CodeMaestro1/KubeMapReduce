@@ -378,10 +378,39 @@ func cmdJobsSubmit(args []string) {
 	printResponse(resp)
 }
 
+// ── admin helpers ──────────────────────────────────────────
+
+// requireAdminRole checks that the logged-in user has the ADMIN realm role.
+func requireAdminRole() {
+	tokens, err := auth.LoadTokens()
+	if err != nil {
+		log.Fatal("not logged in \u2014 run 'kubemapreduce login' first")
+	}
+
+	claims, err := decodeTokenClaims(tokens.AccessToken)
+	if err != nil {
+		log.Fatalf("failed to read token: %v", err)
+	}
+
+	if ra, ok := claims["realm_access"].(map[string]any); ok {
+		if roles, ok := ra["roles"].([]any); ok {
+			for _, r := range roles {
+				if s, ok := r.(string); ok && s == "ADMIN" {
+					return
+				}
+			}
+		}
+	}
+
+	username, _ := claims["preferred_username"].(string)
+	log.Fatalf("permission denied: user %q does not have the ADMIN role", username)
+}
+
 // ── admin create-user ──────────────────────────────────────
 // Talks directly to Keycloak — no API server round-trip needed.
 
 func cmdAdminCreateUser(args []string) {
+	requireAdminRole()
 	fs := flag.NewFlagSet("admin create-user", flag.ExitOnError)
 	username := fs.String("username", "", "Username to create (required)")
 	email := fs.String("email", "", "Email for the new user")
@@ -444,6 +473,7 @@ func cmdAdminCreateUser(args []string) {
 // Talks directly to Keycloak — no API server round-trip needed.
 
 func cmdAdminDeleteUser(args []string) {
+	requireAdminRole()
 	fs := flag.NewFlagSet("admin delete-user", flag.ExitOnError)
 	username := fs.String("username", "", "Username to delete (required)")
 	adminUser := fs.String("admin-username", getEnv("KEYCLOAK_ADMIN_USERNAME", "admin"), "Keycloak admin username")
@@ -474,6 +504,7 @@ func cmdAdminDeleteUser(args []string) {
 // ── admin worker-config ────────────────────────────────────
 
 func cmdAdminWorkerConfig(args []string) {
+	requireAdminRole()
 	fs := flag.NewFlagSet("admin worker-config", flag.ExitOnError)
 	replicas := fs.Int("replicas", 0, "Number of worker replicas (required, > 0)")
 	maxJobs := fs.Int("max-jobs", 0, "Max jobs per node (required, > 0)")
