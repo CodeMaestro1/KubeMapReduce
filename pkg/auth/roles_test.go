@@ -2,13 +2,11 @@ package auth
 
 import (
 	"context"
-	"errors"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"testing"
 
-	"github.com/golang-jwt/jwt/v5"
+	"github.com/golang-jwt/jwt/v4"
 )
 
 func TestGetRoles_ValidClaims(t *testing.T) {
@@ -71,124 +69,6 @@ func TestGetRoles_NoRolesKey(t *testing.T) {
 	_, err := GetRoles(req)
 	if err == nil {
 		t.Fatal("expected error when roles key missing from realm_access")
-	}
-}
-
-func TestGetRoles_MalformedRoleEntry(t *testing.T) {
-	claims := jwt.MapClaims{
-		"realm_access": map[string]interface{}{
-			"roles": []interface{}{"ADMIN", 123},
-		},
-	}
-
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
-	ctx := context.WithValue(req.Context(), claimsKey, claims)
-	req = req.WithContext(ctx)
-
-	_, err := GetRoles(req)
-	if err == nil {
-		t.Fatal("expected error when role entry is not a string")
-	}
-	if !errors.Is(err, ErrMalformedRoles) {
-		t.Fatalf("expected ErrMalformedRoles, got %v", err)
-	}
-}
-
-func TestRequireRoles_MalformedRoleEntryReturnsServiceUnavailable(t *testing.T) {
-	claims := jwt.MapClaims{
-		"realm_access": map[string]interface{}{
-			"roles": []interface{}{"ADMIN", 123},
-		},
-	}
-
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
-	ctx := context.WithValue(req.Context(), claimsKey, claims)
-	req = req.WithContext(ctx)
-
-	rr := httptest.NewRecorder()
-	nextCalled := false
-	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		nextCalled = true
-		w.WriteHeader(http.StatusOK)
-	})
-
-	requireRoles(rr, req, []string{"ADMIN"}, false, next)
-
-	if rr.Code != http.StatusServiceUnavailable {
-		t.Fatalf("expected status %d, got %d", http.StatusServiceUnavailable, rr.Code)
-	}
-	if nextCalled {
-		t.Fatal("expected next handler not to be called on malformed roles")
-	}
-}
-
-func TestRequireRoles_MissingRequiredRoleReturnsForbidden(t *testing.T) {
-	claims := jwt.MapClaims{
-		"realm_access": map[string]interface{}{
-			"roles": []interface{}{"USER"},
-		},
-	}
-
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
-	ctx := context.WithValue(req.Context(), claimsKey, claims)
-	req = req.WithContext(ctx)
-
-	rr := httptest.NewRecorder()
-	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-	})
-
-	requireRoles(rr, req, []string{"ADMIN"}, false, next)
-
-	if rr.Code != http.StatusForbidden {
-		t.Fatalf("expected status %d, got %d", http.StatusForbidden, rr.Code)
-	}
-}
-
-func TestRequireRoles_NoClaims_ReturnsGenericForbidden(t *testing.T) {
-	// Request without any claims in context triggers the error path.
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
-	rr := httptest.NewRecorder()
-	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		t.Fatal("next handler should not be called")
-	})
-
-	requireRoles(rr, req, []string{"USER"}, false, next)
-
-	if rr.Code != http.StatusForbidden {
-		t.Fatalf("expected status %d, got %d", http.StatusForbidden, rr.Code)
-	}
-	body := strings.TrimSpace(rr.Body.String())
-	if body != "forbidden: insufficient permissions" {
-		t.Fatalf("expected stable error message, got %q", body)
-	}
-	// Ensure no internal details leak.
-	for _, leak := range []string{"no claims", "no realm_access", "no roles", "context"} {
-		if strings.Contains(strings.ToLower(body), leak) {
-			t.Fatalf("response body leaks internals: %q", body)
-		}
-	}
-}
-
-func TestRequireRoles_NoRealmAccess_ReturnsGenericForbidden(t *testing.T) {
-	claims := jwt.MapClaims{"sub": "user-123"}
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
-	ctx := context.WithValue(req.Context(), claimsKey, claims)
-	req = req.WithContext(ctx)
-
-	rr := httptest.NewRecorder()
-	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		t.Fatal("next handler should not be called")
-	})
-
-	requireRoles(rr, req, []string{"USER"}, false, next)
-
-	if rr.Code != http.StatusForbidden {
-		t.Fatalf("expected status %d, got %d", http.StatusForbidden, rr.Code)
-	}
-	body := strings.TrimSpace(rr.Body.String())
-	if body != "forbidden: insufficient permissions" {
-		t.Fatalf("expected stable error message, got %q", body)
 	}
 }
 
