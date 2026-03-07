@@ -23,7 +23,14 @@ func main() {
 			cfg.JWKSURL, cfg.Issuer, cfg.Audience, err)
 	}
 
-	handlers := api.NewHandlers()
+	adminClient := auth.NewKeycloakAdminClient(
+		cfg.KeycloakBaseURL,
+		cfg.Realm,
+		cfg.AdminUsername,
+		cfg.AdminPassword,
+	)
+
+	handlers := api.NewHandlers(adminClient)
 
 	mux := http.NewServeMux()
 	api.RegisterRoutes(mux, handlers, validator)
