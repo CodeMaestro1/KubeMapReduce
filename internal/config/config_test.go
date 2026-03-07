@@ -10,6 +10,7 @@ func TestLoad_Defaults(t *testing.T) {
 	envVars := []string{
 		"KEYCLOAK_BASE_URL", "KEYCLOAK_REALM", "KEYCLOAK_AUDIENCE",
 		"KEYCLOAK_JWKS_URL", "KEYCLOAK_ISSUER", "SERVER_ADDR",
+		"KEYCLOAK_ADMIN_USERNAME", "KEYCLOAK_ADMIN_PASSWORD",
 	}
 	for _, key := range envVars {
 		t.Setenv(key, "")
@@ -28,6 +29,12 @@ func TestLoad_Defaults(t *testing.T) {
 	}
 	if cfg.ServerAddr != ":8081" {
 		t.Errorf("ServerAddr = %q, want %q", cfg.ServerAddr, ":8081")
+	}
+	if cfg.AdminUsername != "admin" {
+		t.Errorf("AdminUsername = %q, want %q", cfg.AdminUsername, "admin")
+	}
+	if cfg.AdminPassword != "admin" {
+		t.Errorf("AdminPassword = %q, want %q", cfg.AdminPassword, "admin")
 	}
 
 	expectedJWKS := "http://localhost:8080/realms/mapreduce/protocol/openid-connect/certs"
@@ -48,6 +55,8 @@ func TestLoad_CustomEnvVars(t *testing.T) {
 	t.Setenv("KEYCLOAK_JWKS_URL", "http://kc:9090/jwks")
 	t.Setenv("KEYCLOAK_ISSUER", "http://kc:9090/issuer")
 	t.Setenv("SERVER_ADDR", ":9999")
+	t.Setenv("KEYCLOAK_ADMIN_USERNAME", "myadmin")
+	t.Setenv("KEYCLOAK_ADMIN_PASSWORD", "secret123")
 
 	cfg := Load()
 
@@ -68,6 +77,12 @@ func TestLoad_CustomEnvVars(t *testing.T) {
 	}
 	if cfg.ServerAddr != ":9999" {
 		t.Errorf("ServerAddr = %q, want %q", cfg.ServerAddr, ":9999")
+	}
+	if cfg.AdminUsername != "myadmin" {
+		t.Errorf("AdminUsername = %q, want %q", cfg.AdminUsername, "myadmin")
+	}
+	if cfg.AdminPassword != "secret123" {
+		t.Errorf("AdminPassword = %q, want %q", cfg.AdminPassword, "secret123")
 	}
 }
 

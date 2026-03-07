@@ -30,3 +30,7 @@ type WorkerConfigRequest struct {
 	WorkerReplicas int `json:"workerReplicas"`
 	MaxJobsPerNode int `json:"maxJobsPerNode"`
 }
+
+type DeleteUserRequest struct {
+	Username string `json:"username"`
+}

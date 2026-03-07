@@ -1,20 +1,25 @@
 package api
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
 	"net/http"
+	"time"
 
 	"kubemapreduce/internal/models"
 	"kubemapreduce/internal/validation"
+	"kubemapreduce/pkg/auth"
 	"kubemapreduce/pkg/httputil"
 )
 
-type Handlers struct{}
+type Handlers struct {
+	adminClient *auth.KeycloakAdminClient
+}
 
-func NewHandlers() *Handlers {
-	return &Handlers{}
+func NewHandlers(adminClient *auth.KeycloakAdminClient) *Handlers {
+	return &Handlers{adminClient: adminClient}
 }
 
 func (h *Handlers) HandleRoot(w http.ResponseWriter, r *http.Request) {
@@ -114,4 +119,91 @@ func generateJobID() (string, error) {
 		return "", err
 	}
 	return "job-" + hex.EncodeToString(raw), nil
+}
+
+// ── Admin user management ──────────────────────────────────
+
+func (h *Handlers) HandleAdminCreateUser(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req models.CreateUserRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid request payload", http.StatusBadRequest)
+		return
+	}
+
+	if req.Username == "" || req.Password == "" || req.Role == "" {
+		http.Error(w, "username, password and role are required", http.StatusBadRequest)
+		return
+	}
+
+	if req.Role != "ADMIN" && req.Role != "USER" {
+		http.Error(w, "role must be ADMIN or USER", http.StatusBadRequest)
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
+
+	if err := h.adminClient.CreateUser(ctx, auth.CreateUserRequest{
+		Username: req.Username,
+		Email:    req.Email,
+		Password: req.Password,
+		Role:     req.Role,
+	}); err != nil {
+		if auth.IsServiceUnavailable(err) {
+			http.Error(w, "authentication service unavailable", http.StatusBadGateway)
+			return
+		}
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	if err := httputil.WriteJSON(w, http.StatusCreated, map[string]string{
+		"status":   "created",
+		"username": req.Username,
+		"role":     req.Role,
+	}); err != nil {
+		return
+	}
+}
+
+func (h *Handlers) HandleAdminDeleteUser(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodDelete {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req models.DeleteUserRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid request payload", http.StatusBadRequest)
+		return
+	}
+
+	if req.Username == "" {
+		http.Error(w, "username is required", http.StatusBadRequest)
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
+
+	if err := h.adminClient.DeleteUserByUsername(ctx, req.Username); err != nil {
+		if auth.IsServiceUnavailable(err) {
+			http.Error(w, "authentication service unavailable", http.StatusBadGateway)
+			return
+		}
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	if err := httputil.WriteJSON(w, http.StatusOK, map[string]string{
+		"status":   "deleted",
+		"username": req.Username,
+	}); err != nil {
+		return
+	}
 }
