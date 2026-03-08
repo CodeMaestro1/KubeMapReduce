@@ -65,7 +65,7 @@ refreshed automatically when they expire.
 All admin user management flows through the API server:
 
 ```
-Admin ──▶ CLI ──▶ API Server (POST/DELETE /admin/users) ──▶ Keycloak
+Admin -> CLI -> API Server (POST/DELETE /admin/users) -> Keycloak
 ```
 
 The API server holds the Keycloak admin credentials and proxies create/delete
