@@ -11,7 +11,13 @@ var (
 	ErrJobCompleted           = errors.New("all tasks completed, job is done")
 	ErrTaskNotFound           = errors.New("task not found")
 	ErrInvalidStateTransition = errors.New("invalid state transition")
+	ErrNilTracker             = errors.New("tracker cannot be nil")
+	ErrDuplicateTaskID        = errors.New("duplicate task ID found")
+	ErrInvalidInitialState    = errors.New("all initial tasks must be Idle")
+	ErrEmptyWorkerID          = errors.New("workerID cannot be empty")
 )
+
+// Scheduler coordinates task assignment and lifecycle for a single MapReduce job.
 
 type Scheduler struct {
 	mu      sync.Mutex
@@ -19,9 +25,12 @@ type Scheduler struct {
 	taskMap map[string]*Task // O(1) lookups by task ID
 }
 
+// NewScheduler initializes a Scheduler with O(1) task index mapping.
+// It will validate that the tracker is not nil, all internal tasks are Idle,
+// and that all task IDs are unique within the MapReduce job graph.
 func NewScheduler(tracker *TaskTracker) (*Scheduler, error) {
 	if tracker == nil {
-		return nil, errors.New("tracker cannot be nil")
+		return nil, ErrNilTracker
 	}
 
 	taskMap := make(map[string]*Task)
@@ -30,10 +39,10 @@ func NewScheduler(tracker *TaskTracker) (*Scheduler, error) {
 	for i := range tracker.MapTasks {
 		task := &tracker.MapTasks[i]
 		if task.State != Idle {
-			return nil, errors.New("all initial tasks must be Idle")
+			return nil, ErrInvalidInitialState
 		}
 		if _, exists := taskMap[task.ID]; exists {
-			return nil, errors.New("duplicate task ID found")
+			return nil, ErrDuplicateTaskID
 		}
 		taskMap[task.ID] = task
 	}
@@ -42,10 +51,10 @@ func NewScheduler(tracker *TaskTracker) (*Scheduler, error) {
 	for i := range tracker.ReduceTasks {
 		task := &tracker.ReduceTasks[i]
 		if task.State != Idle {
-			return nil, errors.New("all initial tasks must be Idle")
+			return nil, ErrInvalidInitialState
 		}
 		if _, exists := taskMap[task.ID]; exists {
-			return nil, errors.New("duplicate task ID found")
+			return nil, ErrDuplicateTaskID
 		}
 		taskMap[task.ID] = task
 	}
@@ -68,6 +77,10 @@ func NewScheduler(tracker *TaskTracker) (*Scheduler, error) {
 // ErrNoIdleTasks. If all map and reduce tasks have completed, it returns
 // ErrJobCompleted.
 func (s *Scheduler) GetNextTask(workerID string) (*Task, error) {
+	if workerID == "" {
+		return nil, ErrEmptyWorkerID
+	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -116,6 +129,9 @@ func (s *Scheduler) GetNextTask(workerID string) (*Task, error) {
 	return nil, ErrJobCompleted
 }
 
+// CompleteTask marks the given in-progress task as Completed.
+// Returns ErrTaskNotFound if taskID doesn't exist, or
+// ErrInvalidStateTransition if the task is not currently InProgress.
 func (s *Scheduler) CompleteTask(taskID string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -135,6 +151,10 @@ func (s *Scheduler) CompleteTask(taskID string) error {
 	return nil
 }
 
+// FailTask marks the given in-progress task as Idle and clears any stale trace
+// bindings (such as WorkerID and StartTime).
+// Returns ErrTaskNotFound if taskID doesn't exist, or
+// ErrInvalidStateTransition if the task is not currently InProgress.
 func (s *Scheduler) FailTask(taskID string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
