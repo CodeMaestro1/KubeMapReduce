@@ -193,3 +193,72 @@ func TestScheduler_DuplicateTaskIDs(t *testing.T) {
 		t.Fatalf("expected error when tasks have duplicate IDs, got nil")
 	}
 }
+
+func TestScheduler_InitialStateValidation(t *testing.T) {
+	tracker := &TaskTracker{
+		MapTasks: []Task{
+			{ID: "m1", Type: MapTask, State: InProgress}, // invalid initial state
+		},
+	}
+
+	_, err := NewScheduler(tracker)
+	if err == nil {
+		t.Fatalf("expected error when initial task state is not Idle, got nil")
+	}
+}
+
+func TestScheduler_Concurrency(t *testing.T) {
+	tracker := &TaskTracker{
+		MapTasks: []Task{
+			{ID: "m1", Type: MapTask, State: Idle},
+			{ID: "m2", Type: MapTask, State: Idle},
+			{ID: "m3", Type: MapTask, State: Idle},
+			{ID: "m4", Type: MapTask, State: Idle},
+			{ID: "m5", Type: MapTask, State: Idle},
+		},
+	}
+
+	scheduler, err := NewScheduler(tracker)
+	if err != nil {
+		t.Fatalf("unexpected error creating scheduler: %v", err)
+	}
+
+	// Spin up 10 concurrent goroutines racing to get or complete tasks
+	errCh := make(chan error, 100)
+	doneCh := make(chan bool)
+
+	for i := 0; i < 10; i++ {
+		go func(workerID int) {
+			for {
+				task, err := scheduler.GetNextTask("worker-X")
+				if err == ErrNoIdleTasks {
+					continue // Busy loop wait
+				}
+				if err == ErrJobCompleted {
+					doneCh <- true
+					return
+				}
+				if err != nil {
+					errCh <- err
+					return
+				}
+
+				// Complete the task
+				if err := scheduler.CompleteTask(task.ID); err != nil {
+					errCh <- err
+					return
+				}
+			}
+		}(i)
+	}
+
+	// Wait for 10 goroutines to finish (either success or hit job completed)
+	for i := 0; i < 10; i++ {
+		select {
+		case err := <-errCh:
+			t.Fatalf("concurrent worker failed: %v", err)
+		case <-doneCh:
+			// Success
+		}
+	}
+}
