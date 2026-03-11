@@ -7,15 +7,18 @@ import (
 func TestScheduler_MapBeforeReduce(t *testing.T) {
 	tracker := &TaskTracker{
 		MapTasks: []Task{
-			{ID: "m1", Type: "Map", State: Idle},
-			{ID: "m2", Type: "Map", State: Idle},
+			{ID: "m1", Type: MapTask, State: Idle},
+			{ID: "m2", Type: MapTask, State: Idle},
 		},
 		ReduceTasks: []Task{
-			{ID: "r1", Type: "Reduce", State: Idle},
+			{ID: "r1", Type: ReduceTask, State: Idle},
 		},
 	}
 
-	scheduler := NewScheduler(tracker)
+	scheduler, err := NewScheduler(tracker)
+	if err != nil {
+		t.Fatalf("unexpected error creating scheduler: %v", err)
+	}
 
 	// Step 1: Assign first map task
 	task1, err := scheduler.GetNextTask("worker-1")
@@ -84,14 +87,17 @@ func TestScheduler_MapBeforeReduce(t *testing.T) {
 func TestScheduler_FailTask(t *testing.T) {
 	tracker := &TaskTracker{
 		MapTasks: []Task{
-			{ID: "m1", Type: "Map", State: Idle},
+			{ID: "m1", Type: MapTask, State: Idle},
 		},
 	}
 
-	scheduler := NewScheduler(tracker)
+	scheduler, err := NewScheduler(tracker)
+	if err != nil {
+		t.Fatalf("unexpected error creating scheduler: %v", err)
+	}
 
 	// Assign task
-	_, err := scheduler.GetNextTask("worker-1")
+	_, err = scheduler.GetNextTask("worker-1")
 	if err != nil {
 		t.Fatalf("expected task, got err: %v", err)
 	}
@@ -119,15 +125,19 @@ func TestScheduler_FailTask(t *testing.T) {
 func TestScheduler_CompleteIdleTask_InvalidTransition(t *testing.T) {
 	tracker := &TaskTracker{
 		MapTasks: []Task{
-			{ID: "m1", Type: "Map", State: Idle},
+			{ID: "m1", Type: MapTask, State: Idle},
 		},
 	}
 
-	scheduler := NewScheduler(tracker)
+	scheduler, err := NewScheduler(tracker)
+	if err != nil {
+		t.Fatalf("unexpected error creating scheduler: %v", err)
+	}
 
 	// Directly completing an Idle task (without assignment) should fail.
-	if err := scheduler.CompleteTask("m1"); err == nil {
-		t.Fatalf("expected error when completing Idle task, got nil")
+	err = scheduler.CompleteTask("m1")
+	if err != ErrInvalidStateTransition {
+		t.Fatalf("expected ErrInvalidStateTransition when completing Idle task, got %v", err)
 	}
 }
 
@@ -135,14 +145,17 @@ func TestScheduler_CompleteIdleTask_InvalidTransition(t *testing.T) {
 func TestScheduler_FailCompletedTask_InvalidTransition(t *testing.T) {
 	tracker := &TaskTracker{
 		MapTasks: []Task{
-			{ID: "m1", Type: "Map", State: Idle},
+			{ID: "m1", Type: MapTask, State: Idle},
 		},
 	}
 
-	scheduler := NewScheduler(tracker)
+	scheduler, err := NewScheduler(tracker)
+	if err != nil {
+		t.Fatalf("unexpected error creating scheduler: %v", err)
+	}
 
 	// Assign task and complete it successfully.
-	_, err := scheduler.GetNextTask("worker-1")
+	_, err = scheduler.GetNextTask("worker-1")
 	if err != nil {
 		t.Fatalf("expected task assignment, got err: %v", err)
 	}
@@ -152,7 +165,31 @@ func TestScheduler_FailCompletedTask_InvalidTransition(t *testing.T) {
 	}
 
 	// Now failing a Completed task should not be allowed.
-	if err := scheduler.FailTask("m1"); err == nil {
-		t.Fatalf("expected error when failing Completed task, got nil")
+	err = scheduler.FailTask("m1")
+	if err != ErrInvalidStateTransition {
+		t.Fatalf("expected ErrInvalidStateTransition when failing Completed task, got %v", err)
+	}
+}
+
+func TestScheduler_NilTracker(t *testing.T) {
+	_, err := NewScheduler(nil)
+	if err == nil {
+		t.Fatalf("expected error when passing nil tracker, got nil")
+	}
+}
+
+func TestScheduler_DuplicateTaskIDs(t *testing.T) {
+	tracker := &TaskTracker{
+		MapTasks: []Task{
+			{ID: "dup1", Type: MapTask, State: Idle},
+		},
+		ReduceTasks: []Task{
+			{ID: "dup1", Type: ReduceTask, State: Idle}, // duplicate ID
+		},
+	}
+
+	_, err := NewScheduler(tracker)
+	if err == nil {
+		t.Fatalf("expected error when tasks have duplicate IDs, got nil")
 	}
 }
