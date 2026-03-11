@@ -16,6 +16,7 @@ var (
 type Scheduler struct {
 	mu      sync.Mutex
 	tracker *TaskTracker
+	taskMap map[string]*Task // O(1) lookups by task ID
 }
 
 func NewScheduler(tracker *TaskTracker) (*Scheduler, error) {
@@ -23,22 +24,35 @@ func NewScheduler(tracker *TaskTracker) (*Scheduler, error) {
 		return nil, errors.New("tracker cannot be nil")
 	}
 
-	seenIDs := make(map[string]bool)
-	for _, t := range tracker.MapTasks {
-		if seenIDs[t.ID] {
+	taskMap := make(map[string]*Task)
+
+	// Validate MapTasks
+	for i := range tracker.MapTasks {
+		task := &tracker.MapTasks[i]
+		if task.State != Idle {
+			return nil, errors.New("all initial tasks must be Idle")
+		}
+		if _, exists := taskMap[task.ID]; exists {
 			return nil, errors.New("duplicate task ID found")
 		}
-		seenIDs[t.ID] = true
+		taskMap[task.ID] = task
 	}
-	for _, t := range tracker.ReduceTasks {
-		if seenIDs[t.ID] {
+
+	// Validate ReduceTasks
+	for i := range tracker.ReduceTasks {
+		task := &tracker.ReduceTasks[i]
+		if task.State != Idle {
+			return nil, errors.New("all initial tasks must be Idle")
+		}
+		if _, exists := taskMap[task.ID]; exists {
 			return nil, errors.New("duplicate task ID found")
 		}
-		seenIDs[t.ID] = true
+		taskMap[task.ID] = task
 	}
 
 	return &Scheduler{
 		tracker: tracker,
+		taskMap: taskMap,
 	}, nil
 }
 
@@ -66,6 +80,9 @@ func (s *Scheduler) GetNextTask(workerID string) (*Task, error) {
 				s.tracker.MapTasks[i].WorkerID = workerID
 				s.tracker.MapTasks[i].StartTime = time.Now()
 
+				// We return a copy of the task to prevent callers from directly mutating
+				// the tracker's internal state without going through the Scheduler APIs
+				// and its mutex lock.
 				taskCopy := s.tracker.MapTasks[i]
 				return &taskCopy, nil
 			}
@@ -85,6 +102,7 @@ func (s *Scheduler) GetNextTask(workerID string) (*Task, error) {
 				s.tracker.ReduceTasks[i].WorkerID = workerID
 				s.tracker.ReduceTasks[i].StartTime = time.Now()
 
+				// Return a safe copy to prevent data races and unauthorized mutations
 				taskCopy := s.tracker.ReduceTasks[i]
 				return &taskCopy, nil
 			}
@@ -102,60 +120,36 @@ func (s *Scheduler) CompleteTask(taskID string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	for i := range s.tracker.MapTasks {
-		if s.tracker.MapTasks[i].ID == taskID {
-			if s.tracker.MapTasks[i].State != InProgress {
-				return ErrInvalidStateTransition
-			}
-			s.tracker.MapTasks[i].State = Completed
-			s.tracker.MapTasks[i].WorkerID = ""
-			s.tracker.MapTasks[i].StartTime = time.Time{}
-			return nil
-		}
+	task, exists := s.taskMap[taskID]
+	if !exists {
+		return ErrTaskNotFound
 	}
 
-	for i := range s.tracker.ReduceTasks {
-		if s.tracker.ReduceTasks[i].ID == taskID {
-			if s.tracker.ReduceTasks[i].State != InProgress {
-				return ErrInvalidStateTransition
-			}
-			s.tracker.ReduceTasks[i].State = Completed
-			s.tracker.ReduceTasks[i].WorkerID = ""
-			s.tracker.ReduceTasks[i].StartTime = time.Time{}
-			return nil
-		}
+	if task.State != InProgress {
+		return ErrInvalidStateTransition
 	}
 
-	return ErrTaskNotFound
+	task.State = Completed
+	task.WorkerID = ""
+	task.StartTime = time.Time{}
+	return nil
 }
 
 func (s *Scheduler) FailTask(taskID string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	for i := range s.tracker.MapTasks {
-		if s.tracker.MapTasks[i].ID == taskID {
-			if s.tracker.MapTasks[i].State != InProgress {
-				return ErrInvalidStateTransition
-			}
-			s.tracker.MapTasks[i].State = Idle
-			s.tracker.MapTasks[i].WorkerID = ""
-			s.tracker.MapTasks[i].StartTime = time.Time{}
-			return nil
-		}
+	task, exists := s.taskMap[taskID]
+	if !exists {
+		return ErrTaskNotFound
 	}
 
-	for i := range s.tracker.ReduceTasks {
-		if s.tracker.ReduceTasks[i].ID == taskID {
-			if s.tracker.ReduceTasks[i].State != InProgress {
-				return ErrInvalidStateTransition
-			}
-			s.tracker.ReduceTasks[i].State = Idle
-			s.tracker.ReduceTasks[i].WorkerID = ""
-			s.tracker.ReduceTasks[i].StartTime = time.Time{}
-			return nil
-		}
+	if task.State != InProgress {
+		return ErrInvalidStateTransition
 	}
 
-	return ErrTaskNotFound
+	task.State = Idle
+	task.WorkerID = ""
+	task.StartTime = time.Time{}
+	return nil
 }
