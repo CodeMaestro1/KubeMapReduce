@@ -18,10 +18,28 @@ type Scheduler struct {
 	tracker *TaskTracker
 }
 
-func NewScheduler(tracker *TaskTracker) *Scheduler {
+func NewScheduler(tracker *TaskTracker) (*Scheduler, error) {
+	if tracker == nil {
+		return nil, errors.New("tracker cannot be nil")
+	}
+
+	seenIDs := make(map[string]bool)
+	for _, t := range tracker.MapTasks {
+		if seenIDs[t.ID] {
+			return nil, errors.New("duplicate task ID found")
+		}
+		seenIDs[t.ID] = true
+	}
+	for _, t := range tracker.ReduceTasks {
+		if seenIDs[t.ID] {
+			return nil, errors.New("duplicate task ID found")
+		}
+		seenIDs[t.ID] = true
+	}
+
 	return &Scheduler{
 		tracker: tracker,
-	}
+	}, nil
 }
 
 // GetNextTask returns the next available idle task for the given worker.
@@ -90,6 +108,8 @@ func (s *Scheduler) CompleteTask(taskID string) error {
 				return ErrInvalidStateTransition
 			}
 			s.tracker.MapTasks[i].State = Completed
+			s.tracker.MapTasks[i].WorkerID = ""
+			s.tracker.MapTasks[i].StartTime = time.Time{}
 			return nil
 		}
 	}
@@ -100,6 +120,8 @@ func (s *Scheduler) CompleteTask(taskID string) error {
 				return ErrInvalidStateTransition
 			}
 			s.tracker.ReduceTasks[i].State = Completed
+			s.tracker.ReduceTasks[i].WorkerID = ""
+			s.tracker.ReduceTasks[i].StartTime = time.Time{}
 			return nil
 		}
 	}
@@ -118,6 +140,7 @@ func (s *Scheduler) FailTask(taskID string) error {
 			}
 			s.tracker.MapTasks[i].State = Idle
 			s.tracker.MapTasks[i].WorkerID = ""
+			s.tracker.MapTasks[i].StartTime = time.Time{}
 			return nil
 		}
 	}
@@ -129,6 +152,7 @@ func (s *Scheduler) FailTask(taskID string) error {
 			}
 			s.tracker.ReduceTasks[i].State = Idle
 			s.tracker.ReduceTasks[i].WorkerID = ""
+			s.tracker.ReduceTasks[i].StartTime = time.Time{}
 			return nil
 		}
 	}
