@@ -15,6 +15,7 @@ var (
 	ErrDuplicateTaskID        = errors.New("duplicate task ID found")
 	ErrInvalidInitialState    = errors.New("all initial tasks must be Idle")
 	ErrEmptyWorkerID          = errors.New("workerID cannot be empty")
+	ErrInvalidTaskType        = errors.New("task found in wrong collection type (map vs reduce)")
 )
 
 // Scheduler coordinates task assignment and lifecycle for a single MapReduce job.
@@ -41,6 +42,9 @@ func NewScheduler(tracker *TaskTracker) (*Scheduler, error) {
 		if task.State != Idle {
 			return nil, ErrInvalidInitialState
 		}
+		if task.Type != MapTask {
+			return nil, ErrInvalidTaskType
+		}
 		if _, exists := taskMap[task.ID]; exists {
 			return nil, ErrDuplicateTaskID
 		}
@@ -52,6 +56,9 @@ func NewScheduler(tracker *TaskTracker) (*Scheduler, error) {
 		task := &tracker.ReduceTasks[i]
 		if task.State != Idle {
 			return nil, ErrInvalidInitialState
+		}
+		if task.Type != ReduceTask {
+			return nil, ErrInvalidTaskType
 		}
 		if _, exists := taskMap[task.ID]; exists {
 			return nil, ErrDuplicateTaskID
@@ -172,4 +179,27 @@ func (s *Scheduler) FailTask(taskID string) error {
 	task.WorkerID = ""
 	task.StartTime = time.Time{}
 	return nil
+}
+
+// FailStaleTasks scans all InProgress tasks. If a task has been running longer than
+// the given timeout without being completed, it assumes the worker has crashed,
+// forcefully transitions the task back to Idle, and returns it to the schedulable pool.
+// Returns the number of tasks successfully recovered.
+func (s *Scheduler) FailStaleTasks(timeout time.Duration) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	now := time.Now()
+	recoveredCount := 0
+
+	for _, task := range s.taskMap {
+		if task.State == InProgress && now.Sub(task.StartTime) > timeout {
+			task.State = Idle
+			task.WorkerID = ""
+			task.StartTime = time.Time{}
+			recoveredCount++
+		}
+	}
+
+	return recoveredCount
 }
