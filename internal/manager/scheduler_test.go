@@ -2,6 +2,7 @@ package manager
 
 import (
 	"testing"
+	"time"
 )
 
 func TestScheduler_MapBeforeReduce(t *testing.T) {
@@ -232,7 +233,8 @@ func TestScheduler_Concurrency(t *testing.T) {
 			for {
 				task, err := scheduler.GetNextTask("worker-X")
 				if err == ErrNoIdleTasks {
-					continue // Busy loop wait
+					time.Sleep(10 * time.Millisecond) // Don't burn CPU in busy-wait
+					continue
 				}
 				if err == ErrJobCompleted {
 					doneCh <- true
@@ -260,5 +262,23 @@ func TestScheduler_Concurrency(t *testing.T) {
 		case <-doneCh:
 			// Success
 		}
+	}
+}
+
+func TestScheduler_EmptyWorkerID(t *testing.T) {
+	tracker := &TaskTracker{
+		MapTasks: []Task{
+			{ID: "m1", Type: MapTask, State: Idle},
+		},
+	}
+
+	scheduler, err := NewScheduler(tracker)
+	if err != nil {
+		t.Fatalf("unexpected error creating scheduler: %v", err)
+	}
+
+	_, err = scheduler.GetNextTask("")
+	if err != ErrEmptyWorkerID {
+		t.Fatalf("expected ErrEmptyWorkerID when assigning task with empty worker ID, got: %v", err)
 	}
 }
