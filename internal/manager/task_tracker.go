@@ -3,6 +3,11 @@ package manager
 import "time"
 
 // TaskState defines the current status of a Map or Reduce task
+//
+// State transitions:
+//   - Idle -> InProgress (via GetNextTask)
+//   - InProgress -> Completed (via CompleteTask)
+//   - InProgress -> Idle (via FailTask for retries)
 type TaskState int
 
 const (
