@@ -226,7 +226,7 @@ func TestScheduler_Concurrency(t *testing.T) {
 
 	// Spin up 10 concurrent goroutines racing to get or complete tasks
 	errCh := make(chan error, 100)
-	doneCh := make(chan bool)
+	doneCh := make(chan bool, 10) // Buffalo to prevent zombie blocking
 
 	for i := 0; i < 10; i++ {
 		go func(workerID int) {
@@ -280,5 +280,61 @@ func TestScheduler_EmptyWorkerID(t *testing.T) {
 	_, err = scheduler.GetNextTask("")
 	if err != ErrEmptyWorkerID {
 		t.Fatalf("expected ErrEmptyWorkerID when assigning task with empty worker ID, got: %v", err)
+	}
+}
+
+func TestScheduler_InvalidTaskType(t *testing.T) {
+	tracker := &TaskTracker{
+		MapTasks: []Task{
+			{ID: "m1", Type: ReduceTask, State: Idle}, // Placed in MapTasks array but typed as ReduceTask
+		},
+	}
+
+	_, err := NewScheduler(tracker)
+	if err != ErrInvalidTaskType {
+		t.Fatalf("expected ErrInvalidTaskType when providing mismatched task struct types, got: %v", err)
+	}
+}
+
+func TestScheduler_FailStaleTasks(t *testing.T) {
+	tracker := &TaskTracker{
+		MapTasks: []Task{
+			{ID: "m1", Type: MapTask, State: Idle},
+		},
+	}
+
+	scheduler, err := NewScheduler(tracker)
+	if err != nil {
+		t.Fatalf("unexpected error creating scheduler: %v", err)
+	}
+
+	// Request the task which will log its `StartTime` and assign it to a worker.
+	_, err = scheduler.GetNextTask("crashing-worker")
+	if err != nil {
+		t.Fatalf("expected to get task properly, got err: %v", err)
+	}
+
+	// FailStaleTasks immediately with a 10s boundary should yield 0 recoveries
+	recovered := scheduler.FailStaleTasks(10 * time.Second)
+	if recovered != 0 {
+		t.Fatalf("expected no tasks recovered initially, got %d", recovered)
+	}
+
+	// Sleep 15ms so the recorded StartTime drops into the past.
+	time.Sleep(15 * time.Millisecond)
+
+	// Recover elements that have been processing for more than 5 milliseconds
+	recovered = scheduler.FailStaleTasks(5 * time.Millisecond)
+	if recovered != 1 {
+		t.Fatalf("expected exactly 1 stale task to be recovered, got %d", recovered)
+	}
+
+	// Now that it's recovered and "Idle", another worker should be able to get it immediately
+	task, err := scheduler.GetNextTask("healthy-worker")
+	if err != nil {
+		t.Fatalf("expected healthy worker to acquire recovered task, got err: %v", err)
+	}
+	if task.ID != "m1" || task.WorkerID != "healthy-worker" {
+		t.Fatalf("expected m1 to be assigned to healthy-worker, got %#v", task)
 	}
 }
