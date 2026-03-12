@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -18,6 +19,8 @@ const (
 	defaultAdminHTTPTimeout = 10 * time.Second
 	defaultRetryAttempts    = 3
 	defaultRetryBaseDelay   = 200 * time.Millisecond
+	adminTokenRefreshSkew   = 30 * time.Second
+	defaultTokenTTL         = 60 * time.Second
 )
 
 type KeycloakAdminClient struct {
@@ -31,6 +34,10 @@ type KeycloakAdminClient struct {
 
 	retryAttempts  int
 	retryBaseDelay time.Duration
+
+	tokenMu              sync.Mutex
+	cachedAdminToken     string
+	cachedAdminTokenTill time.Time
 }
 
 type CreateUserRequest struct {
@@ -42,6 +49,7 @@ type CreateUserRequest struct {
 
 type keycloakTokenResponse struct {
 	AccessToken string `json:"access_token"`
+	ExpiresIn   int    `json:"expires_in"`
 }
 
 type keycloakUser struct {
@@ -193,6 +201,14 @@ func (c *KeycloakAdminClient) getAdminAccessToken(ctx context.Context) (string, 
 		return "", fmt.Errorf("keycloak admin credentials are missing")
 	}
 
+	c.tokenMu.Lock()
+	defer c.tokenMu.Unlock()
+
+	now := time.Now()
+	if c.cachedAdminToken != "" && now.Add(adminTokenRefreshSkew).Before(c.cachedAdminTokenTill) {
+		return c.cachedAdminToken, nil
+	}
+
 	form := url.Values{}
 	form.Set("grant_type", "password")
 	form.Set("client_id", c.tokenClient)
@@ -218,6 +234,14 @@ func (c *KeycloakAdminClient) getAdminAccessToken(ctx context.Context) (string, 
 	if tokenResponse.AccessToken == "" {
 		return "", fmt.Errorf("no admin access token in response")
 	}
+
+	ttl := defaultTokenTTL
+	if tokenResponse.ExpiresIn > 0 {
+		ttl = time.Duration(tokenResponse.ExpiresIn) * time.Second
+	}
+
+	c.cachedAdminToken = tokenResponse.AccessToken
+	c.cachedAdminTokenTill = time.Now().Add(ttl)
 
 	return tokenResponse.AccessToken, nil
 }
