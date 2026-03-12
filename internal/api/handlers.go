@@ -228,8 +228,9 @@ func (h *Handlers) HandleWorkerConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := httputil.WriteJSON(w, http.StatusAccepted, map[string]interface{}{
-		"status":         "accepted",
+	if err := httputil.WriteJSON(w, http.StatusNotImplemented, map[string]interface{}{
+		"status":         "not_implemented",
+		"message":        "worker configuration backend integration is not implemented yet",
 		"workerReplicas": request.WorkerReplicas,
 		"maxJobsPerNode": request.MaxJobsPerNode,
 	}); err != nil {
