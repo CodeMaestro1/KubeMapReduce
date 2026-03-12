@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -194,5 +195,86 @@ func TestNewKeycloakAdminClientSetsHTTPTimeout(t *testing.T) {
 	}
 	if client.httpClient.Timeout != 10*time.Second {
 		t.Fatalf("expected timeout 10s, got %v", client.httpClient.Timeout)
+	}
+}
+
+func TestGetAdminAccessToken_UsesCacheWhenTokenStillValid(t *testing.T) {
+	var tokenCalls int32
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/realms/master/protocol/openid-connect/token" {
+			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.Path)
+		}
+		atomic.AddInt32(&tokenCalls, 1)
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"access_token":"token-1","expires_in":3600}`))
+	}))
+	defer server.Close()
+
+	client := NewKeycloakAdminClient(server.URL, "mapreduce", "admin", "admin")
+	client.httpClient = server.Client()
+
+	first, err := client.getAdminAccessToken(context.Background())
+	if err != nil {
+		t.Fatalf("first token call failed: %v", err)
+	}
+	second, err := client.getAdminAccessToken(context.Background())
+	if err != nil {
+		t.Fatalf("second token call failed: %v", err)
+	}
+
+	if first != "token-1" || second != "token-1" {
+		t.Fatalf("unexpected token values: first=%q second=%q", first, second)
+	}
+
+	if got := atomic.LoadInt32(&tokenCalls); got != 1 {
+		t.Fatalf("expected exactly one token endpoint call, got %d", got)
+	}
+}
+
+func TestGetAdminAccessToken_RefreshesExpiredCachedToken(t *testing.T) {
+	var tokenCalls int32
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/realms/master/protocol/openid-connect/token" {
+			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.Path)
+		}
+
+		call := atomic.AddInt32(&tokenCalls, 1)
+		w.WriteHeader(http.StatusOK)
+		if call == 1 {
+			_, _ = w.Write([]byte(`{"access_token":"token-1","expires_in":3600}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"access_token":"token-2","expires_in":3600}`))
+	}))
+	defer server.Close()
+
+	client := NewKeycloakAdminClient(server.URL, "mapreduce", "admin", "admin")
+	client.httpClient = server.Client()
+
+	first, err := client.getAdminAccessToken(context.Background())
+	if err != nil {
+		t.Fatalf("first token call failed: %v", err)
+	}
+
+	client.tokenMu.Lock()
+	client.cachedAdminTokenTill = time.Now().Add(5 * time.Second)
+	client.tokenMu.Unlock()
+
+	second, err := client.getAdminAccessToken(context.Background())
+	if err != nil {
+		t.Fatalf("second token call failed: %v", err)
+	}
+
+	if first != "token-1" {
+		t.Fatalf("expected first token token-1, got %q", first)
+	}
+	if second != "token-2" {
+		t.Fatalf("expected refreshed token token-2, got %q", second)
+	}
+
+	if got := atomic.LoadInt32(&tokenCalls); got != 2 {
+		t.Fatalf("expected two token endpoint calls after forced expiry, got %d", got)
 	}
 }

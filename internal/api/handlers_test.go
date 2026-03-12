@@ -146,3 +146,27 @@ func TestHandleDeleteUser_ReturnsServiceUnavailableForUnavailableAuthService(t *
 		t.Fatalf("expected status %d, got %d", http.StatusServiceUnavailable, rec.Code)
 	}
 }
+
+func TestHandleWorkerConfig_ReturnsNotImplemented(t *testing.T) {
+	fakeClient := &fakeAdminClient{}
+	h := NewHandlers(fakeClient, "", UIConfig{})
+
+	body := `{"workerReplicas":3,"maxJobsPerNode":10}`
+	req := httptest.NewRequest(http.MethodPut, "/admin/workers/config", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+
+	h.HandleWorkerConfig(rec, req)
+
+	if rec.Code != http.StatusNotImplemented {
+		t.Fatalf("expected status %d, got %d", http.StatusNotImplemented, rec.Code)
+	}
+
+	var payload map[string]interface{}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("failed to decode response json: %v", err)
+	}
+
+	if got := payload["status"]; got != "not_implemented" {
+		t.Fatalf("expected status not_implemented, got %v", got)
+	}
+}
