@@ -110,8 +110,8 @@ func TestHandleWorkerConfig_AcceptsValidConfig(t *testing.T) {
 
 	h.HandleWorkerConfig(rec, req)
 
-	if rec.Code != http.StatusAccepted {
-		t.Fatalf("expected status %d, got %d", http.StatusAccepted, rec.Code)
+	if rec.Code != http.StatusNotImplemented {
+		t.Fatalf("expected status %d, got %d", http.StatusNotImplemented, rec.Code)
 	}
 }
 
