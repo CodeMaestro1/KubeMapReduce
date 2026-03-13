@@ -4,39 +4,26 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
-	"io"
 	"log"
 	"net/http"
 	"os"
 	"strings"
-
-	"kubemapreduce/pkg/auth"
 
 	"golang.org/x/term"
 )
 
 // ── admin helpers ──────────────────────────────────────────
 
-// requireAdminRole checks that the logged-in user has the ADMIN realm role.
-func requireAdminRole() {
-	tokens, err := auth.LoadTokens()
-	if err != nil {
-		log.Fatal("not logged in — run 'kubemapreduce login' first")
-	}
-
-	claims, err := decodeTokenClaims(tokens.AccessToken)
+// requireAdminRole checks that the supplied access token carries the ADMIN realm role.
+// The caller should obtain the token via getValidToken() to avoid a redundant disk read.
+func requireAdminRole(accessToken string) {
+	claims, err := decodeTokenClaims(accessToken)
 	if err != nil {
 		log.Fatalf("failed to read token: %v", err)
 	}
 
-	if ra, ok := claims["realm_access"].(map[string]any); ok {
-		if roles, ok := ra["roles"].([]any); ok {
-			for _, r := range roles {
-				if s, ok := r.(string); ok && s == "ADMIN" {
-					return
-				}
-			}
-		}
+	if hasRealmRole(claims, "ADMIN") {
+		return
 	}
 
 	username, _ := claims["preferred_username"].(string)
@@ -47,7 +34,8 @@ func requireAdminRole() {
 // Routes through the API server, which proxies to Keycloak.
 
 func cmdAdminCreateUser(args []string) {
-	requireAdminRole()
+	token, serverURL := getValidToken()
+	requireAdminRole(token)
 	fs := flag.NewFlagSet("admin create-user", flag.ExitOnError)
 	username := fs.String("username", "", "Username to create (required)")
 	email := fs.String("email", "", "Email for the new user")
@@ -89,17 +77,15 @@ func cmdAdminCreateUser(args []string) {
 		"role":     normalizedRole,
 	})
 
-	token, serverURL := getValidToken()
-	resp, err := doAuthRequest(http.MethodPost, serverURL+"/admin/users", token, payload)
-	if err != nil {
-		log.Fatalf("request failed: %v", err)
-	}
+	resp := doAuthRequestExpect(
+		http.MethodPost,
+		serverURL+"/admin/users",
+		token,
+		payload,
+		http.StatusCreated,
+		"create user failed",
+	)
 	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusCreated {
-		body, _ := io.ReadAll(resp.Body)
-		log.Fatalf("create user failed (HTTP %d): %s", resp.StatusCode, string(body))
-	}
 
 	fmt.Printf("Created %s user %q.\n", normalizedRole, *username)
 	printResponse(resp)
@@ -109,7 +95,8 @@ func cmdAdminCreateUser(args []string) {
 // Routes through the API server, which proxies to Keycloak.
 
 func cmdAdminDeleteUser(args []string) {
-	requireAdminRole()
+	token, serverURL := getValidToken()
+	requireAdminRole(token)
 	fs := flag.NewFlagSet("admin delete-user", flag.ExitOnError)
 	username := fs.String("username", "", "Username to delete (required)")
 	_ = fs.Parse(args)
@@ -122,17 +109,15 @@ func cmdAdminDeleteUser(args []string) {
 		"username": strings.TrimSpace(*username),
 	})
 
-	token, serverURL := getValidToken()
-	resp, err := doAuthRequest(http.MethodDelete, serverURL+"/admin/users", token, payload)
-	if err != nil {
-		log.Fatalf("request failed: %v", err)
-	}
+	resp := doAuthRequestExpect(
+		http.MethodDelete,
+		serverURL+"/admin/users",
+		token,
+		payload,
+		http.StatusOK,
+		"delete user failed",
+	)
 	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		log.Fatalf("delete user failed (HTTP %d): %s", resp.StatusCode, string(body))
-	}
 
 	fmt.Printf("User %q deleted.\n", *username)
 	printResponse(resp)
@@ -141,7 +126,8 @@ func cmdAdminDeleteUser(args []string) {
 // ── admin worker-config ────────────────────────────────────
 
 func cmdAdminWorkerConfig(args []string) {
-	requireAdminRole()
+	token, serverURL := getValidToken()
+	requireAdminRole(token)
 	fs := flag.NewFlagSet("admin worker-config", flag.ExitOnError)
 	replicas := fs.Int("replicas", 0, "Number of worker replicas (required, > 0)")
 	maxJobs := fs.Int("max-jobs", 0, "Max jobs per node (required, > 0)")
@@ -156,17 +142,15 @@ func cmdAdminWorkerConfig(args []string) {
 		"maxJobsPerNode": *maxJobs,
 	})
 
-	token, serverURL := getValidToken()
-	resp, err := doAuthRequest(http.MethodPut, serverURL+"/admin/workers/config", token, payload)
-	if err != nil {
-		log.Fatalf("request failed: %v", err)
-	}
+	resp := doAuthRequestExpect(
+		http.MethodPut,
+		serverURL+"/admin/workers/config",
+		token,
+		payload,
+		http.StatusAccepted,
+		"worker config update failed",
+	)
 	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusAccepted {
-		body, _ := io.ReadAll(resp.Body)
-		log.Fatalf("worker config update failed (HTTP %d): %s", resp.StatusCode, string(body))
-	}
 
 	printResponse(resp)
 }
