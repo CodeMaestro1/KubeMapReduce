@@ -1,9 +1,15 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"log"
 	"net/http"
+	"os"
+	"os/signal"
 	"strings"
+	"syscall"
+	"time"
 
 	"kubemapreduce/internal/api"
 	"kubemapreduce/internal/config"
@@ -35,6 +41,39 @@ func main() {
 	mux := http.NewServeMux()
 	api.RegisterRoutes(mux, handlers, validator)
 
-	log.Printf("API running on %s", cfg.ServerAddr)
-	log.Fatal(http.ListenAndServe(cfg.ServerAddr, mux))
+	srv := &http.Server{
+		Addr:    cfg.ServerAddr,
+		Handler: mux,
+	}
+
+	errCh := make(chan error, 1)
+	go func() {
+		log.Printf("API running on %s", cfg.ServerAddr)
+		err := srv.ListenAndServe()
+		if err != nil && !errors.Is(err, http.ErrServerClosed) {
+			errCh <- err
+		}
+	}()
+
+	sigCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	select {
+	case <-sigCtx.Done():
+		log.Printf("shutdown signal received, draining in-flight requests")
+	case err := <-errCh:
+		log.Fatalf("server failed: %v", err)
+	}
+
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	if err := srv.Shutdown(shutdownCtx); err != nil {
+		log.Printf("graceful shutdown failed: %v", err)
+		if closeErr := srv.Close(); closeErr != nil {
+			log.Printf("force close failed: %v", closeErr)
+		}
+	}
+
+	log.Println("API server stopped")
 }
