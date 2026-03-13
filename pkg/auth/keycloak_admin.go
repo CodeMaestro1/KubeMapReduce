@@ -33,6 +33,8 @@ type KeycloakAdminClient struct {
 	retryBaseDelay time.Duration
 
 	tokenMu              sync.Mutex
+	tokenCond            *sync.Cond
+	tokenRefreshInFlight bool
 	cachedAdminToken     string
 	cachedAdminTokenTill time.Time
 }
@@ -62,7 +64,7 @@ type roleMapping struct {
 }
 
 func NewKeycloakAdminClient(baseURL string, targetRealm string, adminUser string, adminPass string) *KeycloakAdminClient {
-	return &KeycloakAdminClient{
+	client := &KeycloakAdminClient{
 		baseURL:     strings.TrimRight(baseURL, "/"),
 		targetRealm: targetRealm,
 		adminRealm:  "master",
@@ -74,6 +76,8 @@ func NewKeycloakAdminClient(baseURL string, targetRealm string, adminUser string
 		retryAttempts:  defaultRetryAttempts,
 		retryBaseDelay: defaultRetryBaseDelay,
 	}
+	client.tokenCond = sync.NewCond(&client.tokenMu)
+	return client
 }
 
 func (c *KeycloakAdminClient) CreateUser(ctx context.Context, req CreateUserRequest) error {
@@ -159,12 +163,22 @@ func (c *KeycloakAdminClient) getAdminAccessToken(ctx context.Context) (string, 
 	}
 
 	c.tokenMu.Lock()
-	defer c.tokenMu.Unlock()
+	for {
+		now := time.Now()
+		if c.cachedAdminToken != "" && now.Add(adminTokenRefreshSkew).Before(c.cachedAdminTokenTill) {
+			token := c.cachedAdminToken
+			c.tokenMu.Unlock()
+			return token, nil
+		}
 
-	now := time.Now()
-	if c.cachedAdminToken != "" && now.Add(adminTokenRefreshSkew).Before(c.cachedAdminTokenTill) {
-		return c.cachedAdminToken, nil
+		if !c.tokenRefreshInFlight {
+			c.tokenRefreshInFlight = true
+			break
+		}
+
+		c.tokenCond.Wait()
 	}
+	c.tokenMu.Unlock()
 
 	form := url.Values{}
 	form.Set("grant_type", "password")
@@ -175,20 +189,36 @@ func (c *KeycloakAdminClient) getAdminAccessToken(ctx context.Context) (string, 
 	tokenURL := fmt.Sprintf("%s/realms/%s/protocol/openid-connect/token", c.baseURL, c.adminRealm)
 	httpResp, err := c.doRequest(ctx, http.MethodPost, tokenURL, "", "application/x-www-form-urlencoded", []byte(form.Encode()))
 	if err != nil {
+		c.tokenMu.Lock()
+		c.tokenRefreshInFlight = false
+		c.tokenCond.Broadcast()
+		c.tokenMu.Unlock()
 		return "", err
 	}
 	defer httpResp.Body.Close()
 
 	if err := ensureStatus(httpResp, http.StatusOK, "get admin token"); err != nil {
+		c.tokenMu.Lock()
+		c.tokenRefreshInFlight = false
+		c.tokenCond.Broadcast()
+		c.tokenMu.Unlock()
 		return "", err
 	}
 
 	var tokenResponse keycloakTokenResponse
 	if err := json.NewDecoder(httpResp.Body).Decode(&tokenResponse); err != nil {
+		c.tokenMu.Lock()
+		c.tokenRefreshInFlight = false
+		c.tokenCond.Broadcast()
+		c.tokenMu.Unlock()
 		return "", err
 	}
 
 	if tokenResponse.AccessToken == "" {
+		c.tokenMu.Lock()
+		c.tokenRefreshInFlight = false
+		c.tokenCond.Broadcast()
+		c.tokenMu.Unlock()
 		return "", fmt.Errorf("no admin access token in response")
 	}
 
@@ -197,8 +227,12 @@ func (c *KeycloakAdminClient) getAdminAccessToken(ctx context.Context) (string, 
 		ttl = time.Duration(tokenResponse.ExpiresIn) * time.Second
 	}
 
+	c.tokenMu.Lock()
 	c.cachedAdminToken = tokenResponse.AccessToken
 	c.cachedAdminTokenTill = time.Now().Add(ttl)
+	c.tokenRefreshInFlight = false
+	c.tokenCond.Broadcast()
+	c.tokenMu.Unlock()
 
 	return tokenResponse.AccessToken, nil
 }
