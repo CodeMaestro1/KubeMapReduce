@@ -32,13 +32,15 @@ func TokenStorePath() (string, error) {
 	var configDir string
 
 	if runtime.GOOS == "windows" {
-		configDir = os.Getenv("APPDATA")
+		// Use LOCALAPPDATA (machine-local) rather than APPDATA (roaming) so
+		// credentials are never synced to a domain profile on enterprise machines.
+		configDir = os.Getenv("LOCALAPPDATA")
 		if configDir == "" {
 			home, err := os.UserHomeDir()
 			if err != nil {
 				return "", fmt.Errorf("cannot determine home directory: %w", err)
 			}
-			configDir = filepath.Join(home, "AppData", "Roaming")
+			configDir = filepath.Join(home, "AppData", "Local")
 		}
 	} else {
 		configDir = os.Getenv("XDG_CONFIG_HOME")

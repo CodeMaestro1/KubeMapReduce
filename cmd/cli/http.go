@@ -81,6 +81,21 @@ func doAuthRequest(method, reqURL, token string, body []byte) (*http.Response, e
 	return http.DefaultClient.Do(req)
 }
 
+func doAuthRequestExpect(method, reqURL, token string, body []byte, expectedStatus int, failPrefix string) *http.Response {
+	resp, err := doAuthRequest(method, reqURL, token, body)
+	if err != nil {
+		log.Fatalf("request failed: %v", err)
+	}
+
+	if resp.StatusCode != expectedStatus {
+		defer resp.Body.Close()
+		respBody, _ := io.ReadAll(resp.Body)
+		log.Fatalf("%s (HTTP %d): %s", failPrefix, resp.StatusCode, string(respBody))
+	}
+
+	return resp
+}
+
 func printResponse(resp *http.Response) {
 	body, _ := io.ReadAll(resp.Body)
 
