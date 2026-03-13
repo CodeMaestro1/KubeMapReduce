@@ -29,6 +29,14 @@ jobs:
       - name: Verify dependencies
         run: go mod verify
 
+      - name: Check formatting
+        run: |
+          if [ "$(gofmt -l . | wc -l)" -gt 0 ]; then
+            echo "The following files are not formatted (run 'go fmt ./...'):"
+            gofmt -l .
+            exit 1
+          fi
+
       - name: Run go vet
         run: go vet ./...
 
