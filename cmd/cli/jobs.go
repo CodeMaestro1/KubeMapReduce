@@ -32,16 +32,15 @@ func cmdJobsSubmit(args []string) {
 	}
 
 	token, serverURL := getValidToken()
-	resp, err := doAuthRequest(http.MethodPost, serverURL+"/jobs", token, data)
-	if err != nil {
-		log.Fatalf("request failed: %v", err)
-	}
+	resp := doAuthRequestExpect(
+		http.MethodPost,
+		serverURL+"/jobs",
+		token,
+		data,
+		http.StatusAccepted,
+		"job submission failed",
+	)
 	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusAccepted {
-		body, _ := io.ReadAll(resp.Body)
-		log.Fatalf("job submission failed (HTTP %d): %s", resp.StatusCode, string(body))
-	}
 
 	printResponse(resp)
 }
