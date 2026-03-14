@@ -338,3 +338,39 @@ func TestScheduler_FailStaleTasks(t *testing.T) {
 		t.Fatalf("expected m1 to be assigned to healthy-worker, got %#v", task)
 	}
 }
+
+// Proof-of-concept: mutating tracker slices after NewScheduler can desync
+// scheduler.taskMap pointers from the current tracker storage.
+func TestScheduler_ExternalTrackerMutation_BreaksTaskMapIndex(t *testing.T) {
+	// Capacity is intentionally 1 so append triggers reallocation.
+	mapTasks := make([]Task, 1, 1)
+	mapTasks[0] = Task{ID: "m1", Type: MapTask, State: Idle}
+
+	tracker := &TaskTracker{
+		MapTasks: mapTasks,
+	}
+
+	scheduler, err := NewScheduler(tracker)
+	if err != nil {
+		t.Fatalf("unexpected error creating scheduler: %v", err)
+	}
+
+	// External mutation after scheduler creation: this reallocates MapTasks.
+	tracker.MapTasks = append(tracker.MapTasks, Task{ID: "m2", Type: MapTask, State: Idle})
+
+	// Scheduler assigns m1 from the new slice backing array and marks it InProgress.
+	task, err := scheduler.GetNextTask("worker-1")
+	if err != nil {
+		t.Fatalf("expected task assignment, got err: %v", err)
+	}
+	if task.ID != "m1" {
+		t.Fatalf("expected m1, got %s", task.ID)
+	}
+
+	// CompleteTask uses taskMap pointer captured before reallocation.
+	// That stale pointer still sees m1 as Idle, so transition fails.
+	err = scheduler.CompleteTask("m1")
+	if err != ErrInvalidStateTransition {
+		t.Fatalf("expected ErrInvalidStateTransition due to stale pointer desync, got: %v", err)
+	}
+}
