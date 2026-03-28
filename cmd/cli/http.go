@@ -29,6 +29,8 @@ func keycloakBaseURL() string  { return getEnv("KEYCLOAK_BASE_URL", "http://loca
 func keycloakRealm() string    { return getEnv("KEYCLOAK_REALM", "mapreduce") }
 func keycloakClientID() string { return getEnv("KEYCLOAK_AUDIENCE", "mapreduce-api") }
 
+var cliHTTPClient = &http.Client{Timeout: 30 * time.Second}
+
 // ── token management ───────────────────────────────────────
 
 func getValidToken() (token string, serverURL string) {
@@ -78,7 +80,7 @@ func doAuthRequest(method, reqURL, token string, body []byte) (*http.Response, e
 		req.Header.Set("Content-Type", "application/json")
 	}
 
-	return http.DefaultClient.Do(req)
+	return cliHTTPClient.Do(req)
 }
 
 func doAuthRequestExpect(method, reqURL, token string, body []byte, expectedStatus int, failPrefix string) *http.Response {
