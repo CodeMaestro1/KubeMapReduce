@@ -158,11 +158,20 @@ func cmdJobsList() {
 
 // ── jobs status ────────────────────────────────────────────
 
-func cmdJobsStatus(jobID string) {
+func cmdJobsStatus(args []string) {
+	fs := flag.NewFlagSet("jobs status", flag.ExitOnError)
+	jobID := fs.String("id", "", "job ID to query (required)")
+	_ = fs.Parse(args)
+
+	if *jobID == "" {
+		fmt.Fprintln(os.Stderr, "usage: kubemapreduce jobs status --id <job-id>")
+		os.Exit(1)
+	}
+
 	token, serverURL := getValidToken()
 	resp := doAuthRequestExpect(
 		http.MethodGet,
-		serverURL+"/jobs/"+jobID,
+		serverURL+"/jobs/"+*jobID,
 		token,
 		nil,
 		http.StatusOK,
