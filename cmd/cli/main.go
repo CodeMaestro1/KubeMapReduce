@@ -40,7 +40,7 @@ func main() {
 		}
 	case "admin":
 		if len(os.Args) < 3 {
-			log.Fatal("usage: kubemapreduce admin <create-user|delete-user|worker-config> [flags]")
+			log.Fatal("usage: kubemapreduce admin <create-user|delete-user|worker-config|configure-nodes> [flags]")
 		}
 		switch os.Args[2] {
 		case "create-user":
@@ -49,6 +49,8 @@ func main() {
 			cmdAdminDeleteUser(os.Args[3:])
 		case "worker-config":
 			cmdAdminWorkerConfig(os.Args[3:])
+		case "configure-nodes":
+			cmdAdminConfigureNodes(os.Args[3:])
 		default:
 			log.Fatalf("unknown admin subcommand: %s", os.Args[2])
 		}
@@ -85,6 +87,7 @@ Commands:
   admin create-user      Create a user in Keycloak (ADMIN)
   admin delete-user      Delete a user from Keycloak (ADMIN)
   admin worker-config    Update worker configuration (ADMIN)
+  admin configure-nodes  Set per-node resource limits (ADMIN): --max-pods, --cpu-limit, --memory-limit
   token inspect          Show raw JWT claims for the stored access token
   help                   Show this help message
 

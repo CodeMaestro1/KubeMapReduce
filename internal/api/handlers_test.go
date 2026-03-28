@@ -454,3 +454,71 @@ func TestHandleJobsDownload_NotImplementedForKnownJob(t *testing.T) {
 		t.Fatalf("expected job ID in response, got %q", dlRec.Body.String())
 	}
 }
+
+// ── HandleConfigureNodes tests ──────────────────────────────
+
+func TestHandleConfigureNodes_RejectsNonPut(t *testing.T) {
+	h := newTestHandlers()
+
+	req := httptest.NewRequest(http.MethodGet, "/admin/nodes/config", nil)
+	rec := httptest.NewRecorder()
+	h.HandleConfigureNodes(rec, req)
+
+	if rec.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("expected %d, got %d", http.StatusMethodNotAllowed, rec.Code)
+	}
+}
+
+func TestHandleConfigureNodes_RejectsInvalidPayload(t *testing.T) {
+	h := newTestHandlers()
+
+	req := httptest.NewRequest(http.MethodPut, "/admin/nodes/config", strings.NewReader("not-json"))
+	rec := httptest.NewRecorder()
+	h.HandleConfigureNodes(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected %d, got %d", http.StatusBadRequest, rec.Code)
+	}
+}
+
+func TestHandleConfigureNodes_RejectsZeroMaxPods(t *testing.T) {
+	h := newTestHandlers()
+
+	body := `{"maxPods":0,"cpuLimit":"500m","memoryLimit":"1Gi"}`
+	req := httptest.NewRequest(http.MethodPut, "/admin/nodes/config", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	h.HandleConfigureNodes(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected %d, got %d", http.StatusBadRequest, rec.Code)
+	}
+}
+
+func TestHandleConfigureNodes_RejectsMissingCPULimit(t *testing.T) {
+	h := newTestHandlers()
+
+	body := `{"maxPods":20,"cpuLimit":"","memoryLimit":"1Gi"}`
+	req := httptest.NewRequest(http.MethodPut, "/admin/nodes/config", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	h.HandleConfigureNodes(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected %d, got %d", http.StatusBadRequest, rec.Code)
+	}
+}
+
+func TestHandleConfigureNodes_AcceptsValidConfig(t *testing.T) {
+	h := newTestHandlers()
+
+	body := `{"maxPods":20,"cpuLimit":"500m","memoryLimit":"1Gi"}`
+	req := httptest.NewRequest(http.MethodPut, "/admin/nodes/config", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	h.HandleConfigureNodes(rec, req)
+
+	if rec.Code != http.StatusNotImplemented {
+		t.Fatalf("expected %d, got %d: %s", http.StatusNotImplemented, rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "not_implemented") {
+		t.Fatalf("expected not_implemented in body, got %q", rec.Body.String())
+	}
+}
