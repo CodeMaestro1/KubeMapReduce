@@ -141,13 +141,8 @@ func (h *Handlers) HandleAdminCreateUser(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	if req.Username == "" || req.Password == "" || req.Role == "" {
-		http.Error(w, "username, password and role are required", http.StatusBadRequest)
-		return
-	}
-
-	if req.Role != "ADMIN" && req.Role != "USER" {
-		http.Error(w, "role must be ADMIN or USER", http.StatusBadRequest)
+	if err := validation.ValidateCreateUserRequest(req); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 

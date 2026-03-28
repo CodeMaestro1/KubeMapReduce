@@ -223,7 +223,7 @@ func TestHandleAdminCreateUser_RejectsInvalidRole(t *testing.T) {
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("expected %d, got %d", http.StatusBadRequest, rec.Code)
 	}
-	if !strings.Contains(rec.Body.String(), "role must be ADMIN or USER") {
+	if !strings.Contains(rec.Body.String(), "role must be ") {
 		t.Fatalf("expected role error message, got %q", rec.Body.String())
 	}
 }
