@@ -158,6 +158,11 @@ func (h *Handlers) HandleAdminCreateUser(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
+	if h.adminClient == nil {
+		http.Error(w, "authentication admin client not configured", http.StatusServiceUnavailable)
+		return
+	}
+
 	var req models.CreateUserRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "invalid request payload", http.StatusBadRequest)
@@ -203,6 +208,11 @@ func (h *Handlers) HandleAdminCreateUser(w http.ResponseWriter, r *http.Request)
 func (h *Handlers) HandleAdminDeleteUser(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodDelete {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	if h.adminClient == nil {
+		http.Error(w, "authentication admin client not configured", http.StatusServiceUnavailable)
 		return
 	}
 
