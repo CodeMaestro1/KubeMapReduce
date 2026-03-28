@@ -78,7 +78,7 @@ Commands:
   login                  Authenticate with Keycloak and store tokens
   logout                 Clear stored authentication tokens
   health                 Check API server health
-  jobs submit <file>     Submit a MapReduce job specification (use "-" for stdin)
+  jobs submit            Submit a MapReduce job (use --mapper, --reducer, --input; see jobs submit --help)
   jobs list              List all submitted jobs
   jobs status <job-id>   Show the status of a specific job
   whoami                 Show the currently logged-in user

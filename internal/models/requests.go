@@ -10,9 +10,11 @@ type FunctionSpec struct {
 }
 
 type JobSubmissionRequest struct {
-	Filename string       `json:"filename"`
-	Mapper   FunctionSpec `json:"mapper"`
-	Reducer  FunctionSpec `json:"reducer"`
+	Filename string        `json:"filename"`
+	Mapper   FunctionSpec  `json:"mapper"`
+	Reducer  FunctionSpec  `json:"reducer"`
+	Combiner *FunctionSpec `json:"combiner,omitempty"`
+	Reducers int           `json:"reducers,omitempty"`
 }
 
 type JobSubmissionResponse struct {
@@ -26,6 +28,7 @@ type JobStatus struct {
 	Status    string    `json:"status"`
 	Message   string    `json:"message"`
 	Filename  string    `json:"filename"`
+	Reducers  int       `json:"reducers,omitempty"`
 	CreatedAt time.Time `json:"createdAt"`
 }
 

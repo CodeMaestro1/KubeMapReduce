@@ -8,30 +8,95 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"path/filepath"
+	"strings"
 	"time"
 )
 
 // ── jobs submit ────────────────────────────────────────────
 
+type cliJobFuncSpec struct {
+	Language   string `json:"language"`
+	Artifact   string `json:"artifact"`
+	Entrypoint string `json:"entrypoint"`
+	Interface  string `json:"interface"`
+}
+
+type cliJobPayload struct {
+	Filename string          `json:"filename"`
+	Mapper   cliJobFuncSpec  `json:"mapper"`
+	Reducer  cliJobFuncSpec  `json:"reducer"`
+	Combiner *cliJobFuncSpec `json:"combiner,omitempty"`
+	Reducers int             `json:"reducers,omitempty"`
+}
+
+func inferLanguage(path string) string {
+	switch strings.ToLower(filepath.Ext(path)) {
+	case ".py":
+		return "python"
+	case ".java", ".jar":
+		return "java"
+	case ".c":
+		return "c"
+	case ".cpp", ".cc", ".cxx":
+		return "cpp"
+	default:
+		log.Fatalf("cannot infer language from extension %q; supported: .py, .java, .jar, .c, .cpp", filepath.Ext(path))
+		return ""
+	}
+}
+
 func cmdJobsSubmit(args []string) {
 	fs := flag.NewFlagSet("jobs submit", flag.ExitOnError)
+	mapperPath := fs.String("mapper", "", "path to mapper file (required)")
+	reducerPath := fs.String("reducer", "", "path to reducer file (required)")
+	combinerPath := fs.String("combiner", "", "path to combiner file (optional)")
+	inputFile := fs.String("input", "", "path to input data file (required)")
+	numReducers := fs.Int("reducers", 1, "number of reducers (default: 1)")
+	specFile := fs.String("spec", "", "path to raw JSON spec file (advanced; overrides other flags)")
 	_ = fs.Parse(args)
 
-	if fs.NArg() < 1 {
-		log.Fatal("usage: kubemapreduce jobs submit <file.json>  (use \"-\" for stdin)")
-	}
-
-	filename := fs.Arg(0)
 	var data []byte
-	var err error
-
-	if filename == "-" {
-		data, err = io.ReadAll(os.Stdin)
+	if *specFile != "" {
+		var err error
+		data, err = os.ReadFile(*specFile)
+		if err != nil {
+			log.Fatalf("failed to read spec file: %v", err)
+		}
 	} else {
-		data, err = os.ReadFile(filename)
-	}
-	if err != nil {
-		log.Fatalf("failed to read input: %v", err)
+		if *mapperPath == "" || *reducerPath == "" || *inputFile == "" {
+			fmt.Fprintln(os.Stderr, "usage: kubemapreduce jobs submit --mapper <file> --reducer <file> --input <file> [--combiner <file>] [--reducers N]")
+			os.Exit(1)
+		}
+		payload := cliJobPayload{
+			Filename: filepath.Base(*inputFile),
+			Mapper: cliJobFuncSpec{
+				Language:   inferLanguage(*mapperPath),
+				Artifact:   filepath.Base(*mapperPath),
+				Entrypoint: "map",
+				Interface:  "map(key,value)->[]KeyValue",
+			},
+			Reducer: cliJobFuncSpec{
+				Language:   inferLanguage(*reducerPath),
+				Artifact:   filepath.Base(*reducerPath),
+				Entrypoint: "reduce",
+				Interface:  "reduce(key,values)->Value",
+			},
+			Reducers: *numReducers,
+		}
+		if *combinerPath != "" {
+			payload.Combiner = &cliJobFuncSpec{
+				Language:   inferLanguage(*combinerPath),
+				Artifact:   filepath.Base(*combinerPath),
+				Entrypoint: "combine",
+				Interface:  "reduce(key,values)->Value",
+			}
+		}
+		var err error
+		data, err = json.Marshal(payload)
+		if err != nil {
+			log.Fatalf("failed to build job request: %v", err)
+		}
 	}
 
 	token, serverURL := getValidToken()
