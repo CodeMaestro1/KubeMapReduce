@@ -410,3 +410,47 @@ func TestHandleJobsGet_ReturnsNotFoundForUnknownJob(t *testing.T) {
 		t.Fatalf("expected %d, got %d", http.StatusNotFound, rec.Code)
 	}
 }
+
+// ── HandleJobsDownload tests ────────────────────────────────
+
+func TestHandleJobsDownload_NotFoundForUnknownJob(t *testing.T) {
+	h := newTestHandlers()
+
+	req := httptest.NewRequest(http.MethodGet, "/jobs/job-doesnotexist/results", nil)
+	rec := httptest.NewRecorder()
+	h.HandleJobsDownload(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("expected %d, got %d", http.StatusNotFound, rec.Code)
+	}
+}
+
+func TestHandleJobsDownload_NotImplementedForKnownJob(t *testing.T) {
+	h := newTestHandlers()
+
+	body := `{"filename":"data.csv","mapper":{"language":"python","artifact":"m.py","entrypoint":"map","interface":"map(key,value)->[]KeyValue"},"reducer":{"language":"python","artifact":"r.py","entrypoint":"reduce","interface":"reduce(key,values)->Value"}}`
+	submitReq := httptest.NewRequest(http.MethodPost, "/jobs", strings.NewReader(body))
+	submitRec := httptest.NewRecorder()
+	h.HandleJobsSubmit(submitRec, submitReq)
+	if submitRec.Code != http.StatusAccepted {
+		t.Fatalf("setup: submit failed with %d: %s", submitRec.Code, submitRec.Body.String())
+	}
+
+	var submitResp struct {
+		JobID string `json:"jobId"`
+	}
+	if err := json.NewDecoder(strings.NewReader(submitRec.Body.String())).Decode(&submitResp); err != nil {
+		t.Fatalf("decode submit response: %v", err)
+	}
+
+	dlReq := httptest.NewRequest(http.MethodGet, "/jobs/"+submitResp.JobID+"/results", nil)
+	dlRec := httptest.NewRecorder()
+	h.HandleJobsDownload(dlRec, dlReq)
+
+	if dlRec.Code != http.StatusNotImplemented {
+		t.Fatalf("expected %d, got %d: %s", http.StatusNotImplemented, dlRec.Code, dlRec.Body.String())
+	}
+	if !strings.Contains(dlRec.Body.String(), submitResp.JobID) {
+		t.Fatalf("expected job ID in response, got %q", dlRec.Body.String())
+	}
+}

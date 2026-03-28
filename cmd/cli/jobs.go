@@ -158,6 +158,55 @@ func cmdJobsList() {
 
 // ── jobs status ────────────────────────────────────────────
 
+// ── jobs download ─────────────────────────────────────────
+
+func cmdJobsDownload(args []string) {
+	fs := flag.NewFlagSet("jobs download", flag.ExitOnError)
+	jobID := fs.String("id", "", "job ID whose results to download (required)")
+	outputDir := fs.String("output", "./results/", "directory to save result file (default: ./results/)")
+	_ = fs.Parse(args)
+
+	if *jobID == "" {
+		fmt.Fprintln(os.Stderr, "usage: kubemapreduce jobs download --id <job-id> [--output ./results/]")
+		os.Exit(1)
+	}
+
+	token, serverURL := getValidToken()
+	resp, err := doAuthRequest(http.MethodGet, serverURL+"/jobs/"+*jobID+"/results", token, nil)
+	if err != nil {
+		log.Fatalf("job download failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusNotImplemented {
+		fmt.Fprintf(os.Stderr, "kubemapreduce: result download not yet available (501)\n")
+		printResponse(resp)
+		return
+	}
+	if resp.StatusCode != http.StatusOK {
+		log.Fatalf("job download failed: server returned %s", resp.Status)
+	}
+
+	if err := os.MkdirAll(*outputDir, 0o750); err != nil {
+		log.Fatalf("failed to create output directory: %v", err)
+	}
+
+	outPath := filepath.Join(*outputDir, *jobID+".json")
+	f, err := os.OpenFile(outPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o640)
+	if err != nil {
+		log.Fatalf("failed to create output file: %v", err)
+	}
+	defer f.Close()
+
+	bytesWritten, err := io.Copy(f, resp.Body)
+	if err != nil {
+		log.Fatalf("failed to write results: %v", err)
+	}
+	fmt.Printf("results saved to %s (%d bytes)\n", outPath, bytesWritten)
+}
+
+// ── jobs status ────────────────────────────────────────────
+
 func cmdJobsStatus(args []string) {
 	fs := flag.NewFlagSet("jobs status", flag.ExitOnError)
 	jobID := fs.String("id", "", "job ID to query (required)")
