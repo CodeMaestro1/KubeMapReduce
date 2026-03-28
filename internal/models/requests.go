@@ -23,12 +23,11 @@ type JobSubmissionResponse struct {
 	Message string `json:"message"`
 }
 
-type JobStatusResponse struct {
+type JobStatus struct {
 	JobID     string    `json:"jobId"`
 	Status    string    `json:"status"`
 	Message   string    `json:"message"`
 	Filename  string    `json:"filename"`
-	Reducers  int       `json:"reducers,omitempty"`
 	CreatedAt time.Time `json:"createdAt"`
 }
 
