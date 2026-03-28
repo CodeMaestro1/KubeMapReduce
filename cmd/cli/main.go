@@ -32,10 +32,7 @@ func main() {
 		case "list":
 			cmdJobsList()
 		case "status":
-			if len(os.Args) < 4 {
-				log.Fatal("usage: kubemapreduce jobs status <job-id>")
-			}
-			cmdJobsStatus(os.Args[3])
+			cmdJobsStatus(os.Args[3:])
 		default:
 			log.Fatalf("unknown jobs subcommand: %s", os.Args[2])
 		}
@@ -80,7 +77,7 @@ Commands:
   health                 Check API server health
   jobs submit            Submit a MapReduce job (use --mapper, --reducer, --input; see jobs submit --help)
   jobs list              List all submitted jobs
-  jobs status <job-id>   Show the status of a specific job
+  jobs status --id <id>  Show the status of a specific job
   whoami                 Show the currently logged-in user
   admin create-user      Create a user in Keycloak (ADMIN)
   admin delete-user      Delete a user from Keycloak (ADMIN)
