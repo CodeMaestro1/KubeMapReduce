@@ -189,7 +189,7 @@ func (h *Handlers) HandleAdminCreateUser(w http.ResponseWriter, r *http.Request)
 		Role:     req.Role,
 	}); err != nil {
 		if auth.IsServiceUnavailable(err) {
-			http.Error(w, "authentication service unavailable", http.StatusBadGateway)
+			http.Error(w, "authentication service unavailable", http.StatusServiceUnavailable)
 			return
 		}
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -232,7 +232,7 @@ func (h *Handlers) HandleAdminDeleteUser(w http.ResponseWriter, r *http.Request)
 
 	if err := h.adminClient.DeleteUserByUsername(ctx, req.Username); err != nil {
 		if auth.IsServiceUnavailable(err) {
-			http.Error(w, "authentication service unavailable", http.StatusBadGateway)
+			http.Error(w, "authentication service unavailable", http.StatusServiceUnavailable)
 			return
 		}
 		http.Error(w, err.Error(), http.StatusInternalServerError)
