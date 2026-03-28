@@ -219,7 +219,15 @@ again.
 | `POST` | `/jobs` | `USER` or `ADMIN` | Submit a MapReduce job spec |
 | `PUT` | `/admin/workers/config` | `ADMIN` | Update worker configuration |
 | `POST` | `/admin/users` | `ADMIN` | Create a user in Keycloak |
-| `DELETE` | `/admin/users` | `ADMIN` | Delete a user from Keycloak |
+| `DELETE` | `/admin/users` | `ADMIN` | Delete a user from Keycloak (JSON body: `{ "username": "<username>" }`) |
+
+The `DELETE /admin/users` endpoint expects a JSON payload of the form:
+
+```json
+{ "username": "<username>" }
+```
+
+Note: Some HTTP clients and proxies do not fully support bodies on `DELETE` requests. If you encounter issues, verify that your HTTP client forwards the JSON body correctly when calling this endpoint.
 
 All protected endpoints require a Bearer token from Keycloak.
 
