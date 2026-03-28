@@ -15,7 +15,22 @@ func RegisterRoutes(mux *http.ServeMux, h *Handlers, validator *auth.JWTValidato
 	mux.Handle("/jobs", auth.RequireAnyRole(
 		[]string{"USER", "ADMIN"},
 		validator,
-		http.HandlerFunc(h.HandleJobsSubmit),
+		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			switch r.Method {
+			case http.MethodPost:
+				h.HandleJobsSubmit(w, r)
+			case http.MethodGet:
+				h.HandleJobsList(w, r)
+			default:
+				http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			}
+		}),
+	))
+
+	mux.Handle("/jobs/", auth.RequireAnyRole(
+		[]string{"USER", "ADMIN"},
+		validator,
+		http.HandlerFunc(h.HandleJobsGet),
 	))
 
 	// Admin routes
