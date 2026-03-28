@@ -28,6 +28,7 @@ type JobStatus struct {
 	Status    string    `json:"status"`
 	Message   string    `json:"message"`
 	Filename  string    `json:"filename"`
+	Reducers  int       `json:"reducers,omitempty"`
 	CreatedAt time.Time `json:"createdAt"`
 }
 

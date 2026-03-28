@@ -45,7 +45,7 @@ func ValidateJobSubmission(req models.JobSubmissionRequest) error {
 		}
 	}
 
-	if req.Reducers < 1 {
+	if req.Reducers < 0 {
 		return NewBadRequestError("reducers must be a positive integer")
 	}
 
