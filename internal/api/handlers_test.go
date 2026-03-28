@@ -312,17 +312,16 @@ func TestHandleAdminDeleteUser_Success(t *testing.T) {
 
 // ── Admin handler with nil client (service unavailable) ─────
 
-func TestHandleAdminCreateUser_NilClientPanics(t *testing.T) {
+func TestHandleAdminCreateUser_NilClientUnavailable(t *testing.T) {
 	h := newTestHandlers() // nil adminClient
 
 	body := `{"username":"alice","password":"secret","role":"USER"}`
 	req := httptest.NewRequest(http.MethodPost, "/admin/users", strings.NewReader(body))
 	rec := httptest.NewRecorder()
 
-	defer func() {
-		if r := recover(); r == nil {
-			t.Fatal("expected panic with nil adminClient, but none occurred")
-		}
-	}()
 	h.HandleAdminCreateUser(rec, req)
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected %d, got %d", http.StatusServiceUnavailable, rec.Code)
+	}
 }
