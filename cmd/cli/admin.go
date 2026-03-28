@@ -123,6 +123,46 @@ func cmdAdminDeleteUser(args []string) {
 	printResponse(resp)
 }
 
+// ── admin configure-nodes ─────────────────────────────────
+
+func cmdAdminConfigureNodes(args []string) {
+	token, serverURL := getValidToken()
+	requireAdminRole(token)
+	fs := flag.NewFlagSet("admin configure-nodes", flag.ExitOnError)
+	maxPods := fs.Int("max-pods", 0, "Maximum pods per node (required, > 0)")
+	cpuLimit := fs.String("cpu-limit", "", "CPU limit per pod, e.g. 500m (required)")
+	memoryLimit := fs.String("memory-limit", "", "Memory limit per pod, e.g. 1Gi (required)")
+	_ = fs.Parse(args)
+
+	if *maxPods < 1 {
+		log.Fatal("--max-pods is required and must be > 0")
+	}
+	if strings.TrimSpace(*cpuLimit) == "" {
+		log.Fatal("--cpu-limit is required")
+	}
+	if strings.TrimSpace(*memoryLimit) == "" {
+		log.Fatal("--memory-limit is required")
+	}
+
+	payload, _ := json.Marshal(map[string]interface{}{
+		"maxPods":     *maxPods,
+		"cpuLimit":    strings.TrimSpace(*cpuLimit),
+		"memoryLimit": strings.TrimSpace(*memoryLimit),
+	})
+
+	resp := doAuthRequestExpect(
+		http.MethodPut,
+		serverURL+"/admin/nodes/config",
+		token,
+		payload,
+		http.StatusNotImplemented,
+		"configure nodes failed",
+	)
+	defer resp.Body.Close()
+
+	printResponse(resp)
+}
+
 // ── admin worker-config ────────────────────────────────────
 
 func cmdAdminWorkerConfig(args []string) {

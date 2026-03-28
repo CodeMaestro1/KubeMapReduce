@@ -47,3 +47,9 @@ type WorkerConfigRequest struct {
 type DeleteUserRequest struct {
 	Username string `json:"username"`
 }
+
+type NodeConfigRequest struct {
+	MaxPods     int    `json:"maxPods"`
+	CPULimit    string `json:"cpuLimit"`
+	MemoryLimit string `json:"memoryLimit"`
+}
