@@ -1,11 +1,14 @@
 package auth
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
+	"strings"
+	"time"
 )
 
 // OAuthTokenResponse represents the token endpoint response from Keycloak.
@@ -27,7 +30,16 @@ func RequestTokens(keycloakBaseURL, realm, clientID, username, password string) 
 	form.Set("username", username)
 	form.Set("password", password)
 
-	resp, err := http.PostForm(tokenURL, form)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, tokenURL, strings.NewReader(form.Encode()))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create authentication request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("failed to contact authentication server: %w", err)
 	}
@@ -60,7 +72,16 @@ func RefreshTokens(keycloakBaseURL, realm, clientID, refreshToken string) (*OAut
 	form.Set("client_id", clientID)
 	form.Set("refresh_token", refreshToken)
 
-	resp, err := http.PostForm(tokenURL, form)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, tokenURL, strings.NewReader(form.Encode()))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create token refresh request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("failed to contact authentication server: %w", err)
 	}
