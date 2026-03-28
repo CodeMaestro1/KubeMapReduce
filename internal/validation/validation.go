@@ -39,6 +39,16 @@ func ValidateJobSubmission(req models.JobSubmissionRequest) error {
 		return err
 	}
 
+	if req.Combiner != nil {
+		if err := validateFunctionSpec("combiner", *req.Combiner, ReduceInterface); err != nil {
+			return err
+		}
+	}
+
+	if req.Reducers < 0 {
+		return NewBadRequestError("reducers must be a positive integer")
+	}
+
 	return nil
 }
 

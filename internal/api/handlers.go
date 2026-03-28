@@ -86,6 +86,7 @@ func (h *Handlers) HandleJobsSubmit(w http.ResponseWriter, r *http.Request) {
 		Status:    "accepted",
 		Message:   "job specification validated and accepted",
 		Filename:  request.Filename,
+		Reducers:  request.Reducers,
 		CreatedAt: now,
 	}
 	h.jobs.Store(jobID, jobStatus)

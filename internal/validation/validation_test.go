@@ -76,6 +76,64 @@ func TestValidateJobSubmission(t *testing.T) {
 			}(),
 			wantErr: "reducer.interface must be " + ReduceInterface,
 		},
+		{
+			name: "valid job with combiner",
+			req: func() models.JobSubmissionRequest {
+				req := validJobSubmissionRequest()
+				req.Combiner = &models.FunctionSpec{
+					Language:   "python",
+					Artifact:   "combiner.py",
+					Entrypoint: "combine",
+					Interface:  ReduceInterface,
+				}
+				return req
+			}(),
+		},
+		{
+			name: "invalid combiner language",
+			req: func() models.JobSubmissionRequest {
+				req := validJobSubmissionRequest()
+				req.Combiner = &models.FunctionSpec{
+					Language:   "ruby",
+					Artifact:   "combiner.rb",
+					Entrypoint: "combine",
+					Interface:  ReduceInterface,
+				}
+				return req
+			}(),
+			wantErr: "combiner.language must be one of: python, java, c, cpp",
+		},
+		{
+			name: "invalid combiner interface",
+			req: func() models.JobSubmissionRequest {
+				req := validJobSubmissionRequest()
+				req.Combiner = &models.FunctionSpec{
+					Language:   "python",
+					Artifact:   "combiner.py",
+					Entrypoint: "combine",
+					Interface:  "wrong-interface",
+				}
+				return req
+			}(),
+			wantErr: "combiner.interface must be " + ReduceInterface,
+		},
+		{
+			name: "negative reducers count",
+			req: func() models.JobSubmissionRequest {
+				req := validJobSubmissionRequest()
+				req.Reducers = -1
+				return req
+			}(),
+			wantErr: "reducers must be a positive integer",
+		},
+		{
+			name: "valid job with reducers count",
+			req: func() models.JobSubmissionRequest {
+				req := validJobSubmissionRequest()
+				req.Reducers = 5
+				return req
+			}(),
+		},
 	}
 
 	for _, tc := range tests {
