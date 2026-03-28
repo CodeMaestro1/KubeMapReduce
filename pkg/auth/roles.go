@@ -27,7 +27,11 @@ func GetRoles(r *http.Request) ([]string, error) {
 
 	roles := make([]string, len(rawRoles))
 	for i, role := range rawRoles {
-		roles[i] = role.(string)
+		roleStr, ok := role.(string)
+		if !ok {
+			return nil, fmt.Errorf("invalid role type")
+		}
+		roles[i] = roleStr
 	}
 
 	return roles, nil
