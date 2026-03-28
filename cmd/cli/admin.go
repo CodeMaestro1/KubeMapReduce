@@ -147,7 +147,7 @@ func cmdAdminWorkerConfig(args []string) {
 		serverURL+"/admin/workers/config",
 		token,
 		payload,
-		http.StatusAccepted,
+		http.StatusNotImplemented,
 		"worker config update failed",
 	)
 	defer resp.Body.Close()
