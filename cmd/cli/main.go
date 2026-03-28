@@ -23,10 +23,22 @@ func main() {
 	case "health":
 		cmdHealth()
 	case "jobs":
-		if len(os.Args) < 3 || os.Args[2] != "submit" {
-			log.Fatal("usage: kubemapreduce jobs submit [flags] <file.json>")
+		if len(os.Args) < 3 {
+			log.Fatal("usage: kubemapreduce jobs <submit|list|status> [flags]")
 		}
-		cmdJobsSubmit(os.Args[3:])
+		switch os.Args[2] {
+		case "submit":
+			cmdJobsSubmit(os.Args[3:])
+		case "list":
+			cmdJobsList()
+		case "status":
+			if len(os.Args) < 4 {
+				log.Fatal("usage: kubemapreduce jobs status <job-id>")
+			}
+			cmdJobsStatus(os.Args[3])
+		default:
+			log.Fatalf("unknown jobs subcommand: %s", os.Args[2])
+		}
 	case "admin":
 		if len(os.Args) < 3 {
 			log.Fatal("usage: kubemapreduce admin <create-user|delete-user|worker-config> [flags]")
@@ -67,6 +79,8 @@ Commands:
   logout                 Clear stored authentication tokens
   health                 Check API server health
   jobs submit <file>     Submit a MapReduce job specification (use "-" for stdin)
+  jobs list              List all submitted jobs
+  jobs status <job-id>   Show the status of a specific job
   whoami                 Show the currently logged-in user
   admin create-user      Create a user in Keycloak (ADMIN)
   admin delete-user      Delete a user from Keycloak (ADMIN)

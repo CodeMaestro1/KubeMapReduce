@@ -1,6 +1,7 @@
 package api
 
 import (
+	"encoding/json"
 	"kubemapreduce/pkg/auth"
 	"net/http"
 	"net/http/httptest"
@@ -323,5 +324,89 @@ func TestHandleAdminCreateUser_NilClientUnavailable(t *testing.T) {
 
 	if rec.Code != http.StatusServiceUnavailable {
 		t.Fatalf("expected %d, got %d", http.StatusServiceUnavailable, rec.Code)
+	}
+}
+
+// ── HandleJobsList tests ────────────────────────────────────
+
+func TestHandleJobsList_ReturnsEmptyListInitially(t *testing.T) {
+	h := newTestHandlers()
+
+	req := httptest.NewRequest(http.MethodGet, "/jobs", nil)
+	rec := httptest.NewRecorder()
+	h.HandleJobsList(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected %d, got %d", http.StatusOK, rec.Code)
+	}
+	if strings.TrimSpace(rec.Body.String()) != "[]" {
+		t.Fatalf("expected empty array, got %q", rec.Body.String())
+	}
+}
+
+func TestHandleJobsList_ReturnsSubmittedJob(t *testing.T) {
+	h := newTestHandlers()
+
+	body := `{"filename":"data.csv","mapper":{"language":"python","artifact":"m.py","entrypoint":"map","interface":"map(key,value)->[]KeyValue"},"reducer":{"language":"python","artifact":"r.py","entrypoint":"reduce","interface":"reduce(key,values)->Value"}}`
+	submitReq := httptest.NewRequest(http.MethodPost, "/jobs", strings.NewReader(body))
+	submitRec := httptest.NewRecorder()
+	h.HandleJobsSubmit(submitRec, submitReq)
+	if submitRec.Code != http.StatusAccepted {
+		t.Fatalf("setup: submit failed with %d: %s", submitRec.Code, submitRec.Body.String())
+	}
+
+	listReq := httptest.NewRequest(http.MethodGet, "/jobs", nil)
+	listRec := httptest.NewRecorder()
+	h.HandleJobsList(listRec, listReq)
+
+	if listRec.Code != http.StatusOK {
+		t.Fatalf("expected %d, got %d", http.StatusOK, listRec.Code)
+	}
+	if !strings.Contains(listRec.Body.String(), `"filename":"data.csv"`) {
+		t.Fatalf("expected filename in list response, got %q", listRec.Body.String())
+	}
+}
+
+// ── HandleJobsGet tests ─────────────────────────────────────
+
+func TestHandleJobsGet_ReturnsKnownJob(t *testing.T) {
+	h := newTestHandlers()
+
+	body := `{"filename":"input.json","mapper":{"language":"python","artifact":"m.py","entrypoint":"map","interface":"map(key,value)->[]KeyValue"},"reducer":{"language":"python","artifact":"r.py","entrypoint":"reduce","interface":"reduce(key,values)->Value"}}`
+	submitReq := httptest.NewRequest(http.MethodPost, "/jobs", strings.NewReader(body))
+	submitRec := httptest.NewRecorder()
+	h.HandleJobsSubmit(submitRec, submitReq)
+	if submitRec.Code != http.StatusAccepted {
+		t.Fatalf("setup: submit failed with %d: %s", submitRec.Code, submitRec.Body.String())
+	}
+
+	var submitResp struct {
+		JobID string `json:"jobId"`
+	}
+	if err := json.NewDecoder(strings.NewReader(submitRec.Body.String())).Decode(&submitResp); err != nil {
+		t.Fatalf("decode submit response: %v", err)
+	}
+
+	getReq := httptest.NewRequest(http.MethodGet, "/jobs/"+submitResp.JobID, nil)
+	getRec := httptest.NewRecorder()
+	h.HandleJobsGet(getRec, getReq)
+
+	if getRec.Code != http.StatusOK {
+		t.Fatalf("expected %d, got %d: %s", http.StatusOK, getRec.Code, getRec.Body.String())
+	}
+	if !strings.Contains(getRec.Body.String(), submitResp.JobID) {
+		t.Fatalf("expected job ID in response, got %q", getRec.Body.String())
+	}
+}
+
+func TestHandleJobsGet_ReturnsNotFoundForUnknownJob(t *testing.T) {
+	h := newTestHandlers()
+
+	req := httptest.NewRequest(http.MethodGet, "/jobs/job-doesnotexist", nil)
+	rec := httptest.NewRecorder()
+	h.HandleJobsGet(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("expected %d, got %d", http.StatusNotFound, rec.Code)
 	}
 }

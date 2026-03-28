@@ -1,5 +1,7 @@
 package models
 
+import "time"
+
 type FunctionSpec struct {
 	Language   string `json:"language"`
 	Artifact   string `json:"artifact"`
@@ -17,6 +19,14 @@ type JobSubmissionResponse struct {
 	JobID   string `json:"jobId"`
 	Status  string `json:"status"`
 	Message string `json:"message"`
+}
+
+type JobStatus struct {
+	JobID     string    `json:"jobId"`
+	Status    string    `json:"status"`
+	Message   string    `json:"message"`
+	Filename  string    `json:"filename"`
+	CreatedAt time.Time `json:"createdAt"`
 }
 
 type CreateUserRequest struct {

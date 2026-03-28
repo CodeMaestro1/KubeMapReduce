@@ -6,6 +6,9 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"net/http"
+	"sort"
+	"strings"
+	"sync"
 	"time"
 
 	"kubemapreduce/internal/models"
@@ -16,6 +19,7 @@ import (
 
 type Handlers struct {
 	adminClient *auth.KeycloakAdminClient
+	jobs        sync.Map // key: string (jobID) → models.JobStatus
 }
 
 func NewHandlers(adminClient *auth.KeycloakAdminClient) *Handlers {
@@ -76,6 +80,16 @@ func (h *Handlers) HandleJobsSubmit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	now := time.Now().UTC()
+	jobStatus := models.JobStatus{
+		JobID:     jobID,
+		Status:    "accepted",
+		Message:   "job specification validated and accepted",
+		Filename:  request.Filename,
+		CreatedAt: now,
+	}
+	h.jobs.Store(jobID, jobStatus)
+
 	response := models.JobSubmissionResponse{
 		JobID:   jobID,
 		Status:  "accepted",
@@ -83,6 +97,52 @@ func (h *Handlers) HandleJobsSubmit(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := httputil.WriteJSON(w, http.StatusAccepted, response); err != nil {
+		return
+	}
+}
+
+func (h *Handlers) HandleJobsList(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var list []models.JobStatus
+	h.jobs.Range(func(_, v any) bool {
+		list = append(list, v.(models.JobStatus))
+		return true
+	})
+	sort.Slice(list, func(i, j int) bool {
+		return list[i].CreatedAt.Before(list[j].CreatedAt)
+	})
+	if list == nil {
+		list = []models.JobStatus{}
+	}
+
+	if err := httputil.WriteJSON(w, http.StatusOK, list); err != nil {
+		return
+	}
+}
+
+func (h *Handlers) HandleJobsGet(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	jobID := strings.TrimPrefix(r.URL.Path, "/jobs/")
+	if jobID == "" {
+		http.Error(w, "job id required", http.StatusBadRequest)
+		return
+	}
+
+	v, ok := h.jobs.Load(jobID)
+	if !ok {
+		http.Error(w, "job not found", http.StatusNotFound)
+		return
+	}
+
+	if err := httputil.WriteJSON(w, http.StatusOK, v.(models.JobStatus)); err != nil {
 		return
 	}
 }
