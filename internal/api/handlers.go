@@ -178,6 +178,42 @@ func (h *Handlers) HandleJobsDownload(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func (h *Handlers) HandleConfigureNodes(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPut {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req models.NodeConfigRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid node config payload", http.StatusBadRequest)
+		return
+	}
+
+	if req.MaxPods < 1 {
+		http.Error(w, "maxPods must be a positive integer", http.StatusBadRequest)
+		return
+	}
+	if strings.TrimSpace(req.CPULimit) == "" {
+		http.Error(w, "cpuLimit is required", http.StatusBadRequest)
+		return
+	}
+	if strings.TrimSpace(req.MemoryLimit) == "" {
+		http.Error(w, "memoryLimit is required", http.StatusBadRequest)
+		return
+	}
+
+	if err := httputil.WriteJSON(w, http.StatusNotImplemented, map[string]interface{}{
+		"status":      "not_implemented",
+		"message":     "node configuration backend integration is not implemented yet",
+		"maxPods":     req.MaxPods,
+		"cpuLimit":    req.CPULimit,
+		"memoryLimit": req.MemoryLimit,
+	}); err != nil {
+		return
+	}
+}
+
 func (h *Handlers) HandleWorkerConfig(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPut {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
