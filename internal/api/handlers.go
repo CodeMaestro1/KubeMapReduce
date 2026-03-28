@@ -155,6 +155,29 @@ func (h *Handlers) HandleJobsGet(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func (h *Handlers) HandleJobsDownload(w http.ResponseWriter, r *http.Request) {
+	jobID := strings.TrimPrefix(r.URL.Path, "/jobs/")
+	jobID = strings.TrimSuffix(jobID, "/results")
+	if jobID == "" {
+		http.Error(w, "job id required", http.StatusBadRequest)
+		return
+	}
+
+	_, ok := h.jobs.Load(jobID)
+	if !ok {
+		http.Error(w, "job not found", http.StatusNotFound)
+		return
+	}
+
+	if err := httputil.WriteJSON(w, http.StatusNotImplemented, map[string]interface{}{
+		"status":  "not_implemented",
+		"message": "result download is not available yet; job processing backend is not implemented",
+		"jobId":   jobID,
+	}); err != nil {
+		return
+	}
+}
+
 func (h *Handlers) HandleWorkerConfig(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPut {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
