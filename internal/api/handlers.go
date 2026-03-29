@@ -23,6 +23,8 @@ type Handlers struct {
 	jobs        sync.Map // key: string (jobID) → models.JobStatus
 }
 
+const defaultReducers = 1
+
 func NewHandlers(adminClient *auth.KeycloakAdminClient) *Handlers {
 	return &Handlers{adminClient: adminClient}
 }
@@ -73,8 +75,6 @@ func (h *Handlers) HandleJobsSubmit(w http.ResponseWriter, r *http.Request) {
 	if request.Reducers == 0 {
 		request.Reducers = defaultReducers
 	}
-
-	h.cleanupJobsStore()
 
 	if err := validation.ValidateJobSubmission(request); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
