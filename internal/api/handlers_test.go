@@ -88,6 +88,72 @@ func TestHandleJobsSubmit_AcceptsValidJob(t *testing.T) {
 	}
 }
 
+func TestHandleJobsSubmit_DefaultsReducersToOneWhenOmitted(t *testing.T) {
+	h := newTestHandlers()
+
+	body := `{"filename":"data.csv","mapper":{"language":"python","artifact":"m.py","entrypoint":"map","interface":"map(key,value)->[]KeyValue"},"reducer":{"language":"python","artifact":"r.py","entrypoint":"reduce","interface":"reduce(key,values)->Value"}}`
+	submitReq := httptest.NewRequest(http.MethodPost, "/jobs", strings.NewReader(body))
+	submitRec := httptest.NewRecorder()
+
+	h.HandleJobsSubmit(submitRec, submitReq)
+
+	if submitRec.Code != http.StatusAccepted {
+		t.Fatalf("expected status %d, got %d: %s", http.StatusAccepted, submitRec.Code, submitRec.Body.String())
+	}
+
+	listReq := httptest.NewRequest(http.MethodGet, "/jobs", nil)
+	listRec := httptest.NewRecorder()
+	h.HandleJobsList(listRec, listReq)
+
+	if listRec.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d: %s", http.StatusOK, listRec.Code, listRec.Body.String())
+	}
+
+	var jobs []map[string]any
+	if err := json.Unmarshal(listRec.Body.Bytes(), &jobs); err != nil {
+		t.Fatalf("failed to decode jobs list: %v", err)
+	}
+	if len(jobs) != 1 {
+		t.Fatalf("expected 1 job in list, got %d", len(jobs))
+	}
+	if got, ok := jobs[0]["reducers"].(float64); !ok || int(got) != 1 {
+		t.Fatalf("expected reducers=1 by default, got %#v", jobs[0]["reducers"])
+	}
+}
+
+func TestHandleJobsSubmit_DefaultsReducersToOneWhenZeroProvided(t *testing.T) {
+	h := newTestHandlers()
+
+	body := `{"filename":"data.csv","mapper":{"language":"python","artifact":"m.py","entrypoint":"map","interface":"map(key,value)->[]KeyValue"},"reducer":{"language":"python","artifact":"r.py","entrypoint":"reduce","interface":"reduce(key,values)->Value"},"reducers":0}`
+	submitReq := httptest.NewRequest(http.MethodPost, "/jobs", strings.NewReader(body))
+	submitRec := httptest.NewRecorder()
+
+	h.HandleJobsSubmit(submitRec, submitReq)
+
+	if submitRec.Code != http.StatusAccepted {
+		t.Fatalf("expected status %d, got %d: %s", http.StatusAccepted, submitRec.Code, submitRec.Body.String())
+	}
+
+	listReq := httptest.NewRequest(http.MethodGet, "/jobs", nil)
+	listRec := httptest.NewRecorder()
+	h.HandleJobsList(listRec, listReq)
+
+	if listRec.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d: %s", http.StatusOK, listRec.Code, listRec.Body.String())
+	}
+
+	var jobs []map[string]any
+	if err := json.Unmarshal(listRec.Body.Bytes(), &jobs); err != nil {
+		t.Fatalf("failed to decode jobs list: %v", err)
+	}
+	if len(jobs) != 1 {
+		t.Fatalf("expected 1 job in list, got %d", len(jobs))
+	}
+	if got, ok := jobs[0]["reducers"].(float64); !ok || int(got) != 1 {
+		t.Fatalf("expected reducers=1 when provided as 0, got %#v", jobs[0]["reducers"])
+	}
+}
+
 func TestHandleWorkerConfig_RejectsInvalidValues(t *testing.T) {
 	h := newTestHandlers()
 
