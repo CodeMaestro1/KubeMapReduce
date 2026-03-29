@@ -18,14 +18,41 @@ import (
 )
 
 type Handlers struct {
-	adminClient *auth.KeycloakAdminClient
-	jobs        sync.Map // key: string (jobID) → models.JobStatus
+	adminClient   *auth.KeycloakAdminClient
+	jobs          sync.Map // key: string (jobID) → models.JobStatus
+	jobsMu        sync.Mutex
+	jobStatusTTL  time.Duration
+	maxStoredJobs int
+	now           func() time.Time
 }
 
-const defaultReducers = 1
+const (
+	defaultReducers      = 1
+	defaultJobStatusTTL  = 24 * time.Hour
+	defaultMaxStoredJobs = 10000
+)
 
 func NewHandlers(adminClient *auth.KeycloakAdminClient) *Handlers {
-	return &Handlers{adminClient: adminClient}
+	return newHandlersWithOptions(adminClient, defaultJobStatusTTL, defaultMaxStoredJobs, time.Now)
+}
+
+func newHandlersWithOptions(adminClient *auth.KeycloakAdminClient, jobStatusTTL time.Duration, maxStoredJobs int, now func() time.Time) *Handlers {
+	if jobStatusTTL <= 0 {
+		jobStatusTTL = defaultJobStatusTTL
+	}
+	if maxStoredJobs <= 0 {
+		maxStoredJobs = defaultMaxStoredJobs
+	}
+	if now == nil {
+		now = time.Now
+	}
+
+	return &Handlers{
+		adminClient:   adminClient,
+		jobStatusTTL:  jobStatusTTL,
+		maxStoredJobs: maxStoredJobs,
+		now:           now,
+	}
 }
 
 func (h *Handlers) HandleRoot(w http.ResponseWriter, r *http.Request) {
@@ -75,6 +102,8 @@ func (h *Handlers) HandleJobsSubmit(w http.ResponseWriter, r *http.Request) {
 		request.Reducers = defaultReducers
 	}
 
+	h.cleanupJobsStore()
+
 	if err := validation.ValidateJobSubmission(request); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
@@ -86,7 +115,7 @@ func (h *Handlers) HandleJobsSubmit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	now := time.Now().UTC()
+	now := h.now().UTC()
 	jobStatus := models.JobStatus{
 		JobID:     jobID,
 		Status:    "accepted",
@@ -96,6 +125,7 @@ func (h *Handlers) HandleJobsSubmit(w http.ResponseWriter, r *http.Request) {
 		CreatedAt: now,
 	}
 	h.jobs.Store(jobID, jobStatus)
+	h.cleanupJobsStore()
 
 	response := models.JobSubmissionResponse{
 		JobID:   jobID,
@@ -113,6 +143,8 @@ func (h *Handlers) HandleJobsList(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+
+	h.cleanupJobsStore()
 
 	var list []models.JobStatus
 	h.jobs.Range(func(_, v any) bool {
@@ -137,6 +169,8 @@ func (h *Handlers) HandleJobsGet(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	h.cleanupJobsStore()
+
 	jobID := strings.TrimPrefix(r.URL.Path, "/jobs/")
 	if jobID == "" {
 		http.Error(w, "job id required", http.StatusBadRequest)
@@ -155,6 +189,8 @@ func (h *Handlers) HandleJobsGet(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handlers) HandleJobsDownload(w http.ResponseWriter, r *http.Request) {
+	h.cleanupJobsStore()
+
 	jobID := strings.TrimPrefix(r.URL.Path, "/jobs/")
 	jobID = strings.TrimSuffix(jobID, "/results")
 	if jobID == "" {
@@ -246,6 +282,64 @@ func generateJobID() (string, error) {
 		return "", err
 	}
 	return "job-" + hex.EncodeToString(raw), nil
+}
+
+func (h *Handlers) cleanupJobsStore() {
+	h.jobsMu.Lock()
+	defer h.jobsMu.Unlock()
+
+	now := h.now().UTC()
+	h.jobs.Range(func(k, v any) bool {
+		jobID, ok := k.(string)
+		if !ok {
+			return true
+		}
+		status, ok := v.(models.JobStatus)
+		if !ok {
+			h.jobs.Delete(jobID)
+			return true
+		}
+		if now.Sub(status.CreatedAt) > h.jobStatusTTL {
+			h.jobs.Delete(jobID)
+		}
+		return true
+	})
+
+	if h.maxStoredJobs <= 0 {
+		return
+	}
+
+	type jobRecord struct {
+		jobID   string
+		created time.Time
+	}
+
+	records := make([]jobRecord, 0)
+	h.jobs.Range(func(k, v any) bool {
+		jobID, ok := k.(string)
+		if !ok {
+			return true
+		}
+		status, ok := v.(models.JobStatus)
+		if !ok {
+			h.jobs.Delete(jobID)
+			return true
+		}
+		records = append(records, jobRecord{jobID: jobID, created: status.CreatedAt})
+		return true
+	})
+
+	if len(records) <= h.maxStoredJobs {
+		return
+	}
+
+	sort.Slice(records, func(i, j int) bool {
+		return records[i].created.Before(records[j].created)
+	})
+
+	for _, record := range records[:len(records)-h.maxStoredJobs] {
+		h.jobs.Delete(record.jobID)
+	}
 }
 
 // ── Admin user management ──────────────────────────────────

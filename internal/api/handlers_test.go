@@ -2,15 +2,21 @@ package api
 
 import (
 	"encoding/json"
+	"kubemapreduce/internal/models"
 	"kubemapreduce/pkg/auth"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 func newTestHandlers() *Handlers {
 	return NewHandlers(nil)
+}
+
+func newTestHandlersWithRetention(now func() time.Time, ttl time.Duration, max int) *Handlers {
+	return newHandlersWithOptions(nil, ttl, max, now)
 }
 
 func TestHandleHealth(t *testing.T) {
@@ -430,6 +436,102 @@ func TestHandleJobsList_ReturnsSubmittedJob(t *testing.T) {
 	}
 	if !strings.Contains(listRec.Body.String(), `"filename":"data.csv"`) {
 		t.Fatalf("expected filename in list response, got %q", listRec.Body.String())
+	}
+}
+
+func TestHandleJobsList_PrunesExpiredJobsByTTL(t *testing.T) {
+	now := time.Date(2026, 1, 1, 10, 0, 0, 0, time.UTC)
+	h := newTestHandlersWithRetention(func() time.Time { return now }, 1*time.Second, 100)
+
+	body := `{"filename":"stale.csv","mapper":{"language":"python","artifact":"m.py","entrypoint":"map","interface":"map(key,value)->[]KeyValue"},"reducer":{"language":"python","artifact":"r.py","entrypoint":"reduce","interface":"reduce(key,values)->Value"}}`
+	submitReq := httptest.NewRequest(http.MethodPost, "/jobs", strings.NewReader(body))
+	submitRec := httptest.NewRecorder()
+	h.HandleJobsSubmit(submitRec, submitReq)
+	if submitRec.Code != http.StatusAccepted {
+		t.Fatalf("setup: submit failed with %d: %s", submitRec.Code, submitRec.Body.String())
+	}
+
+	now = now.Add(2 * time.Second)
+
+	listReq := httptest.NewRequest(http.MethodGet, "/jobs", nil)
+	listRec := httptest.NewRecorder()
+	h.HandleJobsList(listRec, listReq)
+
+	if listRec.Code != http.StatusOK {
+		t.Fatalf("expected %d, got %d", http.StatusOK, listRec.Code)
+	}
+	if strings.TrimSpace(listRec.Body.String()) != "[]" {
+		t.Fatalf("expected expired jobs to be pruned, got %q", listRec.Body.String())
+	}
+}
+
+func TestHandleJobsGet_ReturnsNotFoundWhenExpiredByTTL(t *testing.T) {
+	now := time.Date(2026, 1, 1, 10, 0, 0, 0, time.UTC)
+	h := newTestHandlersWithRetention(func() time.Time { return now }, 1*time.Second, 100)
+
+	body := `{"filename":"input.json","mapper":{"language":"python","artifact":"m.py","entrypoint":"map","interface":"map(key,value)->[]KeyValue"},"reducer":{"language":"python","artifact":"r.py","entrypoint":"reduce","interface":"reduce(key,values)->Value"}}`
+	submitReq := httptest.NewRequest(http.MethodPost, "/jobs", strings.NewReader(body))
+	submitRec := httptest.NewRecorder()
+	h.HandleJobsSubmit(submitRec, submitReq)
+	if submitRec.Code != http.StatusAccepted {
+		t.Fatalf("setup: submit failed with %d: %s", submitRec.Code, submitRec.Body.String())
+	}
+
+	var submitResp struct {
+		JobID string `json:"jobId"`
+	}
+	if err := json.NewDecoder(strings.NewReader(submitRec.Body.String())).Decode(&submitResp); err != nil {
+		t.Fatalf("decode submit response: %v", err)
+	}
+
+	now = now.Add(2 * time.Second)
+
+	getReq := httptest.NewRequest(http.MethodGet, "/jobs/"+submitResp.JobID, nil)
+	getRec := httptest.NewRecorder()
+	h.HandleJobsGet(getRec, getReq)
+
+	if getRec.Code != http.StatusNotFound {
+		t.Fatalf("expected %d, got %d", http.StatusNotFound, getRec.Code)
+	}
+}
+
+func TestHandleJobsSubmit_EvictsOldestWhenMaxCapacityExceeded(t *testing.T) {
+	now := time.Date(2026, 1, 1, 10, 0, 0, 0, time.UTC)
+	h := newTestHandlersWithRetention(func() time.Time { return now }, 1*time.Hour, 2)
+
+	submit := func(filename string) {
+		body := `{"filename":"` + filename + `","mapper":{"language":"python","artifact":"m.py","entrypoint":"map","interface":"map(key,value)->[]KeyValue"},"reducer":{"language":"python","artifact":"r.py","entrypoint":"reduce","interface":"reduce(key,values)->Value"}}`
+		req := httptest.NewRequest(http.MethodPost, "/jobs", strings.NewReader(body))
+		rec := httptest.NewRecorder()
+		h.HandleJobsSubmit(rec, req)
+		if rec.Code != http.StatusAccepted {
+			t.Fatalf("submit failed with %d: %s", rec.Code, rec.Body.String())
+		}
+	}
+
+	submit("job-1.csv")
+	now = now.Add(1 * time.Second)
+	submit("job-2.csv")
+	now = now.Add(1 * time.Second)
+	submit("job-3.csv")
+
+	listReq := httptest.NewRequest(http.MethodGet, "/jobs", nil)
+	listRec := httptest.NewRecorder()
+	h.HandleJobsList(listRec, listReq)
+
+	if listRec.Code != http.StatusOK {
+		t.Fatalf("expected %d, got %d", http.StatusOK, listRec.Code)
+	}
+
+	var jobs []models.JobStatus
+	if err := json.Unmarshal(listRec.Body.Bytes(), &jobs); err != nil {
+		t.Fatalf("decode jobs list: %v", err)
+	}
+	if len(jobs) != 2 {
+		t.Fatalf("expected 2 jobs after eviction, got %d", len(jobs))
+	}
+	if jobs[0].Filename != "job-2.csv" || jobs[1].Filename != "job-3.csv" {
+		t.Fatalf("expected oldest job to be evicted, got %+v", jobs)
 	}
 }
 
