@@ -74,12 +74,21 @@ func cmdLogout() {
 // ── health ─────────────────────────────────────────────────
 
 func cmdHealth() {
-	resp, err := http.Get(apiURL() + "/health")
+	req, err := http.NewRequest(http.MethodGet, apiURL()+"/health", nil)
+	if err != nil {
+		log.Fatalf("health check request failed: %v", err)
+	}
+
+	resp, err := cliHTTPClient.Do(req)
 	if err != nil {
 		log.Fatalf("health check failed: %v", err)
 	}
 	defer resp.Body.Close()
 
 	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		log.Fatalf("health check failed (HTTP %s): %s", resp.Status, strings.TrimSpace(string(body)))
+	}
+
 	fmt.Print(string(body))
 }
