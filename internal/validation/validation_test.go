@@ -127,6 +127,15 @@ func TestValidateJobSubmission(t *testing.T) {
 			wantErr: "reducers must be a positive integer",
 		},
 		{
+			name: "zero reducers count",
+			req: func() models.JobSubmissionRequest {
+				req := validJobSubmissionRequest()
+				req.Reducers = 0
+				return req
+			}(),
+			wantErr: "reducers must be a positive integer",
+		},
+		{
 			name: "valid job with reducers count",
 			req: func() models.JobSubmissionRequest {
 				req := validJobSubmissionRequest()
@@ -282,5 +291,6 @@ func validJobSubmissionRequest() models.JobSubmissionRequest {
 			Entrypoint: "reduce",
 			Interface:  ReduceInterface,
 		},
+		Reducers: 1,
 	}
 }
