@@ -22,13 +22,13 @@ func main() {
 
 	mux.Handle("/jobs",
 		auth.RequireRole("USER", validator, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			w.Write([]byte("User endpoint"))
+			_, _ = w.Write([]byte("User endpoint"))
 		})),
 	)
 
 	mux.Handle("/admin",
 		auth.RequireRole("ADMIN", validator, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			w.Write([]byte("Admin endpoint"))
+			_, _ = w.Write([]byte("Admin endpoint"))
 		})),
 	)
 

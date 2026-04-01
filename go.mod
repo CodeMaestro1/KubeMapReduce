@@ -1,6 +1,6 @@
 module kubemapreduce
 
-go 1.25.0
+go 1.25.8
 
 require (
 	github.com/MicahParks/keyfunc v1.9.0
