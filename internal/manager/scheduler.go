@@ -1,3 +1,4 @@
+// Package manager provides the MapReduce scheduling and task tracking components.
 package manager
 
 import (
@@ -16,6 +17,8 @@ var (
 	ErrInvalidInitialState    = errors.New("all initial tasks must be Idle")
 	ErrEmptyWorkerID          = errors.New("workerID cannot be empty")
 	ErrInvalidTaskType        = errors.New("task found in wrong collection type (map vs reduce)")
+	ErrEmptyTaskID            = errors.New("task ID cannot be empty")
+	ErrInvalidTimeout         = errors.New("timeout must be strictly positive")
 )
 
 // Scheduler coordinates task assignment and lifecycle for a single MapReduce job.
@@ -27,8 +30,6 @@ type Scheduler struct {
 }
 
 // NewScheduler initializes a Scheduler with O(1) task index mapping.
-// It will validate that the tracker is not nil, all internal tasks are Idle,
-// and that all task IDs are unique within the MapReduce job graph.
 func NewScheduler(tracker *TaskTracker) (*Scheduler, error) {
 	if tracker == nil {
 		return nil, ErrNilTracker
@@ -37,8 +38,11 @@ func NewScheduler(tracker *TaskTracker) (*Scheduler, error) {
 	taskMap := make(map[string]*Task)
 
 	// Validate MapTasks
-	for i := range tracker.MapTasks {
-		task := &tracker.MapTasks[i]
+	for i := range tracker.mapTasks {
+		task := &tracker.mapTasks[i]
+		if task.ID == "" {
+			return nil, ErrEmptyTaskID
+		}
 		if task.State != Idle {
 			return nil, ErrInvalidInitialState
 		}
@@ -52,8 +56,11 @@ func NewScheduler(tracker *TaskTracker) (*Scheduler, error) {
 	}
 
 	// Validate ReduceTasks
-	for i := range tracker.ReduceTasks {
-		task := &tracker.ReduceTasks[i]
+	for i := range tracker.reduceTasks {
+		task := &tracker.reduceTasks[i]
+		if task.ID == "" {
+			return nil, ErrEmptyTaskID
+		}
 		if task.State != Idle {
 			return nil, ErrInvalidInitialState
 		}
@@ -72,17 +79,6 @@ func NewScheduler(tracker *TaskTracker) (*Scheduler, error) {
 	}, nil
 }
 
-// GetNextTask returns the next available idle task for the given worker.
-//
-// Map tasks are always scheduled first: while there are any map tasks that are
-// not yet completed, this method will only return map tasks. Once all map
-// tasks have been completed, it will start returning idle reduce tasks.
-//
-// On success it returns a pointer to the task that was moved to InProgress
-// for the provided worker ID. If there are remaining (map or reduce) tasks
-// but none are currently idle (i.e. all are InProgress), it returns
-// ErrNoIdleTasks. If all map and reduce tasks have completed, it returns
-// ErrJobCompleted.
 func (s *Scheduler) GetNextTask(workerID string) (*Task, error) {
 	if workerID == "" {
 		return nil, ErrEmptyWorkerID
@@ -92,18 +88,15 @@ func (s *Scheduler) GetNextTask(workerID string) (*Task, error) {
 	defer s.mu.Unlock()
 
 	allMapCompleted := true
-	for i := range s.tracker.MapTasks {
-		if s.tracker.MapTasks[i].State != Completed {
+	for i := range s.tracker.mapTasks {
+		if s.tracker.mapTasks[i].State != Completed {
 			allMapCompleted = false
-			if s.tracker.MapTasks[i].State == Idle {
-				s.tracker.MapTasks[i].State = InProgress
-				s.tracker.MapTasks[i].WorkerID = workerID
-				s.tracker.MapTasks[i].StartTime = time.Now()
+			if s.tracker.mapTasks[i].State == Idle {
+				s.tracker.mapTasks[i].State = InProgress
+				s.tracker.mapTasks[i].workerID = workerID
+				s.tracker.mapTasks[i].startTime = time.Now()
 
-				// We return a copy of the task to prevent callers from directly mutating
-				// the tracker's internal state without going through the Scheduler APIs
-				// and its mutex lock.
-				taskCopy := s.tracker.MapTasks[i]
+				taskCopy := s.tracker.mapTasks[i]
 				return &taskCopy, nil
 			}
 		}
@@ -114,16 +107,15 @@ func (s *Scheduler) GetNextTask(workerID string) (*Task, error) {
 	}
 
 	allReduceCompleted := true
-	for i := range s.tracker.ReduceTasks {
-		if s.tracker.ReduceTasks[i].State != Completed {
+	for i := range s.tracker.reduceTasks {
+		if s.tracker.reduceTasks[i].State != Completed {
 			allReduceCompleted = false
-			if s.tracker.ReduceTasks[i].State == Idle {
-				s.tracker.ReduceTasks[i].State = InProgress
-				s.tracker.ReduceTasks[i].WorkerID = workerID
-				s.tracker.ReduceTasks[i].StartTime = time.Now()
+			if s.tracker.reduceTasks[i].State == Idle {
+				s.tracker.reduceTasks[i].State = InProgress
+				s.tracker.reduceTasks[i].workerID = workerID
+				s.tracker.reduceTasks[i].startTime = time.Now()
 
-				// Return a safe copy to prevent data races and unauthorized mutations
-				taskCopy := s.tracker.ReduceTasks[i]
+				taskCopy := s.tracker.reduceTasks[i]
 				return &taskCopy, nil
 			}
 		}
@@ -136,9 +128,6 @@ func (s *Scheduler) GetNextTask(workerID string) (*Task, error) {
 	return nil, ErrJobCompleted
 }
 
-// CompleteTask marks the given in-progress task as Completed.
-// Returns ErrTaskNotFound if taskID doesn't exist, or
-// ErrInvalidStateTransition if the task is not currently InProgress.
 func (s *Scheduler) CompleteTask(taskID string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -153,16 +142,12 @@ func (s *Scheduler) CompleteTask(taskID string) error {
 	}
 
 	task.State = Completed
-	task.WorkerID = ""
-	task.StartTime = time.Time{}
+	task.workerID = ""
+	task.startTime = time.Time{}
 	return nil
 }
 
-// FailTask marks the given in-progress task as Idle and clears any stale trace
-// bindings (such as WorkerID and StartTime).
-// Returns ErrTaskNotFound if taskID doesn't exist, or
-// ErrInvalidStateTransition if the task is not currently InProgress.
-func (s *Scheduler) FailTask(taskID string) error {
+func (s *Scheduler) FailTask(taskID string, reason string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -176,16 +161,19 @@ func (s *Scheduler) FailTask(taskID string) error {
 	}
 
 	task.State = Idle
-	task.WorkerID = ""
-	task.StartTime = time.Time{}
+	task.workerID = ""
+	task.startTime = time.Time{}
+	task.Attempts++
+	task.LastFailure = reason
+	task.LastFailedAt = time.Now()
 	return nil
 }
 
-// FailStaleTasks scans all InProgress tasks. If a task has been running longer than
-// the given timeout without being completed, it assumes the worker has crashed,
-// forcefully transitions the task back to Idle, and returns it to the schedulable pool.
-// Returns the number of tasks successfully recovered.
-func (s *Scheduler) FailStaleTasks(timeout time.Duration) int {
+func (s *Scheduler) FailStaleTasks(timeout time.Duration) (int, error) {
+	if timeout <= 0 {
+		return 0, ErrInvalidTimeout
+	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -193,13 +181,16 @@ func (s *Scheduler) FailStaleTasks(timeout time.Duration) int {
 	recoveredCount := 0
 
 	for _, task := range s.taskMap {
-		if task.State == InProgress && now.Sub(task.StartTime) > timeout {
+		if task.State == InProgress && now.Sub(task.startTime) > timeout {
 			task.State = Idle
-			task.WorkerID = ""
-			task.StartTime = time.Time{}
+			task.workerID = ""
+			task.startTime = time.Time{}
+			task.Attempts++
+			task.LastFailure = "stale timeout"
+			task.LastFailedAt = now
 			recoveredCount++
 		}
 	}
 
-	return recoveredCount
+	return recoveredCount, nil
 }
