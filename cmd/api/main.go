@@ -1,48 +1,37 @@
 package main
 
 import (
-	_ "embed"
 	"log"
 	"net/http"
-	"strings"
 
-	"kubemapreduce/internal/api"
-	"kubemapreduce/internal/config"
 	"kubemapreduce/pkg/auth"
 )
 
-//go:embed ui/index.html
-var uiHTML string
-
 func main() {
-	cfg := config.Load()
 
-	validator, err := auth.NewJWTValidator(cfg.JWKSURL, cfg.Issuer, cfg.Audience)
+	jwksURL := "http://localhost:8080/realms/mapreduce/protocol/openid-connect/certs"
+	issuer := "http://localhost:8080/realms/mapreduce"
+	audience := "mapreduce-api"
+
+	validator, err := auth.NewJWTValidator(jwksURL, issuer, audience)
 	if err != nil {
-		if strings.Contains(err.Error(), "404") {
-			log.Fatalf("failed to initialize JWT validator (jwks=%s, issuer=%s, audience=%s): Keycloak returned 404. Ensure realm %q and client %q exist, or override KEYCLOAK_REALM/KEYCLOAK_JWKS_URL/KEYCLOAK_ISSUER. Original error: %v",
-				cfg.JWKSURL, cfg.Issuer, cfg.Audience, cfg.Realm, cfg.Audience, err)
-		}
-		log.Fatalf("failed to initialize JWT validator (jwks=%s, issuer=%s, audience=%s): %v",
-			cfg.JWKSURL, cfg.Issuer, cfg.Audience, err)
+		log.Fatal(err)
 	}
 
-	adminClient := auth.NewKeycloakAdminClient(
-		cfg.KeycloakBaseURL,
-		cfg.Realm,
-		cfg.AdminUsername,
-		cfg.AdminPassword,
+	mux := http.NewServeMux()
+
+	mux.Handle("/jobs",
+		auth.RequireRole("USER", validator, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			_, _ = w.Write([]byte("User endpoint"))
+		})),
 	)
 
-	handlers := api.NewHandlers(adminClient, uiHTML, api.UIConfig{
-		KeycloakBaseURL: cfg.KeycloakBaseURL,
-		Realm:           cfg.Realm,
-		ClientID:        cfg.Audience,
-	})
+	mux.Handle("/admin",
+		auth.RequireRole("ADMIN", validator, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			_, _ = w.Write([]byte("Admin endpoint"))
+		})),
+	)
 
-	mux := http.NewServeMux()
-	api.RegisterRoutes(mux, handlers, validator)
-
-	log.Printf("API running on %s", cfg.ServerAddr)
-	log.Fatal(http.ListenAndServe(cfg.ServerAddr, mux))
+	log.Println("API running on :8081")
+	log.Fatal(http.ListenAndServe(":8081", mux))
 }

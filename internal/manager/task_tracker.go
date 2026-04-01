@@ -51,12 +51,15 @@ func (t TaskType) String() string {
 
 // Task represents the metadata the Master needs to track
 type Task struct {
-	ID        string
-	Type      TaskType // MapTask or ReduceTask
-	State     TaskState
-	WorkerID  string
-	InputFile string
-	StartTime time.Time
+	ID           string
+	Type         TaskType // MapTask or ReduceTask
+	State        TaskState
+	workerID     string
+	InputFile    string
+	startTime    time.Time
+	Attempts     int
+	LastFailure  string
+	LastFailedAt time.Time
 }
 
 // TaskTracker tracks the overall job progress.
@@ -64,6 +67,21 @@ type Task struct {
 // it has been passed to NewScheduler, as the Scheduler maintains an internal
 // index that will become out of sync.
 type TaskTracker struct {
-	MapTasks    []Task
-	ReduceTasks []Task
+	mapTasks    []Task
+	reduceTasks []Task
+}
+
+func (t *Task) WorkerID() string     { return t.workerID }
+func (t *Task) StartTime() time.Time { return t.startTime }
+
+// NewTaskTracker safely initializes a TaskTracker by maintaining defensive copies.
+func NewTaskTracker(mapTasks, reduceTasks []Task) *TaskTracker {
+	mCopy := make([]Task, len(mapTasks))
+	copy(mCopy, mapTasks)
+	rCopy := make([]Task, len(reduceTasks))
+	copy(rCopy, reduceTasks)
+	return &TaskTracker{
+		mapTasks:    mCopy,
+		reduceTasks: rCopy,
+	}
 }

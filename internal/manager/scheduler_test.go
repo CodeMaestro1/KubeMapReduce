@@ -7,11 +7,11 @@ import (
 
 func TestScheduler_MapBeforeReduce(t *testing.T) {
 	tracker := &TaskTracker{
-		MapTasks: []Task{
+		mapTasks: []Task{
 			{ID: "m1", Type: MapTask, State: Idle},
 			{ID: "m2", Type: MapTask, State: Idle},
 		},
-		ReduceTasks: []Task{
+		reduceTasks: []Task{
 			{ID: "r1", Type: ReduceTask, State: Idle},
 		},
 	}
@@ -87,7 +87,7 @@ func TestScheduler_MapBeforeReduce(t *testing.T) {
 
 func TestScheduler_FailTask(t *testing.T) {
 	tracker := &TaskTracker{
-		MapTasks: []Task{
+		mapTasks: []Task{
 			{ID: "m1", Type: MapTask, State: Idle},
 		},
 	}
@@ -104,7 +104,7 @@ func TestScheduler_FailTask(t *testing.T) {
 	}
 
 	// Fail task
-	err = scheduler.FailTask("m1")
+	err = scheduler.FailTask("m1", "worker crashed")
 	if err != nil {
 		t.Fatalf("unexpected error failing task: %v", err)
 	}
@@ -117,15 +117,15 @@ func TestScheduler_FailTask(t *testing.T) {
 	if task2.ID != "m1" {
 		t.Errorf("expected task m1, got %s", task2.ID)
 	}
-	if task2.WorkerID != "worker-2" {
-		t.Errorf("expected worker-2, got %s", task2.WorkerID)
+	if task2.WorkerID() != "worker-2" {
+		t.Errorf("expected worker-2, got %s", task2.WorkerID())
 	}
 }
 
 // Completing an Idle task should be an invalid state transition.
 func TestScheduler_CompleteIdleTask_InvalidTransition(t *testing.T) {
 	tracker := &TaskTracker{
-		MapTasks: []Task{
+		mapTasks: []Task{
 			{ID: "m1", Type: MapTask, State: Idle},
 		},
 	}
@@ -145,7 +145,7 @@ func TestScheduler_CompleteIdleTask_InvalidTransition(t *testing.T) {
 // Failing a Completed task should be an invalid state transition.
 func TestScheduler_FailCompletedTask_InvalidTransition(t *testing.T) {
 	tracker := &TaskTracker{
-		MapTasks: []Task{
+		mapTasks: []Task{
 			{ID: "m1", Type: MapTask, State: Idle},
 		},
 	}
@@ -166,7 +166,7 @@ func TestScheduler_FailCompletedTask_InvalidTransition(t *testing.T) {
 	}
 
 	// Now failing a Completed task should not be allowed.
-	err = scheduler.FailTask("m1")
+	err = scheduler.FailTask("m1", "worker crashed")
 	if err != ErrInvalidStateTransition {
 		t.Fatalf("expected ErrInvalidStateTransition when failing Completed task, got %v", err)
 	}
@@ -181,10 +181,10 @@ func TestScheduler_NilTracker(t *testing.T) {
 
 func TestScheduler_DuplicateTaskIDs(t *testing.T) {
 	tracker := &TaskTracker{
-		MapTasks: []Task{
+		mapTasks: []Task{
 			{ID: "dup1", Type: MapTask, State: Idle},
 		},
-		ReduceTasks: []Task{
+		reduceTasks: []Task{
 			{ID: "dup1", Type: ReduceTask, State: Idle}, // duplicate ID
 		},
 	}
@@ -197,7 +197,7 @@ func TestScheduler_DuplicateTaskIDs(t *testing.T) {
 
 func TestScheduler_InitialStateValidation(t *testing.T) {
 	tracker := &TaskTracker{
-		MapTasks: []Task{
+		mapTasks: []Task{
 			{ID: "m1", Type: MapTask, State: InProgress}, // invalid initial state
 		},
 	}
@@ -210,7 +210,7 @@ func TestScheduler_InitialStateValidation(t *testing.T) {
 
 func TestScheduler_Concurrency(t *testing.T) {
 	tracker := &TaskTracker{
-		MapTasks: []Task{
+		mapTasks: []Task{
 			{ID: "m1", Type: MapTask, State: Idle},
 			{ID: "m2", Type: MapTask, State: Idle},
 			{ID: "m3", Type: MapTask, State: Idle},
@@ -267,7 +267,7 @@ func TestScheduler_Concurrency(t *testing.T) {
 
 func TestScheduler_EmptyWorkerID(t *testing.T) {
 	tracker := &TaskTracker{
-		MapTasks: []Task{
+		mapTasks: []Task{
 			{ID: "m1", Type: MapTask, State: Idle},
 		},
 	}
@@ -285,8 +285,8 @@ func TestScheduler_EmptyWorkerID(t *testing.T) {
 
 func TestScheduler_InvalidTaskType(t *testing.T) {
 	tracker := &TaskTracker{
-		MapTasks: []Task{
-			{ID: "m1", Type: ReduceTask, State: Idle}, // Placed in MapTasks array but typed as ReduceTask
+		mapTasks: []Task{
+			{ID: "m1", Type: ReduceTask, State: Idle}, // Placed in mapTasks array but typed as ReduceTask
 		},
 	}
 
@@ -298,7 +298,7 @@ func TestScheduler_InvalidTaskType(t *testing.T) {
 
 func TestScheduler_FailStaleTasks(t *testing.T) {
 	tracker := &TaskTracker{
-		MapTasks: []Task{
+		mapTasks: []Task{
 			{ID: "m1", Type: MapTask, State: Idle},
 		},
 	}
@@ -315,7 +315,7 @@ func TestScheduler_FailStaleTasks(t *testing.T) {
 	}
 
 	// FailStaleTasks immediately with a 10s boundary should yield 0 recoveries
-	recovered := scheduler.FailStaleTasks(10 * time.Second)
+	recovered, _ := scheduler.FailStaleTasks(10 * time.Second)
 	if recovered != 0 {
 		t.Fatalf("expected no tasks recovered initially, got %d", recovered)
 	}
@@ -324,7 +324,7 @@ func TestScheduler_FailStaleTasks(t *testing.T) {
 	time.Sleep(15 * time.Millisecond)
 
 	// Recover elements that have been processing for more than 5 milliseconds
-	recovered = scheduler.FailStaleTasks(5 * time.Millisecond)
+	recovered, _ = scheduler.FailStaleTasks(5 * time.Millisecond)
 	if recovered != 1 {
 		t.Fatalf("expected exactly 1 stale task to be recovered, got %d", recovered)
 	}
@@ -334,31 +334,31 @@ func TestScheduler_FailStaleTasks(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected healthy worker to acquire recovered task, got err: %v", err)
 	}
-	if task.ID != "m1" || task.WorkerID != "healthy-worker" {
+	if task.ID != "m1" || task.WorkerID() != "healthy-worker" {
 		t.Fatalf("expected m1 to be assigned to healthy-worker, got %#v", task)
 	}
 }
 
 // Proof-of-concept: mutating tracker slices after NewScheduler can desync
 // scheduler.taskMap pointers from the current tracker storage.
-func TestScheduler_ExternalTrackerMutation_BreaksTaskMapIndex(t *testing.T) {
-	// Capacity is intentionally 1 so append triggers reallocation.
-	mapTasks := make([]Task, 1, 1)
+// Proof-of-concept: mutating tracker slices after NewTaskTracker won't desync
+// scheduler.taskMap pointers because NewTaskTracker makes defensive copies.
+func TestScheduler_ExternalTrackerMutation_NoDesync(t *testing.T) {
+	mapTasks := make([]Task, 1)
 	mapTasks[0] = Task{ID: "m1", Type: MapTask, State: Idle}
 
-	tracker := &TaskTracker{
-		MapTasks: mapTasks,
-	}
+	tracker := NewTaskTracker(mapTasks, nil)
 
 	scheduler, err := NewScheduler(tracker)
 	if err != nil {
 		t.Fatalf("unexpected error creating scheduler: %v", err)
 	}
 
-	// External mutation after scheduler creation: this reallocates MapTasks.
-	tracker.MapTasks = append(tracker.MapTasks, Task{ID: "m2", Type: MapTask, State: Idle})
+	// External mutation after scheduler creation: mutates original array
+	mapTasks[0].State = Completed
+	_ = append(mapTasks, Task{ID: "m2", Type: MapTask, State: Idle})
 
-	// Scheduler assigns m1 from the new slice backing array and marks it InProgress.
+	// Scheduler assigns m1 safely from its internal disconnected tracker
 	task, err := scheduler.GetNextTask("worker-1")
 	if err != nil {
 		t.Fatalf("expected task assignment, got err: %v", err)
@@ -367,10 +367,9 @@ func TestScheduler_ExternalTrackerMutation_BreaksTaskMapIndex(t *testing.T) {
 		t.Fatalf("expected m1, got %s", task.ID)
 	}
 
-	// CompleteTask uses taskMap pointer captured before reallocation.
-	// That stale pointer still sees m1 as Idle, so transition fails.
+	// CompleteTask uses valid pointers.
 	err = scheduler.CompleteTask("m1")
-	if err != ErrInvalidStateTransition {
-		t.Fatalf("expected ErrInvalidStateTransition due to stale pointer desync, got: %v", err)
+	if err != nil {
+		t.Fatalf("expected no error since state is safely maintained, got: %v", err)
 	}
 }
