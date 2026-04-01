@@ -1,3 +1,4 @@
+// Package auth provides JWT authentication and middleware functions.
 package auth
 
 import (
@@ -9,6 +10,10 @@ import (
 	"github.com/MicahParks/keyfunc"
 	"github.com/golang-jwt/jwt/v4"
 )
+
+type contextKey string
+
+const claimsKey contextKey = "claims"
 
 type JWTValidator struct {
 	jwks     *keyfunc.JWKS
@@ -79,14 +84,14 @@ func (v *JWTValidator) Middleware(next http.Handler) http.Handler {
 		}
 
 		// Set claims in context so downstream handlers can extract them (e.g. via GetRoles)
-		ctx := context.WithValue(r.Context(), "claims", claims)
+		ctx := context.WithValue(r.Context(), claimsKey, claims)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }
 
 // GetRoles extracts the roles from the JWT claims in the request context.
 func GetRoles(r *http.Request) ([]string, error) {
-	claims, ok := r.Context().Value("claims").(jwt.MapClaims)
+	claims, ok := r.Context().Value(claimsKey).(jwt.MapClaims)
 	if !ok {
 		return nil, fmt.Errorf("no claims in context")
 	}
