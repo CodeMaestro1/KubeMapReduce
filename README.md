@@ -177,9 +177,12 @@ Environment variables used by the API server (defaults shown):
 - `KEYCLOAK_JWKS_URL` (`http://localhost:8080/realms/mapreduce/protocol/openid-connect/certs`)
 - `KEYCLOAK_ISSUER` (`http://localhost:8080/realms/mapreduce`)
 - `KEYCLOAK_AUDIENCE` (`mapreduce-api`)
-- `KEYCLOAK_ADMIN_USERNAME` (`admin`) — Keycloak admin user for proxied user management
-- `KEYCLOAK_ADMIN_PASSWORD` (`admin`) — Keycloak admin password
+- `KEYCLOAK_ADMIN_USERNAME` (**required**) — Keycloak admin user for proxied user management
+- `KEYCLOAK_ADMIN_PASSWORD` (**required**) — Keycloak admin password
 - `SERVER_ADDR` (`:8081`)
+
+The API fails fast during startup if either `KEYCLOAK_ADMIN_USERNAME` or
+`KEYCLOAK_ADMIN_PASSWORD` is missing or blank.
 
 Environment variables used by the CLI:
 
