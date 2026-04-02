@@ -2,6 +2,7 @@ package auth
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -69,6 +70,77 @@ func TestGetRoles_NoRolesKey(t *testing.T) {
 	_, err := GetRoles(req)
 	if err == nil {
 		t.Fatal("expected error when roles key missing from realm_access")
+	}
+}
+
+func TestGetRoles_MalformedRoleEntry(t *testing.T) {
+	claims := jwt.MapClaims{
+		"realm_access": map[string]interface{}{
+			"roles": []interface{}{"ADMIN", 123},
+		},
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	ctx := context.WithValue(req.Context(), claimsKey, claims)
+	req = req.WithContext(ctx)
+
+	_, err := GetRoles(req)
+	if err == nil {
+		t.Fatal("expected error when role entry is not a string")
+	}
+	if !errors.Is(err, ErrMalformedRoles) {
+		t.Fatalf("expected ErrMalformedRoles, got %v", err)
+	}
+}
+
+func TestRequireRoles_MalformedRoleEntryReturnsServiceUnavailable(t *testing.T) {
+	claims := jwt.MapClaims{
+		"realm_access": map[string]interface{}{
+			"roles": []interface{}{"ADMIN", 123},
+		},
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	ctx := context.WithValue(req.Context(), claimsKey, claims)
+	req = req.WithContext(ctx)
+
+	rr := httptest.NewRecorder()
+	nextCalled := false
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		nextCalled = true
+		w.WriteHeader(http.StatusOK)
+	})
+
+	requireRoles(rr, req, []string{"ADMIN"}, false, next)
+
+	if rr.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected status %d, got %d", http.StatusServiceUnavailable, rr.Code)
+	}
+	if nextCalled {
+		t.Fatal("expected next handler not to be called on malformed roles")
+	}
+}
+
+func TestRequireRoles_MissingRequiredRoleReturnsForbidden(t *testing.T) {
+	claims := jwt.MapClaims{
+		"realm_access": map[string]interface{}{
+			"roles": []interface{}{"USER"},
+		},
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	ctx := context.WithValue(req.Context(), claimsKey, claims)
+	req = req.WithContext(ctx)
+
+	rr := httptest.NewRecorder()
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+
+	requireRoles(rr, req, []string{"ADMIN"}, false, next)
+
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("expected status %d, got %d", http.StatusForbidden, rr.Code)
 	}
 }
 
