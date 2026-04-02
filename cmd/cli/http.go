@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -29,7 +30,13 @@ func keycloakBaseURL() string  { return getEnv("KEYCLOAK_BASE_URL", "http://loca
 func keycloakRealm() string    { return getEnv("KEYCLOAK_REALM", "mapreduce") }
 func keycloakClientID() string { return getEnv("KEYCLOAK_AUDIENCE", "mapreduce-api") }
 
-var cliHTTPClient = &http.Client{Timeout: 30 * time.Second}
+const cliRequestTimeout = 30 * time.Second
+
+var cliHTTPClient = &http.Client{Timeout: cliRequestTimeout}
+
+func cliRequestContext() (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.Background(), cliRequestTimeout)
+}
 
 // ── token management ───────────────────────────────────────
 
@@ -44,8 +51,16 @@ func getValidToken() (token string, serverURL string) {
 	}
 
 	// Access token expired — try refreshing with the refresh token.
-	tokenResp, err := auth.RefreshTokens(
-		keycloakBaseURL(), keycloakRealm(), keycloakClientID(), tokens.RefreshToken,
+	ctx, cancel := cliRequestContext()
+	defer cancel()
+
+	tokenResp, err := auth.RefreshTokensWithContext(
+		ctx,
+		cliHTTPClient,
+		keycloakBaseURL(),
+		keycloakRealm(),
+		keycloakClientID(),
+		tokens.RefreshToken,
 	)
 	if err != nil {
 		log.Fatalf("session expired, please login again: %v", err)
@@ -65,12 +80,19 @@ func getValidToken() (token string, serverURL string) {
 // ── HTTP helpers ───────────────────────────────────────────
 
 func doAuthRequest(method, reqURL, token string, body []byte) (*http.Response, error) {
+	ctx, cancel := cliRequestContext()
+	defer cancel()
+
+	return doAuthRequestWithContext(ctx, method, reqURL, token, body)
+}
+
+func doAuthRequestWithContext(ctx context.Context, method, reqURL, token string, body []byte) (*http.Response, error) {
 	var reader io.Reader
 	if body != nil {
 		reader = bytes.NewReader(body)
 	}
 
-	req, err := http.NewRequest(method, reqURL, reader)
+	req, err := http.NewRequestWithContext(ctx, method, reqURL, reader)
 	if err != nil {
 		return nil, err
 	}

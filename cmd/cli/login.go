@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"io"
@@ -43,7 +44,18 @@ func cmdLogin(args []string) {
 		log.Fatal("password is required")
 	}
 
-	tokenResp, err := auth.RequestTokens(keycloakBaseURL(), keycloakRealm(), keycloakClientID(), u, pw)
+	ctx, cancel := cliRequestContext()
+	defer cancel()
+
+	tokenResp, err := auth.RequestTokensWithContext(
+		ctx,
+		cliHTTPClient,
+		keycloakBaseURL(),
+		keycloakRealm(),
+		keycloakClientID(),
+		u,
+		pw,
+	)
 	if err != nil {
 		log.Fatalf("login failed: %v", err)
 	}
@@ -74,7 +86,10 @@ func cmdLogout() {
 // ── health ─────────────────────────────────────────────────
 
 func cmdHealth() {
-	req, err := http.NewRequest(http.MethodGet, apiURL()+"/health", nil)
+	ctx, cancel := context.WithTimeout(context.Background(), cliRequestTimeout)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, apiURL()+"/health", nil)
 	if err != nil {
 		log.Fatalf("health check request failed: %v", err)
 	}
