@@ -1,11 +1,14 @@
 package auth
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
 
 	"github.com/golang-jwt/jwt/v5"
 )
+
+var ErrMalformedRoles = errors.New("malformed realm_access.roles")
 
 // GetRoles extracts the realm roles from the JWT claims stored in the request
 // context by the JWTValidator middleware.
@@ -29,7 +32,7 @@ func GetRoles(r *http.Request) ([]string, error) {
 	for i, role := range rawRoles {
 		roleStr, ok := role.(string)
 		if !ok {
-			return nil, fmt.Errorf("invalid role type")
+			return nil, fmt.Errorf("%w: role[%d] is %T", ErrMalformedRoles, i, role)
 		}
 		roles[i] = roleStr
 	}
@@ -41,18 +44,7 @@ func GetRoles(r *http.Request) ([]string, error) {
 // It wraps the provided next handler with JWT validation automatically.
 func RequireRole(role string, validator *JWTValidator, next http.Handler) http.Handler {
 	return validator.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		roles, err := GetRoles(r)
-		if err != nil {
-			http.Error(w, "forbidden: "+err.Error(), http.StatusForbidden)
-			return
-		}
-
-		if !containsRole(roles, role) {
-			http.Error(w, "forbidden: required role missing", http.StatusForbidden)
-			return
-		}
-
-		next.ServeHTTP(w, r)
+		requireRoles(w, r, []string{role}, false, next)
 	}))
 }
 
@@ -60,27 +52,43 @@ func RequireRole(role string, validator *JWTValidator, next http.Handler) http.H
 // of the specified roles. It wraps the provided next handler with JWT validation.
 func RequireAnyRole(requiredRoles []string, validator *JWTValidator, next http.Handler) http.Handler {
 	return validator.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		roles, err := GetRoles(r)
-		if err != nil {
-			http.Error(w, "forbidden: "+err.Error(), http.StatusForbidden)
+		requireRoles(w, r, requiredRoles, true, next)
+	}))
+}
+
+func requireRoles(w http.ResponseWriter, r *http.Request, requiredRoles []string, anyMatch bool, next http.Handler) {
+	roles, err := GetRoles(r)
+	if err != nil {
+		if errors.Is(err, ErrMalformedRoles) {
+			http.Error(w, "service unavailable", http.StatusServiceUnavailable)
 			return
 		}
+		http.Error(w, "forbidden: "+err.Error(), http.StatusForbidden)
+		return
+	}
 
-		hasRole := false
-		for _, requiredRole := range requiredRoles {
+	hasRole := !anyMatch
+	for _, requiredRole := range requiredRoles {
+		if anyMatch {
 			if containsRole(roles, requiredRole) {
 				hasRole = true
 				break
 			}
+			continue
 		}
 
-		if !hasRole {
-			http.Error(w, "forbidden: required role missing", http.StatusForbidden)
-			return
+		if !containsRole(roles, requiredRole) {
+			hasRole = false
+			break
 		}
+	}
 
-		next.ServeHTTP(w, r)
-	}))
+	if !hasRole {
+		http.Error(w, "forbidden: required role missing", http.StatusForbidden)
+		return
+	}
+
+	next.ServeHTTP(w, r)
 }
 
 func containsRole(roles []string, expected string) bool {
