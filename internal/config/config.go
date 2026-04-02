@@ -1,6 +1,7 @@
 package config
 
 import (
+	"fmt"
 	"os"
 	"strings"
 )
@@ -16,10 +17,18 @@ type Config struct {
 	AdminPassword   string
 }
 
-func Load() *Config {
+func Load() (*Config, error) {
 	keycloakBaseURL := getEnv("KEYCLOAK_BASE_URL", "http://localhost:8080")
 	realm := getEnv("KEYCLOAK_REALM", "mapreduce")
 	audience := getEnv("KEYCLOAK_AUDIENCE", "mapreduce-api")
+	adminUsername, err := getRequiredEnv("KEYCLOAK_ADMIN_USERNAME")
+	if err != nil {
+		return nil, err
+	}
+	adminPassword, err := getRequiredEnv("KEYCLOAK_ADMIN_PASSWORD")
+	if err != nil {
+		return nil, err
+	}
 
 	return &Config{
 		KeycloakBaseURL: keycloakBaseURL,
@@ -28,9 +37,9 @@ func Load() *Config {
 		Issuer:          getEnv("KEYCLOAK_ISSUER", keycloakBaseURL+"/realms/"+realm),
 		Audience:        audience,
 		ServerAddr:      getEnv("SERVER_ADDR", ":8081"),
-		AdminUsername:   getEnv("KEYCLOAK_ADMIN_USERNAME", "admin"),
-		AdminPassword:   getEnv("KEYCLOAK_ADMIN_PASSWORD", "admin"),
-	}
+		AdminUsername:   adminUsername,
+		AdminPassword:   adminPassword,
+	}, nil
 }
 
 func getEnv(key string, fallback string) string {
@@ -39,4 +48,12 @@ func getEnv(key string, fallback string) string {
 		return fallback
 	}
 	return value
+}
+
+func getRequiredEnv(key string) (string, error) {
+	value := strings.TrimSpace(os.Getenv(key))
+	if value == "" {
+		return "", fmt.Errorf("%s is required", key)
+	}
+	return value, nil
 }
