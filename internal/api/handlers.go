@@ -413,13 +413,8 @@ func (h *Handlers) HandleAdminDeleteUser(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	var req models.DeleteUserRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "invalid request payload", http.StatusBadRequest)
-		return
-	}
-
-	if req.Username == "" {
+	username := strings.TrimSpace(r.PathValue("username"))
+	if username == "" {
 		http.Error(w, "username is required", http.StatusBadRequest)
 		return
 	}
@@ -427,7 +422,7 @@ func (h *Handlers) HandleAdminDeleteUser(w http.ResponseWriter, r *http.Request)
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
 
-	if err := h.adminClient.DeleteUserByUsername(ctx, req.Username); err != nil {
+	if err := h.adminClient.DeleteUserByUsername(ctx, username); err != nil {
 		if auth.IsServiceUnavailable(err) {
 			http.Error(w, "authentication service unavailable", http.StatusServiceUnavailable)
 			return
@@ -438,7 +433,7 @@ func (h *Handlers) HandleAdminDeleteUser(w http.ResponseWriter, r *http.Request)
 
 	if err := httputil.WriteJSON(w, http.StatusOK, map[string]string{
 		"status":   "deleted",
-		"username": req.Username,
+		"username": username,
 	}); err != nil {
 		return
 	}

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 
@@ -101,25 +102,22 @@ func cmdAdminDeleteUser(args []string) {
 	username := fs.String("username", "", "Username to delete (required)")
 	_ = fs.Parse(args)
 
-	if *username == "" {
+	normalizedUsername := strings.TrimSpace(*username)
+	if normalizedUsername == "" {
 		log.Fatal("--username is required")
 	}
 
-	payload, _ := json.Marshal(map[string]string{
-		"username": strings.TrimSpace(*username),
-	})
-
 	resp := doAuthRequestExpect(
 		http.MethodDelete,
-		serverURL+"/admin/users",
+		serverURL+"/admin/users/"+url.PathEscape(normalizedUsername),
 		token,
-		payload,
+		nil,
 		http.StatusOK,
 		"delete user failed",
 	)
 	defer resp.Body.Close()
 
-	fmt.Printf("User %q deleted.\n", *username)
+	fmt.Printf("User %q deleted.\n", normalizedUsername)
 	printResponse(resp)
 }
 

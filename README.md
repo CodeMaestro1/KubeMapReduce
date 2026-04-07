@@ -65,7 +65,7 @@ refreshed automatically when they expire.
 All admin user management flows through the API server:
 
 ```
-Admin -> CLI -> API Server (POST/DELETE /admin/users) -> Keycloak
+Admin -> CLI -> API Server (POST /admin/users, DELETE /admin/users/{username}) -> Keycloak
 ```
 
 The API server holds the Keycloak admin credentials and proxies create/delete
@@ -215,22 +215,18 @@ again.
 
 ## API Endpoints
 
-| Method | Path | Auth | Description |
-|--------|------|------|-------------|
-| `GET` | `/` | None | API info (JSON) |
-| `GET` | `/health` | None | Liveness check |
-| `POST` | `/jobs` | `USER` or `ADMIN` | Submit a MapReduce job spec |
-| `PUT` | `/admin/workers/config` | `ADMIN` | Update worker configuration |
-| `POST` | `/admin/users` | `ADMIN` | Create a user in Keycloak |
-| `DELETE` | `/admin/users` | `ADMIN` | Delete a user from Keycloak (JSON body: `{ "username": "<username>" }`) |
+| Method   | Path                      | Auth              | Description                 |
+| -------- | ------------------------- | ----------------- | --------------------------- |
+| `GET`    | `/`                       | None              | API info (JSON)             |
+| `GET`    | `/health`                 | None              | Liveness check              |
+| `POST`   | `/jobs`                   | `USER` or `ADMIN` | Submit a MapReduce job spec |
+| `PUT`    | `/admin/workers/config`   | `ADMIN`           | Update worker configuration |
+| `POST`   | `/admin/users`            | `ADMIN`           | Create a user in Keycloak   |
+| `DELETE` | `/admin/users/{username}` | `ADMIN`           | Delete a user from Keycloak |
 
-The `DELETE /admin/users` endpoint expects a JSON payload of the form:
+The `DELETE /admin/users/{username}` endpoint does not require a request body.
 
-```json
-{ "username": "<username>" }
-```
-
-Note: Some HTTP clients and proxies do not fully support bodies on `DELETE` requests. If you encounter issues, verify that your HTTP client forwards the JSON body correctly when calling this endpoint.
+Some HTTP clients and proxies do not fully support bodies on `DELETE` requests, so the username is supplied in the path instead.
 
 All protected endpoints require a Bearer token from Keycloak.
 
