@@ -44,10 +44,6 @@ type WorkerConfigRequest struct {
 	MaxJobsPerNode int `json:"maxJobsPerNode"`
 }
 
-type DeleteUserRequest struct {
-	Username string `json:"username"`
-}
-
 type NodeConfigRequest struct {
 	MaxPods     int    `json:"maxPods"`
 	CPULimit    string `json:"cpuLimit"`

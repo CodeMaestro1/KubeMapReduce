@@ -70,6 +70,17 @@ func RegisterRoutes(mux *http.ServeMux, h *Handlers, validator *auth.JWTValidato
 			switch r.Method {
 			case http.MethodPost:
 				h.HandleAdminCreateUser(w, r)
+			default:
+				http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			}
+		}),
+	))
+
+	mux.Handle("/admin/users/{username}", auth.RequireRole(
+		"ADMIN",
+		validator,
+		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			switch r.Method {
 			case http.MethodDelete:
 				h.HandleAdminDeleteUser(w, r)
 			default:

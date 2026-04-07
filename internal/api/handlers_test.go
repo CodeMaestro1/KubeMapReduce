@@ -327,7 +327,8 @@ func TestHandleAdminDeleteUser_RejectsNonDelete(t *testing.T) {
 	h, kc := newTestHandlersWithKeycloak(t)
 	defer kc.Close()
 
-	req := httptest.NewRequest(http.MethodGet, "/admin/users", nil)
+	req := httptest.NewRequest(http.MethodGet, "/admin/users/alice", nil)
+	req.SetPathValue("username", "alice")
 	rec := httptest.NewRecorder()
 	h.HandleAdminDeleteUser(rec, req)
 
@@ -336,11 +337,11 @@ func TestHandleAdminDeleteUser_RejectsNonDelete(t *testing.T) {
 	}
 }
 
-func TestHandleAdminDeleteUser_RejectsInvalidJSON(t *testing.T) {
+func TestHandleAdminDeleteUser_RejectsMissingUsername(t *testing.T) {
 	h, kc := newTestHandlersWithKeycloak(t)
 	defer kc.Close()
 
-	req := httptest.NewRequest(http.MethodDelete, "/admin/users", strings.NewReader("not-json"))
+	req := httptest.NewRequest(http.MethodDelete, "/admin/users/", nil)
 	rec := httptest.NewRecorder()
 	h.HandleAdminDeleteUser(rec, req)
 
@@ -349,26 +350,12 @@ func TestHandleAdminDeleteUser_RejectsInvalidJSON(t *testing.T) {
 	}
 }
 
-func TestHandleAdminDeleteUser_RejectsEmptyUsername(t *testing.T) {
+func TestHandleAdminDeleteUser_AcceptsPathUsername(t *testing.T) {
 	h, kc := newTestHandlersWithKeycloak(t)
 	defer kc.Close()
 
-	body := `{"username":""}`
-	req := httptest.NewRequest(http.MethodDelete, "/admin/users", strings.NewReader(body))
-	rec := httptest.NewRecorder()
-	h.HandleAdminDeleteUser(rec, req)
-
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("expected %d, got %d", http.StatusBadRequest, rec.Code)
-	}
-}
-
-func TestHandleAdminDeleteUser_Success(t *testing.T) {
-	h, kc := newTestHandlersWithKeycloak(t)
-	defer kc.Close()
-
-	body := `{"username":"alice"}`
-	req := httptest.NewRequest(http.MethodDelete, "/admin/users", strings.NewReader(body))
+	req := httptest.NewRequest(http.MethodDelete, "/admin/users/alice", nil)
+	req.SetPathValue("username", "alice")
 	rec := httptest.NewRecorder()
 	h.HandleAdminDeleteUser(rec, req)
 
