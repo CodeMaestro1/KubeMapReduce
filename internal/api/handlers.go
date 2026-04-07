@@ -276,11 +276,10 @@ func (h *Handlers) HandleWorkerConfig(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := httputil.WriteJSON(w, http.StatusAccepted, map[string]interface{}{
-		"status":            "accepted",
-		"message":           "worker configuration update accepted",
-		"maxConcurrentPods": request.MaxConcurrentPods,
-		"cpuLimit":          request.CPULimit,
-		"memoryLimit":       request.MemoryLimit,
+		"status":         "accepted",
+		"message":        "worker configuration update accepted",
+		"workerReplicas": request.WorkerReplicas,
+		"maxJobsPerNode": request.MaxJobsPerNode,
 	}); err != nil {
 		return
 	}
