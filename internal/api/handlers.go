@@ -366,6 +366,8 @@ func (h *Handlers) HandleAdminCreateUser(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
+	normalizedRole := validation.NormalizeRole(req.Role)
+
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
 
@@ -373,7 +375,7 @@ func (h *Handlers) HandleAdminCreateUser(w http.ResponseWriter, r *http.Request)
 		Username: req.Username,
 		Email:    req.Email,
 		Password: req.Password,
-		Role:     req.Role,
+		Role:     normalizedRole,
 	}); err != nil {
 		if auth.IsServiceUnavailable(err) {
 			http.Error(w, "authentication service unavailable", http.StatusServiceUnavailable)
@@ -386,7 +388,7 @@ func (h *Handlers) HandleAdminCreateUser(w http.ResponseWriter, r *http.Request)
 	if err := httputil.WriteJSON(w, http.StatusCreated, map[string]string{
 		"status":   "created",
 		"username": req.Username,
-		"role":     req.Role,
+		"role":     normalizedRole,
 	}); err != nil {
 		return
 	}

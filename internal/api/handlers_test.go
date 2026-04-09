@@ -327,6 +327,23 @@ func TestHandleAdminCreateUser_Success(t *testing.T) {
 	}
 }
 
+func TestHandleAdminCreateUser_NormalizesRole(t *testing.T) {
+	h, kc := newTestHandlersWithKeycloak(t)
+	defer kc.Close()
+
+	body := `{"username":"bob","password":"secret","role":"  admin  "}`
+	req := httptest.NewRequest(http.MethodPost, "/admin/users", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	h.HandleAdminCreateUser(rec, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("expected %d, got %d: %s", http.StatusCreated, rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"role":"ADMIN"`) {
+		t.Fatalf("expected normalized role ADMIN in body, got %q", rec.Body.String())
+	}
+}
+
 // ── Admin Delete User tests ─────────────────────────────────
 
 func TestHandleAdminDeleteUser_RejectsNonDelete(t *testing.T) {
