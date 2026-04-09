@@ -168,3 +168,16 @@ func TestJobSubmissionRequest_MarshalRoundTrip(t *testing.T) {
 		t.Errorf("Reducer = %+v, want %+v", decoded.Reducer, original.Reducer)
 	}
 }
+
+func TestDeleteUserRequest_JSON(t *testing.T) {
+	input := `{"username":"alice"}`
+
+	var req DeleteUserRequest
+	if err := json.Unmarshal([]byte(input), &req); err != nil {
+		t.Fatalf("unmarshal failed: %v", err)
+	}
+
+	if req.Username != "alice" {
+		t.Errorf("Username = %q, want %q", req.Username, "alice")
+	}
+}
