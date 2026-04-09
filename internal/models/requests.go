@@ -49,3 +49,7 @@ type NodeConfigRequest struct {
 	CPULimit    string `json:"cpuLimit"`
 	MemoryLimit string `json:"memoryLimit"`
 }
+
+type DeleteUserRequest struct {
+	Username string `json:"username"`
+}
