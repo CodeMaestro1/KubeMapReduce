@@ -186,6 +186,69 @@ func (s *Scheduler) GetMapOutputs() []string {
 	return outputs
 }
 
+// GetReduceOutputs collects all output URIs from completed Reduce tasks.
+// Used by the Manager to build the final result set for the Retrieve Result flow.
+func (s *Scheduler) GetReduceOutputs() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	var outputs []string
+	for i := range s.tracker.reduceTasks {
+		if s.tracker.reduceTasks[i].State == Completed {
+			outputs = append(outputs, s.tracker.reduceTasks[i].OutputURIs...)
+		}
+	}
+	return outputs
+}
+
+// AllMapTasksCompleted returns true when every map task has reached
+// the Completed state. The Manager uses this to decide when to transition
+// the job from the Map phase into the Reduce phase.
+func (s *Scheduler) AllMapTasksCompleted() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	for i := range s.tracker.mapTasks {
+		if s.tracker.mapTasks[i].State != Completed {
+			return false
+		}
+	}
+	return true
+}
+
+// IsJobFinished returns true when every map AND every reduce task has
+// reached the Completed state. The Manager uses this to transition the
+// job to Completed (or Cleaning).
+func (s *Scheduler) IsJobFinished() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	for i := range s.tracker.mapTasks {
+		if s.tracker.mapTasks[i].State != Completed {
+			return false
+		}
+	}
+	for i := range s.tracker.reduceTasks {
+		if s.tracker.reduceTasks[i].State != Completed {
+			return false
+		}
+	}
+	return true
+}
+
+// GetTaskStatus provides a read-only query for a specific task's current state.
+// This supports the UI Service's CQRS-style read path for the jobs status CLI command.
+func (s *Scheduler) GetTaskStatus(taskID string) (TaskState, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	task, exists := s.taskMap[taskID]
+	if !exists {
+		return 0, ErrTaskNotFound
+	}
+	return task.State, nil
+}
+
 func (s *Scheduler) RenewLease(taskID string, leaseID string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
