@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"flag"
 	"fmt"
 	"io"
@@ -86,7 +85,7 @@ func cmdLogout() {
 // ── health ─────────────────────────────────────────────────
 
 func cmdHealth() {
-	ctx, cancel := context.WithTimeout(context.Background(), cliRequestTimeout)
+	ctx, cancel := cliRequestContext()
 	defer cancel()
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, apiURL()+"/health", nil)
