@@ -32,6 +32,14 @@ const (
 	TaskCompleted  TaskStatus = "Completed"
 )
 
+type AttemptStatus string
+
+const (
+	AttemptRunning AttemptStatus = "Running"
+	AttemptSuccess AttemptStatus = "Success"
+	AttemptFailed  AttemptStatus = "Failed"
+)
+
 // Job corresponds to the JOBS table.
 type Job struct {
 	JobID     uuid.UUID `db:"job_id" json:"jobId"`
@@ -75,12 +83,31 @@ type TaskInput struct {
 
 // TaskAttempt corresponds to the TASK_ATTEMPTS table.
 type TaskAttempt struct {
-	AttemptID     uuid.UUID  `db:"attempt_id" json:"attemptId"`
-	TaskID        uuid.UUID  `db:"task_id" json:"taskId"`
-	WorkerID      string     `db:"worker_id" json:"workerId"`
-	LeaseID       uuid.UUID  `db:"lease_id" json:"leaseId"`
-	LastRenewedAt time.Time  `db:"last_renewed_at" json:"lastRenewedAt"`
-	LeaseTTL      int        `db:"lease_ttl" json:"leaseTtl"`
-	StartTime     time.Time  `db:"start_time" json:"startTime"`
-	EndTime       *time.Time `db:"end_time" json:"endTime,omitempty"`
+	AttemptID     uuid.UUID     `db:"attempt_id" json:"attemptId"`
+	TaskID        uuid.UUID     `db:"task_id" json:"taskId"`
+	WorkerID      string        `db:"worker_id" json:"workerId"`
+	LeaseID       uuid.UUID     `db:"lease_id" json:"leaseId"`
+	LastRenewedAt time.Time     `db:"last_renewed_at" json:"lastRenewedAt"`
+	LeaseTTL      int           `db:"lease_ttl" json:"leaseTtl"`
+	StartTime     time.Time     `db:"start_time" json:"startTime"`
+	EndTime       *time.Time    `db:"end_time" json:"endTime,omitempty"`
+	Status        AttemptStatus `db:"status" json:"status"`
+}
+
+// TaskOutput corresponds to the TASK_OUTPUTS table.
+type TaskOutput struct {
+	OutputID       int64     `db:"output_id" json:"outputId"`
+	TaskID         uuid.UUID `db:"task_id" json:"taskId"`
+	PartitionIndex *int      `db:"partition_index" json:"partitionIndex,omitempty"`
+	OutputURI      string    `db:"output_uri" json:"outputUri"`
+	Checksum       string    `db:"checksum" json:"checksum"`
+}
+
+// SystemConfig corresponds to the SYSTEM_CONFIG table.
+type SystemConfig struct {
+	ConfigID          int       `db:"config_id" json:"configId"`
+	MaxConcurrentPods int       `db:"max_concurrent_pods" json:"maxConcurrentPods"`
+	CPULimit          string    `db:"cpu_limit" json:"cpuLimit"`
+	MemoryLimit       string    `db:"memory_limit" json:"memoryLimit"`
+	UpdatedAt         time.Time `db:"updated_at" json:"updatedAt"`
 }
