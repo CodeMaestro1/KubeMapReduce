@@ -444,6 +444,32 @@ func TestScheduler_StaleAttempt(t *testing.T) {
 	}
 }
 
+func TestScheduler_GetMapOutputs(t *testing.T) {
+	tracker := &TaskTracker{
+		mapTasks: []Task{
+			{ID: "m1", Type: MapTask, State: Idle},
+			{ID: "m2", Type: MapTask, State: Idle},
+		},
+	}
+	scheduler, _ := NewScheduler(tracker)
+
+	task1, _ := scheduler.GetNextTask("w1")
+	_ = scheduler.CompleteTask("m1", task1.GetAttemptID(), []string{"s3://m1-out"}, []string{})
+
+	outputs := scheduler.GetMapOutputs()
+	if len(outputs) != 1 || outputs[0] != "s3://m1-out" {
+		t.Fatalf("expected one Map Output, got: %v", outputs)
+	}
+
+	task2, _ := scheduler.GetNextTask("w2")
+	_ = scheduler.CompleteTask("m2", task2.GetAttemptID(), []string{"s3://m2-out-a", "s3://m2-out-b"}, []string{})
+
+	outputs = scheduler.GetMapOutputs()
+	if len(outputs) != 3 {
+		t.Fatalf("expected three combined Map Outputs, got: %d", len(outputs))
+	}
+}
+
 func TestScheduler_MaxTaskAttempts(t *testing.T) {
 	tracker := &TaskTracker{
 		mapTasks: []Task{
