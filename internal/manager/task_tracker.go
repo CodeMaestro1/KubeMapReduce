@@ -101,6 +101,12 @@ func NewTaskTracker(mapTasks, reduceTasks []Task) *TaskTracker {
 	}
 }
 
+// MapTaskCount returns the number of map tasks tracked.
+func (tt *TaskTracker) MapTaskCount() int { return len(tt.mapTasks) }
+
+// ReduceTaskCount returns the number of reduce tasks tracked.
+func (tt *TaskTracker) ReduceTaskCount() int { return len(tt.reduceTasks) }
+
 // JobState defines the current lifecycle state of a full MapReduce job.
 type JobState int
 
