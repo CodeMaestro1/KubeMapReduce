@@ -46,7 +46,7 @@ func TestScheduler_MapBeforeReduce(t *testing.T) {
 	}
 
 	// Step 4: Complete m1
-	err = scheduler.CompleteTask("m1")
+	err = scheduler.CompleteTask("m1", task1.GetAttemptID(), nil, nil)
 	if err != nil {
 		t.Fatalf("unexpected error completing task: %v", err)
 	}
@@ -58,7 +58,7 @@ func TestScheduler_MapBeforeReduce(t *testing.T) {
 	}
 
 	// Step 6: Complete m2
-	err = scheduler.CompleteTask("m2")
+	err = scheduler.CompleteTask("m2", task2.GetAttemptID(), nil, nil)
 	if err != nil {
 		t.Fatalf("unexpected error completing task: %v", err)
 	}
@@ -73,7 +73,7 @@ func TestScheduler_MapBeforeReduce(t *testing.T) {
 	}
 
 	// Step 8: Complete r1
-	err = scheduler.CompleteTask("r1")
+	err = scheduler.CompleteTask("r1", task3.GetAttemptID(), nil, nil)
 	if err != nil {
 		t.Fatalf("unexpected error completing task: %v", err)
 	}
@@ -136,7 +136,7 @@ func TestScheduler_CompleteIdleTask_InvalidTransition(t *testing.T) {
 	}
 
 	// Directly completing an Idle task (without assignment) should fail.
-	err = scheduler.CompleteTask("m1")
+	err = scheduler.CompleteTask("m1", "some-attempt-id", nil, nil)
 	if err != ErrInvalidStateTransition {
 		t.Fatalf("expected ErrInvalidStateTransition when completing Idle task, got %v", err)
 	}
@@ -156,12 +156,12 @@ func TestScheduler_FailCompletedTask_InvalidTransition(t *testing.T) {
 	}
 
 	// Assign task and complete it successfully.
-	_, err = scheduler.GetNextTask("worker-1")
+	assignedTask, err := scheduler.GetNextTask("worker-1")
 	if err != nil {
 		t.Fatalf("expected task assignment, got err: %v", err)
 	}
 
-	if err := scheduler.CompleteTask("m1"); err != nil {
+	if err := scheduler.CompleteTask("m1", assignedTask.GetAttemptID(), nil, nil); err != nil {
 		t.Fatalf("unexpected error completing task: %v", err)
 	}
 
@@ -246,7 +246,7 @@ func TestScheduler_Concurrency(t *testing.T) {
 				}
 
 				// Complete the task
-				if err := scheduler.CompleteTask(task.ID); err != nil {
+				if err := scheduler.CompleteTask(task.ID, task.GetAttemptID(), nil, nil); err != nil {
 					errCh <- err
 					return
 				}
@@ -385,9 +385,62 @@ func TestScheduler_ExternalTrackerMutation_NoDesync(t *testing.T) {
 		t.Fatalf("expected m1, got %s", task.ID)
 	}
 
-	err = scheduler.CompleteTask("m1")
+	err = scheduler.CompleteTask("m1", task.GetAttemptID(), nil, nil)
 	if err != nil {
 		t.Fatalf("expected no error since state is safely maintained, got: %v", err)
+	}
+}
+
+func TestScheduler_RenewLease(t *testing.T) {
+	tracker := &TaskTracker{
+		mapTasks: []Task{
+			{ID: "m1", Type: MapTask, State: Idle},
+		},
+	}
+	scheduler, _ := NewScheduler(tracker)
+
+	task, _ := scheduler.GetNextTask("worker-1")
+	initialHeartbeat := task.GetHeartbeat()
+
+	time.Sleep(5 * time.Millisecond)
+
+	err := scheduler.RenewLease("m1", task.GetLeaseID())
+	if err != nil {
+		t.Fatalf("unexpected error renewing lease: %v", err)
+	}
+
+	taskRef := scheduler.taskMap["m1"]
+	if taskRef.GetHeartbeat().Sub(initialHeartbeat) <= 0 {
+		t.Fatalf("expected LastHeartbeat to be updated, got %v (initial: %v)", taskRef.GetHeartbeat(), initialHeartbeat)
+	}
+
+	// Try renewing with bad lease
+	err = scheduler.RenewLease("m1", "bad-lease-id")
+	if err != ErrExpiredLease {
+		t.Fatalf("expected ErrExpiredLease, got %v", err)
+	}
+}
+
+func TestScheduler_StaleAttempt(t *testing.T) {
+	tracker := &TaskTracker{
+		mapTasks: []Task{
+			{ID: "m1", Type: MapTask, State: Idle},
+		},
+	}
+	scheduler, _ := NewScheduler(tracker)
+
+	task, _ := scheduler.GetNextTask("worker-1")
+
+	// Zombie worker attempting to commit with bad attempt ID
+	err := scheduler.CompleteTask("m1", "old-zombie-attempt-id", nil, nil)
+	if err != ErrStaleAttempt {
+		t.Fatalf("expected ErrStaleAttempt for mismatching attempt ID, got: %v", err)
+	}
+
+	// Correct attempt commit
+	err = scheduler.CompleteTask("m1", task.GetAttemptID(), []string{"s3://out1"}, []string{"hash1"})
+	if err != nil {
+		t.Fatalf("expected successful complete, got: %v", err)
 	}
 }
 

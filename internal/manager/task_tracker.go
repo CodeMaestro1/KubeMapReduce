@@ -53,15 +53,20 @@ func (t TaskType) String() string {
 
 // Task represents the metadata the Master needs to track
 type Task struct {
-	ID           string
-	Type         TaskType // MapTask or ReduceTask
-	State        TaskState
-	workerID     string
-	InputFile    string
-	startTime    time.Time
-	Attempts     int
-	LastFailure  string
-	LastFailedAt time.Time
+	ID              string
+	Type            TaskType // MapTask or ReduceTask
+	State           TaskState
+	workerID        string
+	InputFile       string
+	startTime       time.Time
+	ActiveAttemptID string
+	LeaseID         string
+	LastHeartbeat   time.Time
+	OutputURIs      []string
+	OutputChecksums []string
+	Attempts        int
+	LastFailure     string
+	LastFailedAt    time.Time
 }
 
 // TaskTracker tracks the overall job progress.
@@ -73,8 +78,11 @@ type TaskTracker struct {
 	reduceTasks []Task
 }
 
-func (t *Task) WorkerID() string     { return t.workerID }
-func (t *Task) StartTime() time.Time { return t.startTime }
+func (t *Task) WorkerID() string        { return t.workerID }
+func (t *Task) StartTime() time.Time    { return t.startTime }
+func (t *Task) GetAttemptID() string    { return t.ActiveAttemptID }
+func (t *Task) GetLeaseID() string      { return t.LeaseID }
+func (t *Task) GetHeartbeat() time.Time { return t.LastHeartbeat }
 
 // NewTaskTracker safely initializes a TaskTracker by maintaining defensive copies.
 func NewTaskTracker(mapTasks, reduceTasks []Task) *TaskTracker {

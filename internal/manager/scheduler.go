@@ -7,6 +7,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 const MaxTaskAttempts = 3
@@ -23,6 +25,8 @@ var (
 	ErrInvalidTaskType        = errors.New("task found in wrong collection type (map vs reduce)")
 	ErrEmptyTaskID            = errors.New("task ID cannot be empty")
 	ErrInvalidTimeout         = errors.New("timeout must be strictly positive")
+	ErrStaleAttempt           = errors.New("stale commit attempt rejected to prevent split-brain")
+	ErrExpiredLease           = errors.New("lease expired or mismatched")
 )
 
 // Scheduler coordinates task assignment and lifecycle for a single MapReduce job.
@@ -101,6 +105,9 @@ func (s *Scheduler) GetNextTask(workerID string) (*Task, error) {
 				s.tracker.mapTasks[i].State = InProgress
 				s.tracker.mapTasks[i].workerID = workerID
 				s.tracker.mapTasks[i].startTime = time.Now()
+				s.tracker.mapTasks[i].LastHeartbeat = time.Now()
+				s.tracker.mapTasks[i].ActiveAttemptID = uuid.NewString()
+				s.tracker.mapTasks[i].LeaseID = uuid.NewString()
 
 				taskCopy := s.tracker.mapTasks[i]
 				return &taskCopy, nil
@@ -120,6 +127,9 @@ func (s *Scheduler) GetNextTask(workerID string) (*Task, error) {
 				s.tracker.reduceTasks[i].State = InProgress
 				s.tracker.reduceTasks[i].workerID = workerID
 				s.tracker.reduceTasks[i].startTime = time.Now()
+				s.tracker.reduceTasks[i].LastHeartbeat = time.Now()
+				s.tracker.reduceTasks[i].ActiveAttemptID = uuid.NewString()
+				s.tracker.reduceTasks[i].LeaseID = uuid.NewString()
 
 				taskCopy := s.tracker.reduceTasks[i]
 				return &taskCopy, nil
@@ -134,7 +144,7 @@ func (s *Scheduler) GetNextTask(workerID string) (*Task, error) {
 	return nil, ErrJobCompleted
 }
 
-func (s *Scheduler) CompleteTask(taskID string) error {
+func (s *Scheduler) CompleteTask(taskID string, attemptID string, outputURIs []string, outputChecksums []string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -147,9 +157,40 @@ func (s *Scheduler) CompleteTask(taskID string) error {
 		return ErrInvalidStateTransition
 	}
 
+	if task.ActiveAttemptID != attemptID {
+		return ErrStaleAttempt
+	}
+
 	task.State = Completed
+	task.OutputURIs = outputURIs
+	task.OutputChecksums = outputChecksums
+
 	task.workerID = ""
 	task.startTime = time.Time{}
+	task.LastHeartbeat = time.Time{}
+	task.ActiveAttemptID = ""
+	task.LeaseID = ""
+	return nil
+}
+
+func (s *Scheduler) RenewLease(taskID string, leaseID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	task, exists := s.taskMap[taskID]
+	if !exists {
+		return ErrTaskNotFound
+	}
+
+	if task.State != InProgress {
+		return ErrInvalidStateTransition
+	}
+
+	if task.LeaseID != leaseID {
+		return ErrExpiredLease
+	}
+
+	task.LastHeartbeat = time.Now()
 	return nil
 }
 
@@ -178,6 +219,9 @@ func (s *Scheduler) FailTask(taskID string, reason string) error {
 
 	task.workerID = ""
 	task.startTime = time.Time{}
+	task.LastHeartbeat = time.Time{}
+	task.ActiveAttemptID = ""
+	task.LeaseID = ""
 	return nil
 }
 
@@ -199,7 +243,7 @@ func (s *Scheduler) FailStaleTasks(timeout time.Duration) (int, error) {
 				continue
 			}
 
-			if now.Sub(task.startTime) > timeout {
+			if now.Sub(task.LastHeartbeat) > timeout {
 				task.Attempts++
 				task.LastFailure = "stale timeout"
 				task.LastFailedAt = now
@@ -212,6 +256,9 @@ func (s *Scheduler) FailStaleTasks(timeout time.Duration) (int, error) {
 
 				task.workerID = ""
 				task.startTime = time.Time{}
+				task.LastHeartbeat = time.Time{}
+				task.ActiveAttemptID = ""
+				task.LeaseID = ""
 				recoveredCount++
 			}
 		}
