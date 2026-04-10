@@ -3,9 +3,13 @@ package manager
 
 import (
 	"errors"
+	"log"
+	"strings"
 	"sync"
 	"time"
 )
+
+const MaxTaskAttempts = 3
 
 var (
 	ErrNoIdleTasks            = errors.New("no idle tasks available right now, please wait")
@@ -35,12 +39,14 @@ func NewScheduler(tracker *TaskTracker) (*Scheduler, error) {
 		return nil, ErrNilTracker
 	}
 
+	tracker = NewTaskTracker(tracker.mapTasks, tracker.reduceTasks)
+
 	taskMap := make(map[string]*Task)
 
 	// Validate MapTasks
 	for i := range tracker.mapTasks {
 		task := &tracker.mapTasks[i]
-		if task.ID == "" {
+		if strings.TrimSpace(task.ID) == "" {
 			return nil, ErrEmptyTaskID
 		}
 		if task.State != Idle {
@@ -58,7 +64,7 @@ func NewScheduler(tracker *TaskTracker) (*Scheduler, error) {
 	// Validate ReduceTasks
 	for i := range tracker.reduceTasks {
 		task := &tracker.reduceTasks[i]
-		if task.ID == "" {
+		if strings.TrimSpace(task.ID) == "" {
 			return nil, ErrEmptyTaskID
 		}
 		if task.State != Idle {
@@ -80,7 +86,7 @@ func NewScheduler(tracker *TaskTracker) (*Scheduler, error) {
 }
 
 func (s *Scheduler) GetNextTask(workerID string) (*Task, error) {
-	if workerID == "" {
+	if strings.TrimSpace(workerID) == "" {
 		return nil, ErrEmptyWorkerID
 	}
 
@@ -160,12 +166,18 @@ func (s *Scheduler) FailTask(taskID string, reason string) error {
 		return ErrInvalidStateTransition
 	}
 
-	task.State = Idle
-	task.workerID = ""
-	task.startTime = time.Time{}
 	task.Attempts++
 	task.LastFailure = reason
 	task.LastFailedAt = time.Now()
+	
+	if task.Attempts >= MaxTaskAttempts {
+		task.State = Failed
+	} else {
+		task.State = Idle
+	}
+	
+	task.workerID = ""
+	task.startTime = time.Time{}
 	return nil
 }
 
@@ -181,14 +193,27 @@ func (s *Scheduler) FailStaleTasks(timeout time.Duration) (int, error) {
 	recoveredCount := 0
 
 	for _, task := range s.taskMap {
-		if task.State == InProgress && now.Sub(task.startTime) > timeout {
-			task.State = Idle
-			task.workerID = ""
-			task.startTime = time.Time{}
-			task.Attempts++
-			task.LastFailure = "stale timeout"
-			task.LastFailedAt = now
-			recoveredCount++
+		if task.State == InProgress {
+			if task.startTime.IsZero() {
+				log.Printf("CRITICAL: task %s in impossible state (InProgress with zero startTime)\n", task.ID)
+				continue
+			}
+			
+			if now.Sub(task.startTime) > timeout {
+				task.Attempts++
+				task.LastFailure = "stale timeout"
+				task.LastFailedAt = now
+				
+				if task.Attempts >= MaxTaskAttempts {
+					task.State = Failed
+				} else {
+					task.State = Idle
+				}
+				
+				task.workerID = ""
+				task.startTime = time.Time{}
+				recoveredCount++
+			}
 		}
 	}
 

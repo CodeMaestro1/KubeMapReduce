@@ -281,6 +281,24 @@ func TestScheduler_EmptyWorkerID(t *testing.T) {
 	if err != ErrEmptyWorkerID {
 		t.Fatalf("expected ErrEmptyWorkerID when assigning task with empty worker ID, got: %v", err)
 	}
+	
+	_, err = scheduler.GetNextTask("   \t   ")
+	if err != ErrEmptyWorkerID {
+		t.Fatalf("expected ErrEmptyWorkerID when assigning task with whitespace worker ID, got: %v", err)
+	}
+}
+
+func TestScheduler_EmptyTaskID(t *testing.T) {
+	tracker := &TaskTracker{
+		mapTasks: []Task{
+			{ID: "   ", Type: MapTask, State: Idle},
+		},
+	}
+
+	_, err := NewScheduler(tracker)
+	if err != ErrEmptyTaskID {
+		t.Fatalf("expected ErrEmptyTaskID, got %v", err)
+	}
 }
 
 func TestScheduler_InvalidTaskType(t *testing.T) {
@@ -354,9 +372,9 @@ func TestScheduler_ExternalTrackerMutation_NoDesync(t *testing.T) {
 		t.Fatalf("unexpected error creating scheduler: %v", err)
 	}
 
-	// External mutation after scheduler creation: mutates original array
-	mapTasks[0].State = Completed
-	_ = append(mapTasks, Task{ID: "m2", Type: MapTask, State: Idle})
+	// External mutation after scheduler creation: mutates the tracker's array
+	tracker.mapTasks[0].State = Completed
+	tracker.mapTasks = append(tracker.mapTasks, Task{ID: "m2", Type: MapTask, State: Idle})
 
 	// Scheduler assigns m1 safely from its internal disconnected tracker
 	task, err := scheduler.GetNextTask("worker-1")
@@ -367,9 +385,61 @@ func TestScheduler_ExternalTrackerMutation_NoDesync(t *testing.T) {
 		t.Fatalf("expected m1, got %s", task.ID)
 	}
 
-	// CompleteTask uses valid pointers.
 	err = scheduler.CompleteTask("m1")
 	if err != nil {
 		t.Fatalf("expected no error since state is safely maintained, got: %v", err)
 	}
 }
+
+func TestScheduler_MaxTaskAttempts(t *testing.T) {
+	tracker := &TaskTracker{
+		mapTasks: []Task{
+			{ID: "m1", Type: MapTask, State: Idle},
+		},
+	}
+	scheduler, _ := NewScheduler(tracker)
+
+	for i := 0; i < MaxTaskAttempts; i++ {
+		_, err := scheduler.GetNextTask(func() string { return "w" }())
+		if err != nil {
+			t.Fatalf("iteration %d: expected task assignment, got %v", i, err)
+		}
+		err = scheduler.FailTask("m1", "failed")
+		if err != nil {
+			t.Fatalf("iteration %d: unexpected error failing task: %v", i, err)
+		}
+	}
+
+	// Now it should be Failed, not Idle. GetNextTask should not return it.
+	_, err := scheduler.GetNextTask("w")
+	if err != ErrNoIdleTasks {
+		t.Fatalf("expected ErrNoIdleTasks after max attempts, got: %v", err)
+	}
+
+	sTask := scheduler.taskMap["m1"]
+	if sTask.State != Failed {
+		t.Fatalf("expected task state to be Failed, got: %v", sTask.State)
+	}
+}
+
+func TestScheduler_FailStaleTasks_ImpossibleState(t *testing.T) {
+	tracker := &TaskTracker{
+		mapTasks: []Task{
+			{ID: "m1", Type: MapTask, State: Idle},
+		},
+	}
+	scheduler, _ := NewScheduler(tracker)
+
+	// Artificially create impossible state
+	scheduler.taskMap["m1"].State = InProgress
+	scheduler.taskMap["m1"].startTime = time.Time{}
+
+	recovered, _ := scheduler.FailStaleTasks(1 * time.Millisecond)
+	if recovered != 0 {
+		t.Fatalf("expected 0 recoveries due to guard, got %d", recovered)
+	}
+	if scheduler.taskMap["m1"].State != InProgress {
+		t.Fatalf("expected task to remain InProgress, got %v", scheduler.taskMap["m1"].State)
+	}
+}
+
