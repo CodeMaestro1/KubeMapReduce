@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"kubemapreduce/internal/models"
 	"kubemapreduce/pkg/auth"
@@ -406,6 +407,76 @@ func TestHandleAdminCreateUser_NilClientUnavailable(t *testing.T) {
 
 	if rec.Code != http.StatusServiceUnavailable {
 		t.Fatalf("expected %d, got %d", http.StatusServiceUnavailable, rec.Code)
+	}
+}
+
+func TestHandleAdminCreateUser_KeycloakDown_Returns503(t *testing.T) {
+	// Create and immediately close a server to simulate unreachable auth service.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	srv.Close()
+
+	adminClient := auth.NewKeycloakAdminClient(srv.URL, "test", "admin", "admin")
+	h := NewHandlers(adminClient)
+
+	body := `{"username":"alice","email":"alice@example.com","password":"secret","role":"USER"}`
+	req := httptest.NewRequest(http.MethodPost, "/admin/users", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	h.HandleAdminCreateUser(rec, req)
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected %d, got %d: %s", http.StatusServiceUnavailable, rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "authentication service unavailable") {
+		t.Fatalf("expected auth unavailable message, got %q", rec.Body.String())
+	}
+}
+
+func TestHandleAdminCreateUser_KeycloakTimeout_Returns503(t *testing.T) {
+	// Hanging server simulates an unresponsive auth service.
+	hung := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		<-hung
+	}))
+	defer func() {
+		close(hung)
+		srv.Close()
+	}()
+
+	adminClient := auth.NewKeycloakAdminClient(srv.URL, "test", "admin", "admin")
+	h := NewHandlers(adminClient)
+
+	body := `{"username":"alice","email":"alice@example.com","password":"secret","role":"USER"}`
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	req := httptest.NewRequest(http.MethodPost, "/admin/users", strings.NewReader(body)).WithContext(ctx)
+	rec := httptest.NewRecorder()
+	h.HandleAdminCreateUser(rec, req)
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected %d, got %d: %s", http.StatusServiceUnavailable, rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "authentication service unavailable") {
+		t.Fatalf("expected auth unavailable message, got %q", rec.Body.String())
+	}
+}
+
+func TestHandleAdminDeleteUser_KeycloakDown_Returns503(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	srv.Close()
+
+	adminClient := auth.NewKeycloakAdminClient(srv.URL, "test", "admin", "admin")
+	h := NewHandlers(adminClient)
+
+	req := httptest.NewRequest(http.MethodDelete, "/admin/users/alice", nil)
+	req.SetPathValue("username", "alice")
+	rec := httptest.NewRecorder()
+	h.HandleAdminDeleteUser(rec, req)
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected %d, got %d: %s", http.StatusServiceUnavailable, rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "authentication service unavailable") {
+		t.Fatalf("expected auth unavailable message, got %q", rec.Body.String())
 	}
 }
 
