@@ -521,3 +521,199 @@ func TestScheduler_FailStaleTasks_ImpossibleState(t *testing.T) {
 		t.Fatalf("expected task to remain InProgress, got %v", scheduler.taskMap["m1"].State)
 	}
 }
+
+func TestScheduler_AllMapTasksCompleted(t *testing.T) {
+	tracker := &TaskTracker{
+		mapTasks: []Task{
+			{ID: "m1", Type: MapTask, State: Idle},
+			{ID: "m2", Type: MapTask, State: Idle},
+		},
+		reduceTasks: []Task{
+			{ID: "r1", Type: ReduceTask, State: Idle},
+		},
+	}
+	scheduler, _ := NewScheduler(tracker)
+
+	if scheduler.AllMapTasksCompleted() {
+		t.Fatal("expected AllMapTasksCompleted=false before any work")
+	}
+
+	task1, _ := scheduler.GetNextTask("w1")
+	_ = scheduler.CompleteTask("m1", task1.GetAttemptID(), nil, nil)
+
+	if scheduler.AllMapTasksCompleted() {
+		t.Fatal("expected AllMapTasksCompleted=false with m2 still pending")
+	}
+
+	task2, _ := scheduler.GetNextTask("w2")
+	_ = scheduler.CompleteTask("m2", task2.GetAttemptID(), nil, nil)
+
+	if !scheduler.AllMapTasksCompleted() {
+		t.Fatal("expected AllMapTasksCompleted=true after completing all map tasks")
+	}
+}
+
+func TestScheduler_IsJobFinished(t *testing.T) {
+	tracker := &TaskTracker{
+		mapTasks: []Task{
+			{ID: "m1", Type: MapTask, State: Idle},
+		},
+		reduceTasks: []Task{
+			{ID: "r1", Type: ReduceTask, State: Idle},
+		},
+	}
+	scheduler, _ := NewScheduler(tracker)
+
+	if scheduler.IsJobFinished() {
+		t.Fatal("expected IsJobFinished=false at start")
+	}
+
+	task1, _ := scheduler.GetNextTask("w1")
+	_ = scheduler.CompleteTask("m1", task1.GetAttemptID(), nil, nil)
+
+	if scheduler.IsJobFinished() {
+		t.Fatal("expected IsJobFinished=false — reduce not done")
+	}
+
+	task2, _ := scheduler.GetNextTask("w2")
+	_ = scheduler.CompleteTask("r1", task2.GetAttemptID(), nil, nil)
+
+	if !scheduler.IsJobFinished() {
+		t.Fatal("expected IsJobFinished=true after all tasks complete")
+	}
+}
+
+func TestScheduler_GetTaskStatus(t *testing.T) {
+	tracker := &TaskTracker{
+		mapTasks: []Task{
+			{ID: "m1", Type: MapTask, State: Idle},
+		},
+	}
+	scheduler, _ := NewScheduler(tracker)
+
+	state, err := scheduler.GetTaskStatus("m1")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if state != Idle {
+		t.Fatalf("expected Idle, got %v", state)
+	}
+
+	task, _ := scheduler.GetNextTask("w1")
+	state, _ = scheduler.GetTaskStatus("m1")
+	if state != InProgress {
+		t.Fatalf("expected InProgress, got %v", state)
+	}
+
+	_ = scheduler.CompleteTask("m1", task.GetAttemptID(), nil, nil)
+	state, _ = scheduler.GetTaskStatus("m1")
+	if state != Completed {
+		t.Fatalf("expected Completed, got %v", state)
+	}
+
+	_, err = scheduler.GetTaskStatus("nonexistent")
+	if err != ErrTaskNotFound {
+		t.Fatalf("expected ErrTaskNotFound, got %v", err)
+	}
+}
+
+func TestScheduler_GetReduceOutputs(t *testing.T) {
+	tracker := &TaskTracker{
+		mapTasks: []Task{
+			{ID: "m1", Type: MapTask, State: Idle},
+		},
+		reduceTasks: []Task{
+			{ID: "r1", Type: ReduceTask, State: Idle},
+			{ID: "r2", Type: ReduceTask, State: Idle},
+		},
+	}
+	scheduler, _ := NewScheduler(tracker)
+
+	// Complete the map phase first
+	task1, _ := scheduler.GetNextTask("w1")
+	_ = scheduler.CompleteTask("m1", task1.GetAttemptID(), []string{"s3://m1-out"}, nil)
+
+	// No reduce outputs yet
+	outputs := scheduler.GetReduceOutputs()
+	if len(outputs) != 0 {
+		t.Fatalf("expected 0 reduce outputs, got %d", len(outputs))
+	}
+
+	// Complete reduce tasks
+	r1, _ := scheduler.GetNextTask("w2")
+	_ = scheduler.CompleteTask("r1", r1.GetAttemptID(), []string{"s3://r1-final"}, []string{"hash1"})
+
+	outputs = scheduler.GetReduceOutputs()
+	if len(outputs) != 1 || outputs[0] != "s3://r1-final" {
+		t.Fatalf("expected [s3://r1-final], got %v", outputs)
+	}
+
+	r2, _ := scheduler.GetNextTask("w3")
+	_ = scheduler.CompleteTask("r2", r2.GetAttemptID(), []string{"s3://r2-a", "s3://r2-b"}, []string{"h1", "h2"})
+
+	outputs = scheduler.GetReduceOutputs()
+	if len(outputs) != 3 {
+		t.Fatalf("expected 3 reduce outputs, got %d", len(outputs))
+	}
+}
+
+func TestScheduler_InvalidTimeout(t *testing.T) {
+	tracker := &TaskTracker{
+		mapTasks: []Task{
+			{ID: "m1", Type: MapTask, State: Idle},
+		},
+	}
+	scheduler, _ := NewScheduler(tracker)
+
+	_, err := scheduler.FailStaleTasks(0)
+	if err != ErrInvalidTimeout {
+		t.Fatalf("expected ErrInvalidTimeout for zero timeout, got %v", err)
+	}
+
+	_, err = scheduler.FailStaleTasks(-1 * time.Second)
+	if err != ErrInvalidTimeout {
+		t.Fatalf("expected ErrInvalidTimeout for negative timeout, got %v", err)
+	}
+}
+
+func TestScheduler_FailTask_NotFound(t *testing.T) {
+	tracker := &TaskTracker{
+		mapTasks: []Task{
+			{ID: "m1", Type: MapTask, State: Idle},
+		},
+	}
+	scheduler, _ := NewScheduler(tracker)
+
+	err := scheduler.FailTask("nonexistent", "crash")
+	if err != ErrTaskNotFound {
+		t.Fatalf("expected ErrTaskNotFound, got %v", err)
+	}
+}
+
+func TestScheduler_RenewLease_NotFound(t *testing.T) {
+	tracker := &TaskTracker{
+		mapTasks: []Task{
+			{ID: "m1", Type: MapTask, State: Idle},
+		},
+	}
+	scheduler, _ := NewScheduler(tracker)
+
+	err := scheduler.RenewLease("nonexistent", "some-lease")
+	if err != ErrTaskNotFound {
+		t.Fatalf("expected ErrTaskNotFound, got %v", err)
+	}
+}
+
+func TestScheduler_CompleteTask_NotFound(t *testing.T) {
+	tracker := &TaskTracker{
+		mapTasks: []Task{
+			{ID: "m1", Type: MapTask, State: Idle},
+		},
+	}
+	scheduler, _ := NewScheduler(tracker)
+
+	err := scheduler.CompleteTask("nonexistent", "some-attempt", nil, nil)
+	if err != ErrTaskNotFound {
+		t.Fatalf("expected ErrTaskNotFound, got %v", err)
+	}
+}
