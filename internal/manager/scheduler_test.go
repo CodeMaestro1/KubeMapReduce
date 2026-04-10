@@ -281,7 +281,7 @@ func TestScheduler_EmptyWorkerID(t *testing.T) {
 	if err != ErrEmptyWorkerID {
 		t.Fatalf("expected ErrEmptyWorkerID when assigning task with empty worker ID, got: %v", err)
 	}
-	
+
 	_, err = scheduler.GetNextTask("   \t   ")
 	if err != ErrEmptyWorkerID {
 		t.Fatalf("expected ErrEmptyWorkerID when assigning task with whitespace worker ID, got: %v", err)
@@ -442,4 +442,3 @@ func TestScheduler_FailStaleTasks_ImpossibleState(t *testing.T) {
 		t.Fatalf("expected task to remain InProgress, got %v", scheduler.taskMap["m1"].State)
 	}
 }
-

@@ -169,13 +169,13 @@ func (s *Scheduler) FailTask(taskID string, reason string) error {
 	task.Attempts++
 	task.LastFailure = reason
 	task.LastFailedAt = time.Now()
-	
+
 	if task.Attempts >= MaxTaskAttempts {
 		task.State = Failed
 	} else {
 		task.State = Idle
 	}
-	
+
 	task.workerID = ""
 	task.startTime = time.Time{}
 	return nil
@@ -198,18 +198,18 @@ func (s *Scheduler) FailStaleTasks(timeout time.Duration) (int, error) {
 				log.Printf("CRITICAL: task %s in impossible state (InProgress with zero startTime)\n", task.ID)
 				continue
 			}
-			
+
 			if now.Sub(task.startTime) > timeout {
 				task.Attempts++
 				task.LastFailure = "stale timeout"
 				task.LastFailedAt = now
-				
+
 				if task.Attempts >= MaxTaskAttempts {
 					task.State = Failed
 				} else {
 					task.State = Idle
 				}
-				
+
 				task.workerID = ""
 				task.startTime = time.Time{}
 				recoveredCount++
