@@ -14,7 +14,7 @@ const (
 	Idle TaskState = iota
 	InProgress
 	Completed
-	// Note: failed tasks are transitioned back to Idle by the scheduler; no separate Failed state is used.
+	Failed
 )
 
 func (s TaskState) String() string {
@@ -25,6 +25,8 @@ func (s TaskState) String() string {
 		return "InProgress"
 	case Completed:
 		return "Completed"
+	case Failed:
+		return "Failed"
 	default:
 		return "Unknown"
 	}
