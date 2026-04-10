@@ -386,7 +386,7 @@ func (h *Handlers) HandleAdminCreateUser(w http.ResponseWriter, r *http.Request)
 		Password: req.Password,
 		Role:     normalizedRole,
 	}); err != nil {
-		if auth.IsServiceUnavailable(err) {
+		if isAuthDependencyError(err) {
 			http.Error(w, "authentication service unavailable", http.StatusServiceUnavailable)
 			return
 		}
@@ -424,7 +424,7 @@ func (h *Handlers) HandleAdminDeleteUser(w http.ResponseWriter, r *http.Request)
 	defer cancel()
 
 	if err := h.adminClient.DeleteUserByUsername(ctx, username); err != nil {
-		if auth.IsServiceUnavailable(err) {
+		if isAuthDependencyError(err) {
 			http.Error(w, "authentication service unavailable", http.StatusServiceUnavailable)
 			return
 		}
@@ -438,4 +438,12 @@ func (h *Handlers) HandleAdminDeleteUser(w http.ResponseWriter, r *http.Request)
 	}); err != nil {
 		return
 	}
+}
+
+// isAuthDependencyError reports whether the error indicates the authentication
+// service could not be reached or timed out.
+func isAuthDependencyError(err error) bool {
+	return auth.IsServiceUnavailable(err) ||
+		errors.Is(err, context.DeadlineExceeded) ||
+		errors.Is(err, context.Canceled)
 }
