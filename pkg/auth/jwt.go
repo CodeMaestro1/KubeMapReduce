@@ -124,9 +124,30 @@ func RequireRole(role string, validator *JWTValidator, next http.Handler) http.H
 			return
 		}
 
+		hasRole := containsRole(roles, role)
+
+		if !hasRole {
+			http.Error(w, "forbidden: required role missing", http.StatusForbidden)
+			return
+		}
+
+		next.ServeHTTP(w, r)
+	}))
+}
+
+// RequireAnyRole returns a middleware handler that verifies the user has at least one
+// of the specified roles. It wraps the provided next handler with JWT validation.
+func RequireAnyRole(requiredRoles []string, validator *JWTValidator, next http.Handler) http.Handler {
+	return validator.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		roles, err := GetRoles(r)
+		if err != nil {
+			http.Error(w, "forbidden: "+err.Error(), http.StatusForbidden)
+			return
+		}
+
 		hasRole := false
-		for _, reqRole := range roles {
-			if reqRole == role {
+		for _, requiredRole := range requiredRoles {
+			if containsRole(roles, requiredRole) {
 				hasRole = true
 				break
 			}
@@ -139,4 +160,14 @@ func RequireRole(role string, validator *JWTValidator, next http.Handler) http.H
 
 		next.ServeHTTP(w, r)
 	}))
+}
+
+func containsRole(roles []string, expected string) bool {
+	for _, role := range roles {
+		if role == expected {
+			return true
+		}
+	}
+
+	return false
 }
