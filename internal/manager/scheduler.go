@@ -173,6 +173,19 @@ func (s *Scheduler) CompleteTask(taskID string, attemptID string, outputURIs []s
 	return nil
 }
 
+func (s *Scheduler) GetMapOutputs() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	var outputs []string
+	for i := range s.tracker.mapTasks {
+		if s.tracker.mapTasks[i].State == Completed {
+			outputs = append(outputs, s.tracker.mapTasks[i].OutputURIs...)
+		}
+	}
+	return outputs
+}
+
 func (s *Scheduler) RenewLease(taskID string, leaseID string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()

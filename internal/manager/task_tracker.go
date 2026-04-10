@@ -58,6 +58,11 @@ type Task struct {
 	State           TaskState
 	workerID        string
 	InputFile       string
+	ByteStart       int64
+	ByteEnd         int64
+	PartitionIndex  int
+	CodeURI         string
+	InputChecksum   string
 	startTime       time.Time
 	ActiveAttemptID string
 	LeaseID         string
@@ -94,4 +99,44 @@ func NewTaskTracker(mapTasks, reduceTasks []Task) *TaskTracker {
 		mapTasks:    mCopy,
 		reduceTasks: rCopy,
 	}
+}
+
+// JobState defines the current lifecycle state of a full MapReduce job.
+type JobState int
+
+const (
+	JobPending JobState = iota
+	JobRunning
+	JobCleaning
+	JobCompleted
+	JobFailed
+	JobCancelled
+)
+
+func (s JobState) String() string {
+	switch s {
+	case JobPending:
+		return "Pending"
+	case JobRunning:
+		return "Running"
+	case JobCleaning:
+		return "Cleaning"
+	case JobCompleted:
+		return "Completed"
+	case JobFailed:
+		return "Failed"
+	case JobCancelled:
+		return "Cancelled"
+	default:
+		return "Unknown"
+	}
+}
+
+// JobRecord represents the overarching tracking record for a MapReduce execution.
+type JobRecord struct {
+	JobID            string
+	State            JobState
+	TotalMapTasks    int
+	TotalReduceTasks int
+	Tracker          *TaskTracker
 }
