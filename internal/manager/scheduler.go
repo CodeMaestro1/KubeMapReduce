@@ -293,7 +293,12 @@ func (s *Scheduler) RenewLease(taskID string, leaseID string) error {
 	return nil
 }
 
-func (s *Scheduler) FailTask(taskID string, reason string) error {
+// FailTask transitions an InProgress task back to Idle (or Failed after
+// exhausting MaxTaskAttempts). The attemptID and leaseID parameters implement
+// the "Zombie Fencing" protocol described in Section 5.1 of the design
+// document: the Manager rejects stale failures from superseded attempts
+// or expired leases, preventing split-brain state corruption.
+func (s *Scheduler) FailTask(taskID string, attemptID string, leaseID string, reason string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -304,6 +309,14 @@ func (s *Scheduler) FailTask(taskID string, reason string) error {
 
 	if task.State != InProgress {
 		return ErrInvalidStateTransition
+	}
+
+	if task.ActiveAttemptID != attemptID {
+		return ErrStaleAttempt
+	}
+
+	if task.LeaseID != leaseID {
+		return ErrExpiredLease
 	}
 
 	task.Attempts++
