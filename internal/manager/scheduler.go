@@ -28,14 +28,17 @@ var (
 	ErrStaleAttempt           = errors.New("stale commit attempt rejected to prevent split-brain")
 	ErrExpiredLease           = errors.New("lease expired or mismatched")
 	ErrOutputMismatch         = errors.New("outputURIs and outputChecksums must have the same length")
+	ErrJobFailed              = errors.New("job failed: one or more tasks reached maximum attempts")
 )
 
 // Scheduler coordinates task assignment and lifecycle for a single MapReduce job.
 
 type Scheduler struct {
-	mu      sync.Mutex
-	tracker *TaskTracker
-	taskMap map[string]*Task // O(1) lookups by task ID
+	mu               sync.Mutex
+	tracker          *TaskTracker
+	taskMap          map[string]*Task // O(1) lookups by task ID
+	mapIdleQueue     []string         // Queue of idle map task IDs
+	reduceIdleQueue  []string         // Queue of idle reduce task IDs
 }
 
 // NewScheduler initializes a Scheduler with O(1) task index mapping.
@@ -47,6 +50,8 @@ func NewScheduler(tracker *TaskTracker) (*Scheduler, error) {
 	tracker = NewTaskTracker(tracker.mapTasks, tracker.reduceTasks)
 
 	taskMap := make(map[string]*Task)
+	var mapIdleQueue []string
+	var reduceIdleQueue []string
 
 	// Validate MapTasks
 	for i := range tracker.mapTasks {
@@ -64,6 +69,7 @@ func NewScheduler(tracker *TaskTracker) (*Scheduler, error) {
 			return nil, ErrDuplicateTaskID
 		}
 		taskMap[task.ID] = task
+		mapIdleQueue = append(mapIdleQueue, task.ID)
 	}
 
 	// Validate ReduceTasks
@@ -82,11 +88,14 @@ func NewScheduler(tracker *TaskTracker) (*Scheduler, error) {
 			return nil, ErrDuplicateTaskID
 		}
 		taskMap[task.ID] = task
+		reduceIdleQueue = append(reduceIdleQueue, task.ID)
 	}
 
 	return &Scheduler{
-		tracker: tracker,
-		taskMap: taskMap,
+		tracker:         tracker,
+		taskMap:         taskMap,
+		mapIdleQueue:    mapIdleQueue,
+		reduceIdleQueue: reduceIdleQueue,
 	}, nil
 }
 
@@ -98,48 +107,66 @@ func (s *Scheduler) GetNextTask(workerID string) (*Task, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	allMapCompleted := true
+	// 1. Check for failed tasks in Map phase
+	for i := range s.tracker.mapTasks {
+		if s.tracker.mapTasks[i].State == Failed {
+			return nil, ErrJobFailed
+		}
+	}
+
+	// 2. Try to assign Map Tasks from queue
+	if len(s.mapIdleQueue) > 0 {
+		taskID := s.mapIdleQueue[0]
+		s.mapIdleQueue = s.mapIdleQueue[1:]
+
+		task := s.taskMap[taskID]
+		task.State = InProgress
+		task.workerID = workerID
+		task.startTime = time.Now()
+		task.LastHeartbeat = time.Now()
+		task.ActiveAttemptID = uuid.NewString()
+		task.LeaseID = uuid.NewString()
+
+		taskCopy := task.Clone()
+		return &taskCopy, nil
+	}
+
+	// 3. If Map phase is not finished, worker must wait
 	for i := range s.tracker.mapTasks {
 		if s.tracker.mapTasks[i].State != Completed {
-			allMapCompleted = false
-			if s.tracker.mapTasks[i].State == Idle {
-				s.tracker.mapTasks[i].State = InProgress
-				s.tracker.mapTasks[i].workerID = workerID
-				s.tracker.mapTasks[i].startTime = time.Now()
-				s.tracker.mapTasks[i].LastHeartbeat = time.Now()
-				s.tracker.mapTasks[i].ActiveAttemptID = uuid.NewString()
-				s.tracker.mapTasks[i].LeaseID = uuid.NewString()
-
-				taskCopy := s.tracker.mapTasks[i]
-				return &taskCopy, nil
-			}
+			return nil, ErrNoIdleTasks
 		}
 	}
 
-	if !allMapCompleted {
-		return nil, ErrNoIdleTasks
+	// 4. Check for failed tasks in Reduce phase
+	for i := range s.tracker.reduceTasks {
+		if s.tracker.reduceTasks[i].State == Failed {
+			return nil, ErrJobFailed
+		}
 	}
 
-	allReduceCompleted := true
+	// 5. Try to assign Reduce Tasks from queue
+	if len(s.reduceIdleQueue) > 0 {
+		taskID := s.reduceIdleQueue[0]
+		s.reduceIdleQueue = s.reduceIdleQueue[1:]
+
+		task := s.taskMap[taskID]
+		task.State = InProgress
+		task.workerID = workerID
+		task.startTime = time.Now()
+		task.LastHeartbeat = time.Now()
+		task.ActiveAttemptID = uuid.NewString()
+		task.LeaseID = uuid.NewString()
+
+		taskCopy := task.Clone()
+		return &taskCopy, nil
+	}
+
+	// 6. If Reduce phase is not finished, worker must wait
 	for i := range s.tracker.reduceTasks {
 		if s.tracker.reduceTasks[i].State != Completed {
-			allReduceCompleted = false
-			if s.tracker.reduceTasks[i].State == Idle {
-				s.tracker.reduceTasks[i].State = InProgress
-				s.tracker.reduceTasks[i].workerID = workerID
-				s.tracker.reduceTasks[i].startTime = time.Now()
-				s.tracker.reduceTasks[i].LastHeartbeat = time.Now()
-				s.tracker.reduceTasks[i].ActiveAttemptID = uuid.NewString()
-				s.tracker.reduceTasks[i].LeaseID = uuid.NewString()
-
-				taskCopy := s.tracker.reduceTasks[i]
-				return &taskCopy, nil
-			}
+			return nil, ErrNoIdleTasks
 		}
-	}
-
-	if !allReduceCompleted {
-		return nil, ErrNoIdleTasks
 	}
 
 	return nil, ErrJobCompleted
@@ -268,7 +295,7 @@ func (s *Scheduler) GetTaskByID(taskID string) (*Task, error) {
 		return nil, ErrTaskNotFound
 	}
 
-	taskCopy := *task
+	taskCopy := task.Clone()
 	return &taskCopy, nil
 }
 
@@ -327,6 +354,11 @@ func (s *Scheduler) FailTask(taskID string, attemptID string, leaseID string, re
 		task.State = Failed
 	} else {
 		task.State = Idle
+		if task.Type == MapTask {
+			s.mapIdleQueue = append(s.mapIdleQueue, task.ID)
+		} else {
+			s.reduceIdleQueue = append(s.reduceIdleQueue, task.ID)
+		}
 	}
 
 	task.workerID = ""
@@ -364,6 +396,11 @@ func (s *Scheduler) FailStaleTasks(timeout time.Duration) (int, error) {
 					task.State = Failed
 				} else {
 					task.State = Idle
+					if task.Type == MapTask {
+						s.mapIdleQueue = append(s.mapIdleQueue, task.ID)
+					} else {
+						s.reduceIdleQueue = append(s.reduceIdleQueue, task.ID)
+					}
 				}
 
 				task.workerID = ""
