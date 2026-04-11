@@ -201,3 +201,113 @@ func TestWorkerConfigRequest_Serialization(t *testing.T) {
 		}
 	}
 }
+
+func TestTaskInput_Serialization(t *testing.T) {
+	taskID := uuid.New()
+	input := TaskInput{
+		InputAssignmentID: 42,
+		TaskID:            taskID,
+		InputURI:          "s3://bucket/inputs/split-0.jsonl",
+		ByteStart:         0,
+		ByteEnd:           65536,
+		SplitChecksum:     "sha256-abc123",
+	}
+
+	data, err := json.Marshal(input)
+	if err != nil {
+		t.Fatalf("Failed to marshal TaskInput: %v", err)
+	}
+
+	var unmarshaled TaskInput
+	if err := json.Unmarshal(data, &unmarshaled); err != nil {
+		t.Fatalf("Failed to unmarshal TaskInput: %v", err)
+	}
+
+	if unmarshaled.InputAssignmentID != 42 {
+		t.Errorf("Expected InputAssignmentID 42, got %d", unmarshaled.InputAssignmentID)
+	}
+	if unmarshaled.TaskID != taskID {
+		t.Errorf("Expected TaskID %s, got %s", taskID, unmarshaled.TaskID)
+	}
+	if unmarshaled.InputURI != "s3://bucket/inputs/split-0.jsonl" {
+		t.Errorf("Expected InputURI 's3://bucket/inputs/split-0.jsonl', got %q", unmarshaled.InputURI)
+	}
+	if unmarshaled.ByteStart != 0 {
+		t.Errorf("Expected ByteStart 0, got %d", unmarshaled.ByteStart)
+	}
+	if unmarshaled.ByteEnd != 65536 {
+		t.Errorf("Expected ByteEnd 65536, got %d", unmarshaled.ByteEnd)
+	}
+	if unmarshaled.SplitChecksum != "sha256-abc123" {
+		t.Errorf("Expected SplitChecksum 'sha256-abc123', got %q", unmarshaled.SplitChecksum)
+	}
+
+	// Verify JSON keys match the camelCase convention
+	var jsonMap map[string]interface{}
+	if err := json.Unmarshal(data, &jsonMap); err != nil {
+		t.Fatalf("Failed to unmarshal into map: %v", err)
+	}
+
+	expectedKeys := []string{"inputAssignmentId", "taskId", "inputUri", "byteStart", "byteEnd", "splitChecksum"}
+	for _, key := range expectedKeys {
+		if _, ok := jsonMap[key]; !ok {
+			t.Errorf("Expected JSON key %q to be present", key)
+		}
+	}
+}
+
+func TestJobConfig_Serialization(t *testing.T) {
+	jobID := uuid.New()
+	config := JobConfig{
+		JobID:         jobID,
+		InputURI:      "s3://bucket/inputs/data.jsonl",
+		MapperURI:     "s3://code/mapper.py",
+		ReducerURI:    "s3://code/reducer.py",
+		CombinerURI:   "s3://code/combiner.py",
+		MTasks:        10,
+		RTasks:        5,
+		InputChecksum: "sha256-xyz789",
+	}
+
+	data, err := json.Marshal(config)
+	if err != nil {
+		t.Fatalf("Failed to marshal JobConfig: %v", err)
+	}
+
+	var unmarshaled JobConfig
+	if err := json.Unmarshal(data, &unmarshaled); err != nil {
+		t.Fatalf("Failed to unmarshal JobConfig: %v", err)
+	}
+
+	if unmarshaled.JobID != jobID {
+		t.Errorf("Expected JobID %s, got %s", jobID, unmarshaled.JobID)
+	}
+	if unmarshaled.MapperURI != "s3://code/mapper.py" {
+		t.Errorf("Expected MapperURI 's3://code/mapper.py', got %q", unmarshaled.MapperURI)
+	}
+	if unmarshaled.CombinerURI != "s3://code/combiner.py" {
+		t.Errorf("Expected CombinerURI 's3://code/combiner.py', got %q", unmarshaled.CombinerURI)
+	}
+	if unmarshaled.MTasks != 10 {
+		t.Errorf("Expected MTasks 10, got %d", unmarshaled.MTasks)
+	}
+	if unmarshaled.RTasks != 5 {
+		t.Errorf("Expected RTasks 5, got %d", unmarshaled.RTasks)
+	}
+	if unmarshaled.InputChecksum != "sha256-xyz789" {
+		t.Errorf("Expected InputChecksum 'sha256-xyz789', got %q", unmarshaled.InputChecksum)
+	}
+
+	// Verify JSON keys match the camelCase convention from the DDS schema
+	var jsonMap map[string]interface{}
+	if err := json.Unmarshal(data, &jsonMap); err != nil {
+		t.Fatalf("Failed to unmarshal into map: %v", err)
+	}
+
+	expectedKeys := []string{"jobId", "inputUri", "mapperUri", "reducerUri", "combinerUri", "mTasks", "rTasks", "inputChecksum"}
+	for _, key := range expectedKeys {
+		if _, ok := jsonMap[key]; !ok {
+			t.Errorf("Expected JSON key %q to be present", key)
+		}
+	}
+}
