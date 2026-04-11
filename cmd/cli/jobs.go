@@ -7,6 +7,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -160,6 +161,41 @@ func cmdJobsList() {
 
 // ── jobs download ─────────────────────────────────────────
 
+func jobRequestPath(jobID, suffix string) string {
+	normalizedJobID := strings.TrimSpace(jobID)
+	return "/jobs/" + url.PathEscape(normalizedJobID) + suffix
+}
+
+func safeJobResultFilename(jobID string) string {
+	normalizedJobID := strings.TrimSpace(jobID)
+	if normalizedJobID == "" {
+		return "job.json"
+	}
+
+	var builder strings.Builder
+	for _, r := range normalizedJobID {
+		switch {
+		case r >= 'a' && r <= 'z':
+			builder.WriteRune(r)
+		case r >= 'A' && r <= 'Z':
+			builder.WriteRune(r)
+		case r >= '0' && r <= '9':
+			builder.WriteRune(r)
+		case r == '-' || r == '_' || r == '.':
+			builder.WriteRune(r)
+		default:
+			builder.WriteRune('_')
+		}
+	}
+
+	filename := strings.Trim(builder.String(), "._")
+	if filename == "" {
+		filename = "job"
+	}
+
+	return filename + ".json"
+}
+
 func cmdJobsDownload(args []string) {
 	fs := flag.NewFlagSet("jobs download", flag.ExitOnError)
 	jobID := fs.String("id", "", "job ID whose results to download (required)")
@@ -171,8 +207,14 @@ func cmdJobsDownload(args []string) {
 		os.Exit(1)
 	}
 
+	normalizedJobID := strings.TrimSpace(*jobID)
+	if normalizedJobID == "" {
+		fmt.Fprintln(os.Stderr, "usage: kubemapreduce jobs download --id <job-id> [--output ./results/]")
+		os.Exit(1)
+	}
+
 	token, serverURL := getValidToken()
-	resp, err := doAuthRequest(http.MethodGet, serverURL+"/jobs/"+*jobID+"/results", token, nil)
+	resp, err := doAuthRequest(http.MethodGet, serverURL+jobRequestPath(normalizedJobID, "/results"), token, nil)
 	if err != nil {
 		log.Fatalf("job download failed: %v", err)
 	}
@@ -191,7 +233,7 @@ func cmdJobsDownload(args []string) {
 		log.Fatalf("failed to create output directory: %v", err)
 	}
 
-	outPath := filepath.Join(*outputDir, *jobID+".json")
+	outPath := filepath.Join(*outputDir, safeJobResultFilename(normalizedJobID))
 	f, err := os.OpenFile(outPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o640)
 	if err != nil {
 		log.Fatalf("failed to create output file: %v", err)
@@ -217,10 +259,16 @@ func cmdJobsStatus(args []string) {
 		os.Exit(1)
 	}
 
+	normalizedJobID := strings.TrimSpace(*jobID)
+	if normalizedJobID == "" {
+		fmt.Fprintln(os.Stderr, "usage: kubemapreduce jobs status --id <job-id>")
+		os.Exit(1)
+	}
+
 	token, serverURL := getValidToken()
 	resp := doAuthRequestExpect(
 		http.MethodGet,
-		serverURL+"/jobs/"+*jobID,
+		serverURL+jobRequestPath(normalizedJobID, ""),
 		token,
 		nil,
 		http.StatusOK,
