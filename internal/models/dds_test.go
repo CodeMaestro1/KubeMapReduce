@@ -81,3 +81,123 @@ func TestTaskAttempt_AttemptStatus(t *testing.T) {
 		t.Errorf("Expected status change to %s, got %s", AttemptSuccess, attempt.Status)
 	}
 }
+
+func TestTaskAttempt_LeaseExpired(t *testing.T) {
+	// Active lease: renewed just now with a 30-second TTL
+	active := TaskAttempt{
+		AttemptID:     uuid.New(),
+		TaskID:        uuid.New(),
+		WorkerID:      "worker-1",
+		LeaseID:       uuid.New(),
+		LastRenewedAt: time.Now(),
+		LeaseTTL:      30,
+		StartTime:     time.Now(),
+		Status:        AttemptRunning,
+	}
+
+	if active.LeaseExpired() {
+		t.Fatal("expected active lease (renewed just now with 30s TTL) to NOT be expired")
+	}
+
+	// Expired lease: renewed 60 seconds ago with a 30-second TTL
+	expired := TaskAttempt{
+		AttemptID:     uuid.New(),
+		TaskID:        uuid.New(),
+		WorkerID:      "worker-2",
+		LeaseID:       uuid.New(),
+		LastRenewedAt: time.Now().Add(-60 * time.Second),
+		LeaseTTL:      30,
+		StartTime:     time.Now().Add(-60 * time.Second),
+		Status:        AttemptRunning,
+	}
+
+	if !expired.LeaseExpired() {
+		t.Fatal("expected lease (renewed 60s ago with 30s TTL) to be expired")
+	}
+
+	// Edge case: zero TTL means the lease expires immediately
+	zeroTTL := TaskAttempt{
+		AttemptID:     uuid.New(),
+		TaskID:        uuid.New(),
+		WorkerID:      "worker-3",
+		LeaseID:       uuid.New(),
+		LastRenewedAt: time.Now().Add(-1 * time.Millisecond),
+		LeaseTTL:      0,
+		StartTime:     time.Now(),
+		Status:        AttemptRunning,
+	}
+
+	if !zeroTTL.LeaseExpired() {
+		t.Fatal("expected zero-TTL lease to be expired")
+	}
+}
+
+func TestJob_IsTerminal(t *testing.T) {
+	tests := []struct {
+		name     string
+		status   JobStatus
+		terminal bool
+	}{
+		{"Pending is not terminal", JobPending, false},
+		{"Running is not terminal", JobRunning, false},
+		{"Cleaning is not terminal", JobCleaning, false},
+		{"Completed is terminal", JobCompleted, true},
+		{"Failed is terminal", JobFailed, true},
+		{"Cancelled is terminal", JobCancelled, true},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			job := Job{
+				JobID:  uuid.New(),
+				UserID: uuid.New(),
+				Status: tc.status,
+			}
+
+			if got := job.IsTerminal(); got != tc.terminal {
+				t.Errorf("Job.IsTerminal() for status %q = %v, want %v", tc.status, got, tc.terminal)
+			}
+		})
+	}
+}
+
+func TestWorkerConfigRequest_Serialization(t *testing.T) {
+	req := WorkerConfigRequest{
+		MaxConcurrentPods: 20,
+		CPULimit:          "500m",
+		MemoryLimit:       "1Gi",
+	}
+
+	data, err := json.Marshal(req)
+	if err != nil {
+		t.Fatalf("Failed to marshal WorkerConfigRequest: %v", err)
+	}
+
+	var unmarshaled WorkerConfigRequest
+	if err := json.Unmarshal(data, &unmarshaled); err != nil {
+		t.Fatalf("Failed to unmarshal WorkerConfigRequest: %v", err)
+	}
+
+	if unmarshaled.MaxConcurrentPods != 20 {
+		t.Errorf("Expected MaxConcurrentPods 20, got %d", unmarshaled.MaxConcurrentPods)
+	}
+	if unmarshaled.CPULimit != "500m" {
+		t.Errorf("Expected CPULimit '500m', got %q", unmarshaled.CPULimit)
+	}
+	if unmarshaled.MemoryLimit != "1Gi" {
+		t.Errorf("Expected MemoryLimit '1Gi', got %q", unmarshaled.MemoryLimit)
+	}
+
+	// Verify JSON keys match the DDS schema naming convention
+	var jsonMap map[string]interface{}
+	if err := json.Unmarshal(data, &jsonMap); err != nil {
+		t.Fatalf("Failed to unmarshal into map: %v", err)
+	}
+
+	expectedKeys := []string{"maxConcurrentPods", "cpuLimit", "memoryLimit"}
+	for _, key := range expectedKeys {
+		if _, ok := jsonMap[key]; !ok {
+			t.Errorf("Expected JSON key %q to be present", key)
+		}
+	}
+}

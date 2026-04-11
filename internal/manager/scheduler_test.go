@@ -717,3 +717,171 @@ func TestScheduler_CompleteTask_NotFound(t *testing.T) {
 		t.Fatalf("expected ErrTaskNotFound, got %v", err)
 	}
 }
+
+// Failing an Idle task is not a valid transition (only InProgress can be failed).
+func TestScheduler_FailIdleTask_InvalidTransition(t *testing.T) {
+	tracker := &TaskTracker{
+		mapTasks: []Task{
+			{ID: "m1", Type: MapTask, State: Idle},
+		},
+	}
+	scheduler, _ := NewScheduler(tracker)
+
+	err := scheduler.FailTask("m1", "some reason")
+	if err != ErrInvalidStateTransition {
+		t.Fatalf("expected ErrInvalidStateTransition when failing an Idle task, got %v", err)
+	}
+}
+
+// Completing an already-Failed task should be rejected.
+func TestScheduler_CompleteFailedTask_InvalidTransition(t *testing.T) {
+	tracker := &TaskTracker{
+		mapTasks: []Task{
+			{ID: "m1", Type: MapTask, State: Idle},
+		},
+	}
+	scheduler, _ := NewScheduler(tracker)
+
+	// Exhaust all retry attempts to move the task into the Failed state
+	for i := 0; i < MaxTaskAttempts; i++ {
+		_, err := scheduler.GetNextTask("w")
+		if err != nil {
+			t.Fatalf("iteration %d: expected task, got %v", i, err)
+		}
+		if err := scheduler.FailTask("m1", "crash"); err != nil {
+			t.Fatalf("iteration %d: unexpected fail error: %v", i, err)
+		}
+	}
+
+	// Verify the task is now in Failed state
+	state, _ := scheduler.GetTaskStatus("m1")
+	if state != Failed {
+		t.Fatalf("expected task to be in Failed state, got %v", state)
+	}
+
+	// Attempting to complete a Failed task should be invalid
+	err := scheduler.CompleteTask("m1", "some-attempt", nil, nil)
+	if err != ErrInvalidStateTransition {
+		t.Fatalf("expected ErrInvalidStateTransition when completing Failed task, got %v", err)
+	}
+}
+
+// Renewing a lease on an Idle task (not yet assigned) should be invalid.
+func TestScheduler_RenewLease_IdleTask(t *testing.T) {
+	tracker := &TaskTracker{
+		mapTasks: []Task{
+			{ID: "m1", Type: MapTask, State: Idle},
+		},
+	}
+	scheduler, _ := NewScheduler(tracker)
+
+	err := scheduler.RenewLease("m1", "some-lease")
+	if err != ErrInvalidStateTransition {
+		t.Fatalf("expected ErrInvalidStateTransition for renewing lease on Idle task, got %v", err)
+	}
+}
+
+// Renewing a lease on a Completed task should be invalid.
+func TestScheduler_RenewLease_CompletedTask(t *testing.T) {
+	tracker := &TaskTracker{
+		mapTasks: []Task{
+			{ID: "m1", Type: MapTask, State: Idle},
+		},
+	}
+	scheduler, _ := NewScheduler(tracker)
+
+	task, _ := scheduler.GetNextTask("w1")
+	_ = scheduler.CompleteTask("m1", task.GetAttemptID(), nil, nil)
+
+	err := scheduler.RenewLease("m1", "any-lease")
+	if err != ErrInvalidStateTransition {
+		t.Fatalf("expected ErrInvalidStateTransition for renewing lease on Completed task, got %v", err)
+	}
+}
+
+// FailStaleTasks should transition a task to Failed when MaxTaskAttempts is exhausted.
+func TestScheduler_FailStaleTasks_MaxAttemptsExhaustion(t *testing.T) {
+	tracker := &TaskTracker{
+		mapTasks: []Task{
+			{ID: "m1", Type: MapTask, State: Idle},
+		},
+	}
+	scheduler, _ := NewScheduler(tracker)
+
+	// Assign, let it go stale, and recover repeatedly until max attempts
+	for i := 0; i < MaxTaskAttempts; i++ {
+		_, err := scheduler.GetNextTask("w")
+		if err != nil {
+			t.Fatalf("iteration %d: expected task, got %v", i, err)
+		}
+
+		// Force the heartbeat into the past so FailStaleTasks picks it up
+		scheduler.taskMap["m1"].LastHeartbeat = time.Now().Add(-1 * time.Hour)
+
+		recovered, err := scheduler.FailStaleTasks(1 * time.Millisecond)
+		if err != nil {
+			t.Fatalf("iteration %d: unexpected error: %v", i, err)
+		}
+		if recovered != 1 {
+			t.Fatalf("iteration %d: expected 1 recovery, got %d", i, recovered)
+		}
+	}
+
+	// Task should now be in Failed state (not Idle)
+	state, _ := scheduler.GetTaskStatus("m1")
+	if state != Failed {
+		t.Fatalf("expected task to reach Failed after %d stale timeouts, got %v", MaxTaskAttempts, state)
+	}
+
+	// GetNextTask should no longer return this task
+	_, err := scheduler.GetNextTask("w")
+	if err != ErrNoIdleTasks {
+		t.Fatalf("expected ErrNoIdleTasks after exhausting max attempts via stale recovery, got %v", err)
+	}
+}
+
+// When all tasks are Failed, GetNextTask should return ErrNoIdleTasks.
+func TestScheduler_GetNextTask_AllFailed(t *testing.T) {
+	tracker := &TaskTracker{
+		mapTasks: []Task{
+			{ID: "m1", Type: MapTask, State: Idle},
+		},
+	}
+	scheduler, _ := NewScheduler(tracker)
+
+	// Exhaust retries
+	for i := 0; i < MaxTaskAttempts; i++ {
+		_, err := scheduler.GetNextTask("w")
+		if err != nil {
+			t.Fatalf("iteration %d: expected task, got %v", i, err)
+		}
+		_ = scheduler.FailTask("m1", "crash")
+	}
+
+	_, err := scheduler.GetNextTask("w")
+	if err != ErrNoIdleTasks {
+		t.Fatalf("expected ErrNoIdleTasks when all tasks failed, got %v", err)
+	}
+}
+
+// An empty scheduler (no map or reduce tasks) should immediately return ErrJobCompleted.
+func TestScheduler_EmptyTasks(t *testing.T) {
+	tracker := &TaskTracker{
+		mapTasks:    []Task{},
+		reduceTasks: []Task{},
+	}
+	scheduler, _ := NewScheduler(tracker)
+
+	_, err := scheduler.GetNextTask("w")
+	if err != ErrJobCompleted {
+		t.Fatalf("expected ErrJobCompleted for empty scheduler, got %v", err)
+	}
+
+	if !scheduler.IsJobFinished() {
+		t.Fatal("expected IsJobFinished=true for empty scheduler")
+	}
+
+	if !scheduler.AllMapTasksCompleted() {
+		t.Fatal("expected AllMapTasksCompleted=true for empty scheduler")
+	}
+}
