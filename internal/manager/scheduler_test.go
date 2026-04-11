@@ -1040,3 +1040,305 @@ func TestScheduler_CombinerAndReplicaFields(t *testing.T) {
 		t.Fatalf("expected InputChecksum preserved after assignment, got %q", assigned.InputChecksum)
 	}
 }
+
+// FailTask must zero out all transient scheduling metadata so a subsequent
+// GetNextTask re-assignment starts cleanly with fresh lease/attempt/heartbeat.
+func TestScheduler_FailTask_ClearsMetadata(t *testing.T) {
+	tracker := &TaskTracker{
+		mapTasks: []Task{
+			{ID: "m1", Type: MapTask, State: Idle},
+		},
+	}
+	scheduler, _ := NewScheduler(tracker)
+
+	_, err := scheduler.GetNextTask("worker-1")
+	if err != nil {
+		t.Fatalf("expected task, got err: %v", err)
+	}
+
+	if err := scheduler.FailTask("m1", "pod died"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	ref := scheduler.taskMap["m1"]
+	if ref.WorkerID() != "" {
+		t.Fatalf("expected workerID cleared, got %q", ref.WorkerID())
+	}
+	if !ref.StartTime().IsZero() {
+		t.Fatalf("expected startTime zeroed, got %v", ref.StartTime())
+	}
+	if !ref.GetHeartbeat().IsZero() {
+		t.Fatalf("expected LastHeartbeat zeroed, got %v", ref.GetHeartbeat())
+	}
+	if ref.GetAttemptID() != "" {
+		t.Fatalf("expected ActiveAttemptID cleared, got %q", ref.GetAttemptID())
+	}
+	if ref.GetLeaseID() != "" {
+		t.Fatalf("expected LeaseID cleared, got %q", ref.GetLeaseID())
+	}
+}
+
+// CompleteTask must zero out all transient metadata so completed tasks
+// don't carry stale lease/worker references into the result set.
+func TestScheduler_CompleteTask_ClearsMetadata(t *testing.T) {
+	tracker := &TaskTracker{
+		mapTasks: []Task{
+			{ID: "m1", Type: MapTask, State: Idle},
+		},
+	}
+	scheduler, _ := NewScheduler(tracker)
+
+	task, _ := scheduler.GetNextTask("worker-1")
+	if err := scheduler.CompleteTask("m1", task.GetAttemptID(), []string{"s3://out"}, []string{"hash1"}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	ref := scheduler.taskMap["m1"]
+	if ref.WorkerID() != "" {
+		t.Fatalf("expected workerID cleared, got %q", ref.WorkerID())
+	}
+	if !ref.StartTime().IsZero() {
+		t.Fatalf("expected startTime zeroed, got %v", ref.StartTime())
+	}
+	if !ref.GetHeartbeat().IsZero() {
+		t.Fatalf("expected LastHeartbeat zeroed, got %v", ref.GetHeartbeat())
+	}
+	if ref.GetAttemptID() != "" {
+		t.Fatalf("expected ActiveAttemptID cleared, got %q", ref.GetAttemptID())
+	}
+	if ref.GetLeaseID() != "" {
+		t.Fatalf("expected LeaseID cleared, got %q", ref.GetLeaseID())
+	}
+
+	// But outputs must be preserved
+	if len(ref.OutputURIs) != 1 || ref.OutputURIs[0] != "s3://out" {
+		t.Fatalf("expected output URI preserved, got %v", ref.OutputURIs)
+	}
+	if len(ref.OutputChecksums) != 1 || ref.OutputChecksums[0] != "hash1" {
+		t.Fatalf("expected output checksum preserved, got %v", ref.OutputChecksums)
+	}
+}
+
+// Full lifecycle: 3 map tasks produce outputs → 2 reduce tasks consume them and produce final results.
+func TestScheduler_FullLifecycle_MultiMapMultiReduce(t *testing.T) {
+	tracker := &TaskTracker{
+		mapTasks: []Task{
+			{ID: "m1", Type: MapTask, State: Idle},
+			{ID: "m2", Type: MapTask, State: Idle},
+			{ID: "m3", Type: MapTask, State: Idle},
+		},
+		reduceTasks: []Task{
+			{ID: "r1", Type: ReduceTask, State: Idle},
+			{ID: "r2", Type: ReduceTask, State: Idle},
+		},
+	}
+	scheduler, err := NewScheduler(tracker)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Assign and complete all 3 map tasks with partition outputs
+	mapOutputs := map[string][]string{
+		"m1": {"s3://staging/m1/part-0", "s3://staging/m1/part-1"},
+		"m2": {"s3://staging/m2/part-0", "s3://staging/m2/part-1"},
+		"m3": {"s3://staging/m3/part-0", "s3://staging/m3/part-1"},
+	}
+	mapChecksums := map[string][]string{
+		"m1": {"h1a", "h1b"},
+		"m2": {"h2a", "h2b"},
+		"m3": {"h3a", "h3b"},
+	}
+
+	for i := 0; i < 3; i++ {
+		task, err := scheduler.GetNextTask("map-worker")
+		if err != nil {
+			t.Fatalf("map assign %d: %v", i, err)
+		}
+		if task.Type != MapTask {
+			t.Fatalf("expected MapTask, got %v", task.Type)
+		}
+		err = scheduler.CompleteTask(task.ID, task.GetAttemptID(), mapOutputs[task.ID], mapChecksums[task.ID])
+		if err != nil {
+			t.Fatalf("map complete %s: %v", task.ID, err)
+		}
+	}
+
+	if !scheduler.AllMapTasksCompleted() {
+		t.Fatal("expected AllMapTasksCompleted=true after completing all map tasks")
+	}
+
+	// Verify all 6 intermediate outputs are collected
+	allMapOutputs := scheduler.GetMapOutputs()
+	if len(allMapOutputs) != 6 {
+		t.Fatalf("expected 6 map outputs, got %d", len(allMapOutputs))
+	}
+
+	// Assign and complete both reduce tasks
+	for i := 0; i < 2; i++ {
+		task, err := scheduler.GetNextTask("reduce-worker")
+		if err != nil {
+			t.Fatalf("reduce assign %d: %v", i, err)
+		}
+		if task.Type != ReduceTask {
+			t.Fatalf("expected ReduceTask, got %v", task.Type)
+		}
+		err = scheduler.CompleteTask(task.ID, task.GetAttemptID(),
+			[]string{"s3://final/" + task.ID + "/output.jsonl"},
+			[]string{"final-hash-" + task.ID},
+		)
+		if err != nil {
+			t.Fatalf("reduce complete %s: %v", task.ID, err)
+		}
+	}
+
+	if !scheduler.IsJobFinished() {
+		t.Fatal("expected IsJobFinished=true after completing all tasks")
+	}
+
+	reduceOutputs := scheduler.GetReduceOutputs()
+	if len(reduceOutputs) != 2 {
+		t.Fatalf("expected 2 final reduce outputs, got %d", len(reduceOutputs))
+	}
+
+	_, err = scheduler.GetNextTask("idle-worker")
+	if err != ErrJobCompleted {
+		t.Fatalf("expected ErrJobCompleted, got %v", err)
+	}
+}
+
+// GetMapOutputs on a freshly created scheduler must return nil/empty.
+func TestScheduler_GetMapOutputs_Empty(t *testing.T) {
+	tracker := &TaskTracker{
+		mapTasks: []Task{
+			{ID: "m1", Type: MapTask, State: Idle},
+		},
+	}
+	scheduler, _ := NewScheduler(tracker)
+
+	outputs := scheduler.GetMapOutputs()
+	if len(outputs) != 0 {
+		t.Fatalf("expected 0 map outputs before any completion, got %d", len(outputs))
+	}
+}
+
+// GetReduceOutputs on a freshly created scheduler must return nil/empty.
+func TestScheduler_GetReduceOutputs_Empty(t *testing.T) {
+	tracker := &TaskTracker{
+		mapTasks: []Task{
+			{ID: "m1", Type: MapTask, State: Idle},
+		},
+		reduceTasks: []Task{
+			{ID: "r1", Type: ReduceTask, State: Idle},
+		},
+	}
+	scheduler, _ := NewScheduler(tracker)
+
+	outputs := scheduler.GetReduceOutputs()
+	if len(outputs) != 0 {
+		t.Fatalf("expected 0 reduce outputs before any completion, got %d", len(outputs))
+	}
+}
+
+// Concurrently run the stale-task reaper pattern alongside task assignment
+// to verify they don't deadlock or corrupt shared state.
+func TestScheduler_ConcurrentFailStaleAndAssign(t *testing.T) {
+	tracker := &TaskTracker{
+		mapTasks: []Task{
+			{ID: "m1", Type: MapTask, State: Idle},
+			{ID: "m2", Type: MapTask, State: Idle},
+			{ID: "m3", Type: MapTask, State: Idle},
+		},
+	}
+	scheduler, _ := NewScheduler(tracker)
+
+	errCh := make(chan error, 20)
+	doneCh := make(chan bool, 10)
+
+	// Worker goroutines: assign and complete tasks
+	for i := 0; i < 3; i++ {
+		go func() {
+			for {
+				task, err := scheduler.GetNextTask("worker")
+				if err == ErrNoIdleTasks {
+					time.Sleep(5 * time.Millisecond)
+					continue
+				}
+				if err == ErrJobCompleted {
+					doneCh <- true
+					return
+				}
+				if err != nil {
+					errCh <- err
+					return
+				}
+				if err := scheduler.CompleteTask(task.ID, task.GetAttemptID(), nil, nil); err != nil {
+					errCh <- err
+					return
+				}
+			}
+		}()
+	}
+
+	// Reaper goroutine: continuously sweep for stale tasks
+	go func() {
+		for i := 0; i < 50; i++ {
+			_, err := scheduler.FailStaleTasks(1 * time.Hour) // large timeout, won't actually recover anything
+			if err != nil {
+				errCh <- err
+				return
+			}
+			time.Sleep(1 * time.Millisecond)
+		}
+	}()
+
+	// Wait for all workers to finish
+	for i := 0; i < 3; i++ {
+		select {
+		case err := <-errCh:
+			t.Fatalf("concurrent operation failed: %v", err)
+		case <-doneCh:
+			// ok
+		case <-time.After(5 * time.Second):
+			t.Fatal("timeout waiting for concurrent operations to complete")
+		}
+	}
+}
+
+// FailTask increments Attempts correctly across multiple failure cycles.
+func TestScheduler_FailTask_PreservesAttemptCount(t *testing.T) {
+	tracker := &TaskTracker{
+		mapTasks: []Task{
+			{ID: "m1", Type: MapTask, State: Idle},
+		},
+	}
+	scheduler, _ := NewScheduler(tracker)
+
+	for i := 1; i <= MaxTaskAttempts; i++ {
+		_, err := scheduler.GetNextTask("w")
+		if err != nil {
+			t.Fatalf("attempt %d: expected task, got %v", i, err)
+		}
+
+		if err := scheduler.FailTask("m1", "crash"); err != nil {
+			t.Fatalf("attempt %d: unexpected fail error: %v", i, err)
+		}
+
+		ref := scheduler.taskMap["m1"]
+		if ref.Attempts != i {
+			t.Fatalf("after %d failures, expected Attempts=%d, got %d", i, i, ref.Attempts)
+		}
+
+		if ref.LastFailure != "crash" {
+			t.Fatalf("expected LastFailure='crash', got %q", ref.LastFailure)
+		}
+
+		if ref.LastFailedAt.IsZero() {
+			t.Fatalf("expected LastFailedAt to be set, got zero")
+		}
+	}
+
+	// After MaxTaskAttempts, state must be Failed
+	if scheduler.taskMap["m1"].State != Failed {
+		t.Fatalf("expected Failed state after %d failures, got %v", MaxTaskAttempts, scheduler.taskMap["m1"].State)
+	}
+}
