@@ -103,6 +103,22 @@ type TaskOutput struct {
 	Checksum       string    `db:"checksum" json:"checksum"`
 }
 
+// LeaseExpired checks if this attempt's lease has expired by computing
+// last_renewed_at + lease_ttl and comparing against the current time.
+// This follows the design document's runtime lease expiry computation
+// (Section 5.1: "Lease expiry is computed at runtime as last_renewed_at + lease_ttl").
+func (ta *TaskAttempt) LeaseExpired() bool {
+	expiry := ta.LastRenewedAt.Add(time.Duration(ta.LeaseTTL) * time.Second)
+	return time.Now().After(expiry)
+}
+
+// IsTerminal returns true if the job has reached a final state
+// (Completed, Failed, or Cancelled) and will not transition further.
+// Used by the Manager to trigger the Cleaning phase and garbage collection.
+func (j *Job) IsTerminal() bool {
+	return j.Status == JobCompleted || j.Status == JobFailed || j.Status == JobCancelled
+}
+
 // SystemConfig corresponds to the SYSTEM_CONFIG table.
 type SystemConfig struct {
 	ConfigID          int       `db:"config_id" json:"configId"`
