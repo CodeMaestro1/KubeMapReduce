@@ -160,3 +160,34 @@ func TestJobRecord_Fields(t *testing.T) {
 		t.Errorf("expected 1 reduce task, got %d", record.TotalReduceTasks)
 	}
 }
+
+func TestTask_NewFields(t *testing.T) {
+	src := []Task{
+		{
+			ID:            "m1",
+			Type:          MapTask,
+			State:         Idle,
+			CombinerURI:   "s3://code/combiner.py",
+			ReplicaIndex:  3,
+			TotalReducers: 10,
+		},
+	}
+
+	tracker := NewTaskTracker(src, nil)
+
+	// Mutate source to confirm defensive copy
+	src[0].CombinerURI = "MUTATED"
+	src[0].ReplicaIndex = 99
+	src[0].TotalReducers = 99
+
+	task := tracker.mapTasks[0]
+	if task.CombinerURI != "s3://code/combiner.py" {
+		t.Fatalf("expected CombinerURI 's3://code/combiner.py', got %q", task.CombinerURI)
+	}
+	if task.ReplicaIndex != 3 {
+		t.Fatalf("expected ReplicaIndex 3, got %d", task.ReplicaIndex)
+	}
+	if task.TotalReducers != 10 {
+		t.Fatalf("expected TotalReducers 10, got %d", task.TotalReducers)
+	}
+}
