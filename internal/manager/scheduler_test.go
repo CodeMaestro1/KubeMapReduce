@@ -885,3 +885,158 @@ func TestScheduler_EmptyTasks(t *testing.T) {
 		t.Fatal("expected AllMapTasksCompleted=true for empty scheduler")
 	}
 }
+
+// GetTaskByID should return a full snapshot of the task or ErrTaskNotFound.
+func TestScheduler_GetTaskByID(t *testing.T) {
+	tracker := &TaskTracker{
+		mapTasks: []Task{
+			{ID: "m1", Type: MapTask, State: Idle, CodeURI: "s3://code/mapper.py", InputFile: "input.jsonl", ByteStart: 0, ByteEnd: 1024},
+		},
+	}
+	scheduler, _ := NewScheduler(tracker)
+
+	// Not found
+	_, err := scheduler.GetTaskByID("nonexistent")
+	if err != ErrTaskNotFound {
+		t.Fatalf("expected ErrTaskNotFound, got %v", err)
+	}
+
+	// Happy path: should return all metadata
+	task, err := scheduler.GetTaskByID("m1")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if task.ID != "m1" {
+		t.Fatalf("expected ID m1, got %s", task.ID)
+	}
+	if task.CodeURI != "s3://code/mapper.py" {
+		t.Fatalf("expected CodeURI s3://code/mapper.py, got %s", task.CodeURI)
+	}
+	if task.ByteEnd != 1024 {
+		t.Fatalf("expected ByteEnd 1024, got %d", task.ByteEnd)
+	}
+
+	// After assignment, should reflect InProgress state and lease metadata
+	assigned, _ := scheduler.GetNextTask("w1")
+	task2, _ := scheduler.GetTaskByID("m1")
+	if task2.State != InProgress {
+		t.Fatalf("expected InProgress after assignment, got %v", task2.State)
+	}
+	if task2.GetLeaseID() == "" {
+		t.Fatal("expected non-empty LeaseID after assignment")
+	}
+	if task2.GetAttemptID() != assigned.GetAttemptID() {
+		t.Fatalf("expected attempt IDs to match: %s vs %s", task2.GetAttemptID(), assigned.GetAttemptID())
+	}
+}
+
+// GetTaskByID must return a defensive copy so external mutation can't corrupt scheduler state.
+func TestScheduler_GetTaskByID_ReturnsDefensiveCopy(t *testing.T) {
+	tracker := &TaskTracker{
+		mapTasks: []Task{
+			{ID: "m1", Type: MapTask, State: Idle},
+		},
+	}
+	scheduler, _ := NewScheduler(tracker)
+
+	// Get a copy and mutate it
+	taskCopy, _ := scheduler.GetTaskByID("m1")
+	taskCopy.State = Completed
+	taskCopy.ID = "MUTATED"
+
+	// Internal state should be unaffected
+	original, _ := scheduler.GetTaskByID("m1")
+	if original.State != Idle {
+		t.Fatalf("expected internal state to remain Idle, got %v", original.State)
+	}
+	if original.ID != "m1" {
+		t.Fatalf("expected internal ID to remain m1, got %s", original.ID)
+	}
+}
+
+// CompleteTask should reject mismatched URI/checksum lengths to prevent 1NF corruption.
+func TestScheduler_CompleteTask_OutputMismatch(t *testing.T) {
+	tracker := &TaskTracker{
+		mapTasks: []Task{
+			{ID: "m1", Type: MapTask, State: Idle},
+		},
+	}
+	scheduler, _ := NewScheduler(tracker)
+
+	task, _ := scheduler.GetNextTask("w1")
+
+	// 2 URIs but 1 checksum → should be rejected
+	err := scheduler.CompleteTask("m1", task.GetAttemptID(), []string{"uri1", "uri2"}, []string{"hash1"})
+	if err != ErrOutputMismatch {
+		t.Fatalf("expected ErrOutputMismatch for mismatched lengths, got %v", err)
+	}
+
+	// Equal lengths should succeed
+	err = scheduler.CompleteTask("m1", task.GetAttemptID(), []string{"uri1"}, []string{"hash1"})
+	if err != nil {
+		t.Fatalf("expected successful complete with matching lengths, got %v", err)
+	}
+
+	// Nil slices should also succeed (tasks with no outputs like some map phases)
+	tracker2 := &TaskTracker{
+		mapTasks: []Task{
+			{ID: "m2", Type: MapTask, State: Idle},
+		},
+	}
+	scheduler2, _ := NewScheduler(tracker2)
+	task2, _ := scheduler2.GetNextTask("w2")
+	err = scheduler2.CompleteTask("m2", task2.GetAttemptID(), nil, nil)
+	if err != nil {
+		t.Fatalf("expected successful complete with nil slices, got %v", err)
+	}
+}
+
+// Verify the new Task struct fields (CombinerURI, ReplicaIndex, TotalReducers)
+// survive the full scheduler lifecycle.
+func TestScheduler_CombinerAndReplicaFields(t *testing.T) {
+	tracker := &TaskTracker{
+		mapTasks: []Task{
+			{
+				ID:            "m1",
+				Type:          MapTask,
+				State:         Idle,
+				CombinerURI:   "s3://code/combiner.py",
+				ReplicaIndex:  2,
+				TotalReducers: 5,
+				CodeURI:       "s3://code/mapper.py",
+				InputChecksum: "abc123",
+			},
+		},
+	}
+	scheduler, _ := NewScheduler(tracker)
+
+	// Fields should survive NewScheduler's internal copy
+	task, err := scheduler.GetTaskByID("m1")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if task.CombinerURI != "s3://code/combiner.py" {
+		t.Fatalf("expected CombinerURI 's3://code/combiner.py', got %q", task.CombinerURI)
+	}
+	if task.ReplicaIndex != 2 {
+		t.Fatalf("expected ReplicaIndex 2, got %d", task.ReplicaIndex)
+	}
+	if task.TotalReducers != 5 {
+		t.Fatalf("expected TotalReducers 5, got %d", task.TotalReducers)
+	}
+
+	// Fields should survive GetNextTask assignment copy
+	assigned, _ := scheduler.GetNextTask("w1")
+	if assigned.CombinerURI != "s3://code/combiner.py" {
+		t.Fatalf("expected CombinerURI preserved after assignment, got %q", assigned.CombinerURI)
+	}
+	if assigned.ReplicaIndex != 2 {
+		t.Fatalf("expected ReplicaIndex preserved after assignment, got %d", assigned.ReplicaIndex)
+	}
+	if assigned.TotalReducers != 5 {
+		t.Fatalf("expected TotalReducers preserved after assignment, got %d", assigned.TotalReducers)
+	}
+	if assigned.InputChecksum != "abc123" {
+		t.Fatalf("expected InputChecksum preserved after assignment, got %q", assigned.InputChecksum)
+	}
+}
