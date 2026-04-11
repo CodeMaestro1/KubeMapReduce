@@ -491,8 +491,8 @@ func TestScheduler_MaxTaskAttempts(t *testing.T) {
 
 	// Now it should be Failed, not Idle. GetNextTask should not return it.
 	_, err := scheduler.GetNextTask("w")
-	if err != ErrNoIdleTasks {
-		t.Fatalf("expected ErrNoIdleTasks after max attempts, got: %v", err)
+	if err != ErrJobFailed {
+		t.Fatalf("expected ErrJobFailed after max attempts, got: %v", err)
 	}
 
 	sTask := scheduler.taskMap["m1"]
@@ -835,8 +835,8 @@ func TestScheduler_FailStaleTasks_MaxAttemptsExhaustion(t *testing.T) {
 
 	// GetNextTask should no longer return this task
 	_, err := scheduler.GetNextTask("w")
-	if err != ErrNoIdleTasks {
-		t.Fatalf("expected ErrNoIdleTasks after exhausting max attempts via stale recovery, got %v", err)
+	if err != ErrJobFailed {
+		t.Fatalf("expected ErrJobFailed after exhausting max attempts via stale recovery, got %v", err)
 	}
 }
 
@@ -859,8 +859,8 @@ func TestScheduler_GetNextTask_AllFailed(t *testing.T) {
 	}
 
 	_, err := scheduler.GetNextTask("w")
-	if err != ErrNoIdleTasks {
-		t.Fatalf("expected ErrNoIdleTasks when all tasks failed, got %v", err)
+	if err != ErrJobFailed {
+		t.Fatalf("expected ErrJobFailed when all tasks failed, got %v", err)
 	}
 }
 
@@ -1514,4 +1514,73 @@ func TestScheduler_MultipleReduceBlockedUntilAllMapComplete(t *testing.T) {
 	if len(reduceTaskIDs) != 3 {
 		t.Fatalf("expected 3 reduce tasks, got %d", len(reduceTaskIDs))
 	}
+}
+func TestScheduler_DeepCopy_Isolation(t *testing.T) {
+	tracker := &TaskTracker{
+		mapTasks: []Task{
+			{ID: "m1", Type: MapTask, State: Idle, OutputURIs: []string{"s3://old"}},
+		},
+	}
+	scheduler, _ := NewScheduler(tracker)
+
+	// Get a task snapshot
+	task, _ := scheduler.GetTaskByID("m1")
+	
+	// Mutate the slice in the copy
+	task.OutputURIs[0] = "s3://MUTATED"
+	task.OutputURIs = append(task.OutputURIs, "s3://NEW")
+
+	// Internal state must be unchanged
+	ref := scheduler.taskMap["m1"]
+	if ref.OutputURIs[0] != "s3://old" || len(ref.OutputURIs) != 1 {
+		t.Fatalf("internal state was corrupted by external mutation: %v", ref.OutputURIs)
+	}
+}
+
+func TestScheduler_JobFailure_ImmediatePropagation(t *testing.T) {
+	tracker := &TaskTracker{
+		mapTasks: []Task{
+			{ID: "m1", Type: MapTask, State: Idle},
+			{ID: "m2", Type: MapTask, State: Idle},
+		},
+	}
+	scheduler, _ := NewScheduler(tracker)
+
+	// Manually force a task into Failed state
+	scheduler.mu.Lock()
+	scheduler.taskMap["m1"].State = Failed
+	scheduler.mu.Unlock()
+
+	// Now GetNextTask should immediately return ErrJobFailed
+	_, err := scheduler.GetNextTask("w2")
+	if err != ErrJobFailed {
+		t.Fatalf("expected ErrJobFailed, got %v", err)
+	}
+}
+
+func TestScheduler_QueueOrder(t *testing.T) {
+	tracker := &TaskTracker{
+		mapTasks: []Task{
+			{ID: "m1", Type: MapTask, State: Idle},
+			{ID: "m2", Type: MapTask, State: Idle},
+			{ID: "m3", Type: MapTask, State: Idle},
+		},
+	}
+	scheduler, _ := NewScheduler(tracker)
+
+	// Should follow FIFO order of the queue
+	t1, _ := scheduler.GetNextTask("w")
+	if t1.ID != "m1" { t.Errorf("expected m1, got %s", t1.ID) }
+	
+	t2, _ := scheduler.GetNextTask("w")
+	if t2.ID != "m2" { t.Errorf("expected m2, got %s", t2.ID) }
+
+	// Fail t1 -> it should go to the BACK of the queue
+	_ = scheduler.FailTask("m1", t1.GetAttemptID(), t1.GetLeaseID(), "crash")
+	
+	t3, _ := scheduler.GetNextTask("w")
+	if t3.ID != "m3" { t.Errorf("expected m3, got %s", t3.ID) }
+	
+	t4, _ := scheduler.GetNextTask("w")
+	if t4.ID != "m1" { t.Errorf("expected m1 (reassigned), got %s", t4.ID) }
 }
