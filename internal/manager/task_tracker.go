@@ -92,12 +92,32 @@ func (t *Task) GetAttemptID() string    { return t.ActiveAttemptID }
 func (t *Task) GetLeaseID() string      { return t.LeaseID }
 func (t *Task) GetHeartbeat() time.Time { return t.LastHeartbeat }
 
+// Clone returns a deep copy of the Task metadata.
+// This ensures that internal slices (OutputURIs and OutputChecksums) are
+// copied to new underlying arrays, preventing external mutation.
+func (t *Task) Clone() Task {
+	clone := *t
+	if t.OutputURIs != nil {
+		clone.OutputURIs = make([]string, len(t.OutputURIs))
+		copy(clone.OutputURIs, t.OutputURIs)
+	}
+	if t.OutputChecksums != nil {
+		clone.OutputChecksums = make([]string, len(t.OutputChecksums))
+		copy(clone.OutputChecksums, t.OutputChecksums)
+	}
+	return clone
+}
+
 // NewTaskTracker safely initializes a TaskTracker by maintaining defensive copies.
 func NewTaskTracker(mapTasks, reduceTasks []Task) *TaskTracker {
 	mCopy := make([]Task, len(mapTasks))
-	copy(mCopy, mapTasks)
+	for i := range mapTasks {
+		mCopy[i] = mapTasks[i].Clone()
+	}
 	rCopy := make([]Task, len(reduceTasks))
-	copy(rCopy, reduceTasks)
+	for i := range reduceTasks {
+		rCopy[i] = reduceTasks[i].Clone()
+	}
 	return &TaskTracker{
 		mapTasks:    mCopy,
 		reduceTasks: rCopy,
