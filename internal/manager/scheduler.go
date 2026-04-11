@@ -27,6 +27,7 @@ var (
 	ErrInvalidTimeout         = errors.New("timeout must be strictly positive")
 	ErrStaleAttempt           = errors.New("stale commit attempt rejected to prevent split-brain")
 	ErrExpiredLease           = errors.New("lease expired or mismatched")
+	ErrOutputMismatch         = errors.New("outputURIs and outputChecksums must have the same length")
 )
 
 // Scheduler coordinates task assignment and lifecycle for a single MapReduce job.
@@ -161,6 +162,12 @@ func (s *Scheduler) CompleteTask(taskID string, attemptID string, outputURIs []s
 		return ErrStaleAttempt
 	}
 
+	// Guard against 1NF corruption: each output URI must pair with exactly one checksum
+	// when both slices are provided (Section 5.5 of Design Document).
+	if len(outputURIs) > 0 && len(outputChecksums) > 0 && len(outputURIs) != len(outputChecksums) {
+		return ErrOutputMismatch
+	}
+
 	task.State = Completed
 	task.OutputURIs = outputURIs
 	task.OutputChecksums = outputChecksums
@@ -247,6 +254,22 @@ func (s *Scheduler) GetTaskStatus(taskID string) (TaskState, error) {
 		return 0, ErrTaskNotFound
 	}
 	return task.State, nil
+}
+
+// GetTaskByID returns a full defensive copy of a task's metadata.
+// The Manager uses this for the gRPC Register handler to build a TaskAssignment
+// containing byte ranges, code URIs, checksums, and lease info.
+func (s *Scheduler) GetTaskByID(taskID string) (*Task, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	task, exists := s.taskMap[taskID]
+	if !exists {
+		return nil, ErrTaskNotFound
+	}
+
+	taskCopy := *task
+	return &taskCopy, nil
 }
 
 func (s *Scheduler) RenewLease(taskID string, leaseID string) error {
