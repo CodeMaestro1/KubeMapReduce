@@ -98,13 +98,13 @@ func TestScheduler_FailTask(t *testing.T) {
 	}
 
 	// Assign task
-	_, err = scheduler.GetNextTask("worker-1")
+	task1, err := scheduler.GetNextTask("worker-1")
 	if err != nil {
 		t.Fatalf("expected task, got err: %v", err)
 	}
 
 	// Fail task
-	err = scheduler.FailTask("m1", "worker crashed")
+	err = scheduler.FailTask("m1", task1.GetAttemptID(), task1.GetLeaseID(), "worker crashed")
 	if err != nil {
 		t.Fatalf("unexpected error failing task: %v", err)
 	}
@@ -166,7 +166,7 @@ func TestScheduler_FailCompletedTask_InvalidTransition(t *testing.T) {
 	}
 
 	// Now failing a Completed task should not be allowed.
-	err = scheduler.FailTask("m1", "worker crashed")
+	err = scheduler.FailTask("m1", assignedTask.GetAttemptID(), assignedTask.GetLeaseID(), "worker crashed")
 	if err != ErrInvalidStateTransition {
 		t.Fatalf("expected ErrInvalidStateTransition when failing Completed task, got %v", err)
 	}
@@ -479,11 +479,11 @@ func TestScheduler_MaxTaskAttempts(t *testing.T) {
 	scheduler, _ := NewScheduler(tracker)
 
 	for i := 0; i < MaxTaskAttempts; i++ {
-		_, err := scheduler.GetNextTask(func() string { return "w" }())
+		task, err := scheduler.GetNextTask(func() string { return "w" }())
 		if err != nil {
 			t.Fatalf("iteration %d: expected task assignment, got %v", i, err)
 		}
-		err = scheduler.FailTask("m1", "failed")
+		err = scheduler.FailTask("m1", task.GetAttemptID(), task.GetLeaseID(), "failed")
 		if err != nil {
 			t.Fatalf("iteration %d: unexpected error failing task: %v", i, err)
 		}
@@ -684,7 +684,7 @@ func TestScheduler_FailTask_NotFound(t *testing.T) {
 	}
 	scheduler, _ := NewScheduler(tracker)
 
-	err := scheduler.FailTask("nonexistent", "crash")
+	err := scheduler.FailTask("nonexistent", "some-attempt", "some-lease", "crash")
 	if err != ErrTaskNotFound {
 		t.Fatalf("expected ErrTaskNotFound, got %v", err)
 	}
@@ -727,7 +727,7 @@ func TestScheduler_FailIdleTask_InvalidTransition(t *testing.T) {
 	}
 	scheduler, _ := NewScheduler(tracker)
 
-	err := scheduler.FailTask("m1", "some reason")
+	err := scheduler.FailTask("m1", "any", "any", "some reason")
 	if err != ErrInvalidStateTransition {
 		t.Fatalf("expected ErrInvalidStateTransition when failing an Idle task, got %v", err)
 	}
@@ -744,11 +744,11 @@ func TestScheduler_CompleteFailedTask_InvalidTransition(t *testing.T) {
 
 	// Exhaust all retry attempts to move the task into the Failed state
 	for i := 0; i < MaxTaskAttempts; i++ {
-		_, err := scheduler.GetNextTask("w")
+		task, err := scheduler.GetNextTask("w")
 		if err != nil {
 			t.Fatalf("iteration %d: expected task, got %v", i, err)
 		}
-		if err := scheduler.FailTask("m1", "crash"); err != nil {
+		if err := scheduler.FailTask("m1", task.GetAttemptID(), task.GetLeaseID(), "crash"); err != nil {
 			t.Fatalf("iteration %d: unexpected fail error: %v", i, err)
 		}
 	}
@@ -851,11 +851,11 @@ func TestScheduler_GetNextTask_AllFailed(t *testing.T) {
 
 	// Exhaust retries
 	for i := 0; i < MaxTaskAttempts; i++ {
-		_, err := scheduler.GetNextTask("w")
+		task, err := scheduler.GetNextTask("w")
 		if err != nil {
 			t.Fatalf("iteration %d: expected task, got %v", i, err)
 		}
-		_ = scheduler.FailTask("m1", "crash")
+		_ = scheduler.FailTask("m1", task.GetAttemptID(), task.GetLeaseID(), "crash")
 	}
 
 	_, err := scheduler.GetNextTask("w")
@@ -1051,12 +1051,12 @@ func TestScheduler_FailTask_ClearsMetadata(t *testing.T) {
 	}
 	scheduler, _ := NewScheduler(tracker)
 
-	_, err := scheduler.GetNextTask("worker-1")
+	task, err := scheduler.GetNextTask("worker-1")
 	if err != nil {
 		t.Fatalf("expected task, got err: %v", err)
 	}
 
-	if err := scheduler.FailTask("m1", "pod died"); err != nil {
+	if err := scheduler.FailTask("m1", task.GetAttemptID(), task.GetLeaseID(), "pod died"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -1314,12 +1314,12 @@ func TestScheduler_FailTask_PreservesAttemptCount(t *testing.T) {
 	scheduler, _ := NewScheduler(tracker)
 
 	for i := 1; i <= MaxTaskAttempts; i++ {
-		_, err := scheduler.GetNextTask("w")
+		task, err := scheduler.GetNextTask("w")
 		if err != nil {
 			t.Fatalf("attempt %d: expected task, got %v", i, err)
 		}
 
-		if err := scheduler.FailTask("m1", "crash"); err != nil {
+		if err := scheduler.FailTask("m1", task.GetAttemptID(), task.GetLeaseID(), "crash"); err != nil {
 			t.Fatalf("attempt %d: unexpected fail error: %v", i, err)
 		}
 
@@ -1340,5 +1340,178 @@ func TestScheduler_FailTask_PreservesAttemptCount(t *testing.T) {
 	// After MaxTaskAttempts, state must be Failed
 	if scheduler.taskMap["m1"].State != Failed {
 		t.Fatalf("expected Failed state after %d failures, got %v", MaxTaskAttempts, scheduler.taskMap["m1"].State)
+	}
+}
+
+// Zombie worker fencing tests
+
+func TestScheduler_FailTask_StaleAttemptRejection(t *testing.T) {
+	tracker := &TaskTracker{
+		mapTasks: []Task{
+			{ID: "m1", Type: MapTask, State: Idle},
+		},
+	}
+	scheduler, _ := NewScheduler(tracker)
+
+	task, _ := scheduler.GetNextTask("worker-1")
+
+	// Attempt to fail with an incorrect attempt ID
+	err := scheduler.FailTask("m1", "stale-attempt-id", task.GetLeaseID(), "crash")
+	if err != ErrStaleAttempt {
+		t.Fatalf("expected ErrStaleAttempt when attempting to fail with stale ID, got %v", err)
+	}
+
+	// Double check state isn't mutated
+	currentTask, _ := scheduler.GetTaskByID("m1")
+	if currentTask.Attempts != 0 {
+		t.Fatalf("expected no fail attempts recorded on rejection, got %d", currentTask.Attempts)
+	}
+}
+
+func TestScheduler_FailTask_ExpiredLeaseRejection(t *testing.T) {
+	tracker := &TaskTracker{
+		mapTasks: []Task{
+			{ID: "m1", Type: MapTask, State: Idle},
+		},
+	}
+	scheduler, _ := NewScheduler(tracker)
+
+	task, _ := scheduler.GetNextTask("worker-1")
+
+	// Attempt to fail with an incorrect lease ID
+	err := scheduler.FailTask("m1", task.GetAttemptID(), "expired-lease-id", "crash")
+	if err != ErrExpiredLease {
+		t.Fatalf("expected ErrExpiredLease when attempting to fail with wrong lease, got %v", err)
+	}
+}
+
+func TestScheduler_GetNextTask_ReturnsDefensiveCopy(t *testing.T) {
+	tracker := &TaskTracker{
+		mapTasks: []Task{
+			{ID: "m1", Type: MapTask, State: Idle},
+		},
+	}
+	scheduler, _ := NewScheduler(tracker)
+
+	taskCopy, _ := scheduler.GetNextTask("w")
+
+	// Mutate the returned task copy
+	taskCopy.ID = "MUTATED"
+	taskCopy.workerID = "MUTATED"
+	taskCopy.State = Completed
+
+	// Internal state should be completely unmodified by external mutation
+	internalRef := scheduler.taskMap["m1"]
+	if internalRef.ID != "m1" {
+		t.Fatalf("expected internal task ID m1, got %s", internalRef.ID)
+	}
+	if internalRef.State == Completed {
+		t.Fatalf("expected internal state to be InProgress, got %v", internalRef.State)
+	}
+}
+
+func TestScheduler_FailStaleTasks_SetsFailureMetadata(t *testing.T) {
+	tracker := &TaskTracker{
+		mapTasks: []Task{
+			{ID: "m1", Type: MapTask, State: Idle},
+		},
+	}
+	scheduler, _ := NewScheduler(tracker)
+
+	_, _ = scheduler.GetNextTask("worker")
+
+	// Force task into the past to make it stale
+	scheduler.taskMap["m1"].LastHeartbeat = time.Now().Add(-1 * time.Hour)
+
+	recovered, _ := scheduler.FailStaleTasks(1 * time.Minute)
+	if recovered != 1 {
+		t.Fatalf("expected 1 recovered task, got %d", recovered)
+	}
+
+	taskRef := scheduler.taskMap["m1"]
+	if taskRef.LastFailure != "stale timeout" {
+		t.Fatalf("expected LastFailure='stale timeout', got %q", taskRef.LastFailure)
+	}
+	if taskRef.LastFailedAt.IsZero() {
+		t.Fatal("expected LastFailedAt to be set, got zero time")
+	}
+	if taskRef.Attempts != 1 {
+		t.Fatalf("expected 1 attempt, got %d", taskRef.Attempts)
+	}
+}
+
+func TestScheduler_CompleteTask_URIsWithoutChecksums(t *testing.T) {
+	tracker := &TaskTracker{
+		mapTasks: []Task{
+			{ID: "m1", Type: MapTask, State: Idle},
+		},
+	}
+	scheduler, _ := NewScheduler(tracker)
+
+	task, _ := scheduler.GetNextTask("w")
+
+	// Provide 2 URIs but nil checksums. This is an asymmetric but supported case
+	// for phases that don't produce checksums.
+	err := scheduler.CompleteTask("m1", task.GetAttemptID(), []string{"uri1", "uri2"}, nil)
+	if err != nil {
+		t.Fatalf("expected CompleteTask to succeed with nil checksums, got %v", err)
+	}
+
+	outputs := scheduler.GetMapOutputs()
+	if len(outputs) != 2 {
+		t.Fatalf("expected 2 merged map outputs, got %d", len(outputs))
+	}
+}
+
+func TestScheduler_MultipleReduceBlockedUntilAllMapComplete(t *testing.T) {
+	tracker := &TaskTracker{
+		mapTasks: []Task{
+			{ID: "m1", Type: MapTask, State: Idle},
+			{ID: "m2", Type: MapTask, State: Idle},
+		},
+		reduceTasks: []Task{
+			{ID: "r1", Type: ReduceTask, State: Idle},
+			{ID: "r2", Type: ReduceTask, State: Idle},
+			{ID: "r3", Type: ReduceTask, State: Idle},
+		},
+	}
+	scheduler, _ := NewScheduler(tracker)
+
+	// Pull 2 map tasks
+	m1, _ := scheduler.GetNextTask("mw1")
+	m2, _ := scheduler.GetNextTask("mw2")
+
+	// Pulling a 3rd time should yield nothing (map busy, reduce waiting)
+	_, err := scheduler.GetNextTask("mw3")
+	if err != ErrNoIdleTasks {
+		t.Fatalf("expected ErrNoIdleTasks before map complete, got %v", err)
+	}
+
+	// Complete m1
+	_ = scheduler.CompleteTask(m1.ID, m1.GetAttemptID(), nil, nil)
+
+	// Still waiting on m2, reduce tasks should remain blocked
+	_, err = scheduler.GetNextTask("rw")
+	if err != ErrNoIdleTasks {
+		t.Fatalf("expected reduce tasks remaining blocked, got %v", err)
+	}
+
+	// Complete m2
+	_ = scheduler.CompleteTask(m2.ID, m2.GetAttemptID(), nil, nil)
+
+	// Now reduce tasks should be unblocked
+	var reduceTaskIDs []string
+	for i := 0; i < 3; i++ {
+		rt, err := scheduler.GetNextTask("rw")
+		if err != nil {
+			t.Fatalf("expected reduce task unblocked, got %v", err)
+		}
+		if rt.Type != ReduceTask {
+			t.Fatalf("expected ReduceTask, got %v", rt.Type)
+		}
+		reduceTaskIDs = append(reduceTaskIDs, rt.ID)
+	}
+	if len(reduceTaskIDs) != 3 {
+		t.Fatalf("expected 3 reduce tasks, got %d", len(reduceTaskIDs))
 	}
 }
