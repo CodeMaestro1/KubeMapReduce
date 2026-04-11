@@ -34,11 +34,11 @@ var (
 // Scheduler coordinates task assignment and lifecycle for a single MapReduce job.
 
 type Scheduler struct {
-	mu               sync.Mutex
-	tracker          *TaskTracker
-	taskMap          map[string]*Task // O(1) lookups by task ID
-	mapIdleQueue     []string         // Queue of idle map task IDs
-	reduceIdleQueue  []string         // Queue of idle reduce task IDs
+	mu              sync.Mutex
+	tracker         *TaskTracker
+	taskMap         map[string]*Task // O(1) lookups by task ID
+	mapIdleQueue    []string         // Queue of idle map task IDs
+	reduceIdleQueue []string         // Queue of idle reduce task IDs
 }
 
 // NewScheduler initializes a Scheduler with O(1) task index mapping.
