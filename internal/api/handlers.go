@@ -223,16 +223,17 @@ func (h *Handlers) HandleWorkerConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if request.WorkerReplicas < 1 || request.MaxJobsPerNode < 1 {
-		http.Error(w, "workerReplicas and maxJobsPerNode must be positive", http.StatusBadRequest)
+	if request.MaxConcurrentPods < 1 {
+		http.Error(w, "maxConcurrentPods must be positive", http.StatusBadRequest)
 		return
 	}
 
 	if err := httputil.WriteJSON(w, http.StatusNotImplemented, map[string]interface{}{
-		"status":         "not_implemented",
-		"message":        "worker configuration backend integration is not implemented yet",
-		"workerReplicas": request.WorkerReplicas,
-		"maxJobsPerNode": request.MaxJobsPerNode,
+		"status":            "not_implemented",
+		"message":           "worker configuration backend integration is not implemented yet",
+		"maxConcurrentPods": request.MaxConcurrentPods,
+		"cpuLimit":          request.CPULimit,
+		"memoryLimit":       request.MemoryLimit,
 	}); err != nil {
 		return
 	}

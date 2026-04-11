@@ -26,7 +26,10 @@ type CreateUserRequest struct {
 	Role     string `json:"role"`
 }
 
+// WorkerConfigRequest mirrors the admin configure-nodes CLI command
+// and maps directly to the SYSTEM_CONFIG table in the DDS schema.
 type WorkerConfigRequest struct {
-	WorkerReplicas int `json:"workerReplicas"`
-	MaxJobsPerNode int `json:"maxJobsPerNode"`
+	MaxConcurrentPods int    `json:"maxConcurrentPods"`
+	CPULimit          string `json:"cpuLimit"`
+	MemoryLimit       string `json:"memoryLimit"`
 }

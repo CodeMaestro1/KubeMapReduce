@@ -151,7 +151,7 @@ func TestHandleWorkerConfig_ReturnsNotImplemented(t *testing.T) {
 	fakeClient := &fakeAdminClient{}
 	h := NewHandlers(fakeClient, "", UIConfig{})
 
-	body := `{"workerReplicas":3,"maxJobsPerNode":10}`
+	body := `{"maxConcurrentPods":20,"cpuLimit":"500m","memoryLimit":"1Gi"}`
 	req := httptest.NewRequest(http.MethodPut, "/admin/workers/config", strings.NewReader(body))
 	rec := httptest.NewRecorder()
 
