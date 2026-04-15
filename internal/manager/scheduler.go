@@ -164,10 +164,16 @@ func (s *Scheduler) tryAssignTask(ctx context.Context, tx *sql.Tx, workerID stri
 	return &t, nil
 }
 
-func (s *Scheduler) CompleteTask(taskID string, attemptID string, outputURIs []string, outputChecksums []string) error {
-	if len(outputURIs) > 0 && len(outputChecksums) > 0 && len(outputURIs) != len(outputChecksums) {
+func (s *Scheduler) CompleteTask(taskID string, attemptID string, leaseID string, outputURIs []string, outputChecksums []string) error {
+	if len(outputURIs) != len(outputChecksums) {
 		return ErrOutputMismatch
 	}
+
+	// Deep copy to prevent caller mutation from affecting internal db logic, fulfilling problem 3
+	safeURIs := make([]string, len(outputURIs))
+	copy(safeURIs, outputURIs)
+	safeChecksums := make([]string, len(outputChecksums))
+	copy(safeChecksums, outputChecksums)
 
 	ctx := context.Background()
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -193,6 +199,19 @@ func (s *Scheduler) CompleteTask(taskID string, attemptID string, outputURIs []s
 		return ErrStaleAttempt
 	}
 
+	var dbLeaseID string
+	var lastRenewed time.Time
+	var ttl int
+	err = tx.QueryRowContext(ctx, QuerySelectLeaseInfo, attemptID).Scan(&dbLeaseID, &lastRenewed, &ttl)
+	if err != nil {
+		return err
+	}
+
+	if dbLeaseID != leaseID || time.Now().After(lastRenewed.Add(time.Duration(ttl)*time.Second)) {
+		return ErrExpiredLease
+	}
+
+
 	_, err = tx.ExecContext(ctx, QueryCompleteTask, taskID)
 	if err != nil {
 		return err
@@ -203,12 +222,8 @@ func (s *Scheduler) CompleteTask(taskID string, attemptID string, outputURIs []s
 		return err
 	}
 
-	for i, uri := range outputURIs {
-		checksum := ""
-		if i < len(outputChecksums) {
-			checksum = outputChecksums[i]
-		}
-		_, err = tx.ExecContext(ctx, QueryInsertOutput, taskID, i, uri, checksum)
+	for i, uri := range safeURIs {
+		_, err = tx.ExecContext(ctx, QueryInsertOutput, taskID, i, uri, safeChecksums[i])
 		if err != nil {
 			return err
 		}
