@@ -112,13 +112,12 @@ func cmdAdminDeleteUser(args []string) {
 		serverURL+"/admin/users/"+url.PathEscape(normalizedUsername),
 		token,
 		nil,
-		http.StatusOK,
+		http.StatusNoContent,
 		"delete user failed",
 	)
 	defer resp.Body.Close()
 
 	fmt.Printf("User %q deleted.\n", normalizedUsername)
-	printResponse(resp)
 }
 
 // ── admin configure-nodes ─────────────────────────────────

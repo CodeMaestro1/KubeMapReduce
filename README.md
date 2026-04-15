@@ -222,9 +222,10 @@ again.
 | `POST`   | `/jobs`                   | `USER` or `ADMIN` | Submit a MapReduce job spec |
 | `PUT`    | `/admin/workers/config`   | `ADMIN`           | Update worker configuration |
 | `POST`   | `/admin/users`            | `ADMIN`           | Create a user in Keycloak   |
-| `DELETE` | `/admin/users/{username}` | `ADMIN`           | Delete a user from Keycloak |
+| `DELETE` | `/admin/users/{username}` | `ADMIN`           | Delete a user from Keycloak (204 No Content) |
 
-The `DELETE /admin/users/{username}` endpoint does not require a request body.
+The `DELETE /admin/users/{username}` endpoint returns **204 No Content** with no
+response body. It does not require a request body either.
 
 Some HTTP clients and proxies do not fully support bodies on `DELETE` requests, so the username is supplied in the path instead.
 
