@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -87,6 +88,9 @@ func (s *Scheduler) GetNextTask(jobID string, workerID string) (*Task, error) {
 	// 3. Try to schedule Map tasks first
 	task, err := s.tryAssignTask(ctx, tx, jobID, workerID, "Map")
 	if err == nil {
+		if err := s.updateJobStatusTx(ctx, tx, jobID, "Running"); err != nil {
+			return nil, err
+		}
 		if errCommit := tx.Commit(); errCommit != nil {
 			return nil, errCommit
 		}
@@ -109,6 +113,9 @@ func (s *Scheduler) GetNextTask(jobID string, workerID string) (*Task, error) {
 	// 5. Try to schedule Reduce tasks
 	task, err = s.tryAssignTask(ctx, tx, jobID, workerID, "Reduce")
 	if err == nil {
+		if err := s.updateJobStatusTx(ctx, tx, jobID, "Running"); err != nil {
+			return nil, err
+		}
 		if errCommit := tx.Commit(); errCommit != nil {
 			return nil, errCommit
 		}
@@ -138,8 +145,9 @@ func (s *Scheduler) tryAssignTask(ctx context.Context, tx *sql.Tx, requestedJobI
 	var tType string
 	var dbJobID uuid.UUID
 	var taskID uuid.UUID
+	var replicaIndex int
 
-	err := row.Scan(&taskID, &dbJobID, &tType)
+	err := row.Scan(&taskID, &dbJobID, &tType, &replicaIndex)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, ErrNoIdleTasks
@@ -149,6 +157,7 @@ func (s *Scheduler) tryAssignTask(ctx context.Context, tx *sql.Tx, requestedJobI
 
 	t.ID = taskID.String()
 	t.JobID = dbJobID.String()
+	t.ReplicaIndex = replicaIndex
 	if tType == "Map" {
 		t.Type = MapTask
 	} else {
@@ -199,6 +208,28 @@ func (s *Scheduler) hydrateTaskMetadata(ctx context.Context, q taskMetadataQueri
 		t.CodeURI = reducerURI
 	}
 
+	if t.Type == ReduceTask {
+		rows, err := q.QueryContext(ctx, QueryGetReduceTaskInputs, t.ID)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+
+		var shuffleInputs []TaskOutputRef
+		for rows.Next() {
+			var input TaskOutputRef
+			if err := rows.Scan(&input.PartitionIndex, &input.OutputURI, &input.Checksum); err != nil {
+				return err
+			}
+			shuffleInputs = append(shuffleInputs, input)
+		}
+		if err := rows.Err(); err != nil {
+			return err
+		}
+		t.ShuffleInputs = shuffleInputs
+		return nil
+	}
+
 	rows, err := q.QueryContext(ctx, QueryGetTaskInputs, t.ID)
 	if err != nil {
 		return err
@@ -224,6 +255,100 @@ func (s *Scheduler) hydrateTaskMetadata(ctx context.Context, q taskMetadataQueri
 	}
 
 	return nil
+}
+
+func (s *Scheduler) ScheduleJob(req ScheduleJobRequest) error {
+	ctx := context.Background()
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	if _, err := uuid.Parse(req.JobID); err != nil {
+		return fmt.Errorf("invalid job id: %w", err)
+	}
+	if _, err := uuid.Parse(req.UserID); err != nil {
+		return fmt.Errorf("invalid user id: %w", err)
+	}
+	if strings.TrimSpace(req.InputURI) == "" {
+		return errors.New("input URI cannot be empty")
+	}
+	if strings.TrimSpace(req.MapperURI) == "" {
+		return errors.New("mapper URI cannot be empty")
+	}
+	if strings.TrimSpace(req.ReducerURI) == "" {
+		return errors.New("reducer URI cannot be empty")
+	}
+	if req.MTasks < 1 || req.RTasks < 1 {
+		return errors.New("task counts must be strictly positive")
+	}
+	if len(req.Tasks) != req.MTasks+req.RTasks {
+		return errors.New("tasks must contain exactly mTasks + rTasks entries")
+	}
+
+	jobID, err := uuid.Parse(req.JobID)
+	if err != nil {
+		return err
+	}
+	userID, err := uuid.Parse(req.UserID)
+	if err != nil {
+		return err
+	}
+	now := time.Now()
+
+	if _, err := tx.ExecContext(ctx, QueryInsertJob, jobID, userID, now, now); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, QueryInsertJobConfig,
+		jobID,
+		req.InputURI,
+		req.MapperURI,
+		req.ReducerURI,
+		req.CombinerURI,
+		req.MTasks,
+		req.RTasks,
+		req.InputChecksum,
+	); err != nil {
+		return err
+	}
+
+	for _, task := range req.Tasks {
+		taskID, err := uuid.Parse(task.TaskID)
+		if err != nil {
+			return err
+		}
+		if strings.TrimSpace(task.TaskType) == "" {
+			return errors.New("task type cannot be empty")
+		}
+		if _, err := tx.ExecContext(ctx, QueryInsertTask, taskID, jobID, task.TaskType, task.ReplicaIndex); err != nil {
+			return err
+		}
+		for _, split := range task.InputSplits {
+			if _, err := tx.ExecContext(ctx, QueryInsertTaskInput,
+				taskID,
+				split.InputURI,
+				split.ByteStart,
+				split.ByteEnd,
+				split.SplitChecksum,
+			); err != nil {
+				return err
+			}
+		}
+	}
+
+	return tx.Commit()
+}
+
+func (s *Scheduler) UpsertSystemConfig(req SystemConfigUpdate) error {
+	ctx := context.Background()
+	_, err := s.db.ExecContext(ctx, QueryUpsertSystemConfig, req.MaxConcurrentPods, req.CPULimit, req.MemoryLimit, time.Now())
+	return err
+}
+
+func (s *Scheduler) updateJobStatusTx(ctx context.Context, tx *sql.Tx, jobID string, status string) error {
+	_, err := tx.ExecContext(ctx, QueryUpdateJobStatus, jobID, status, time.Now())
+	return err
 }
 
 func (s *Scheduler) CompleteTask(taskID string, attemptID string, leaseID string, outputURIs []string, outputChecksums []string) error {
@@ -286,6 +411,20 @@ func (s *Scheduler) CompleteTask(taskID string, attemptID string, leaseID string
 	for i, uri := range safeURIs {
 		_, err = tx.ExecContext(ctx, QueryInsertOutput, taskID, i, uri, safeChecksums[i])
 		if err != nil {
+			return err
+		}
+	}
+
+	var jobID string
+	if err := tx.QueryRowContext(ctx, QueryGetTaskJobID, taskID).Scan(&jobID); err != nil {
+		return err
+	}
+	var pendingTasks int
+	if err := tx.QueryRowContext(ctx, QueryCountAllPendingTasks, jobID).Scan(&pendingTasks); err != nil {
+		return err
+	}
+	if pendingTasks == 0 {
+		if err := s.updateJobStatusTx(ctx, tx, jobID, "Completed"); err != nil {
 			return err
 		}
 	}
@@ -396,6 +535,16 @@ func (s *Scheduler) FailTask(taskID string, attemptID string, leaseID string, re
 		return err
 	}
 
+	if newState == "Failed" {
+		var jobID string
+		if err := tx.QueryRowContext(ctx, QueryGetTaskJobID, taskID).Scan(&jobID); err != nil {
+			return err
+		}
+		if err := s.updateJobStatusTx(ctx, tx, jobID, "Failed"); err != nil {
+			return err
+		}
+	}
+
 	return tx.Commit()
 }
 
@@ -454,6 +603,15 @@ func (s *Scheduler) FailStaleTasks(timeout time.Duration) (int, error) {
 		_, err = tx.ExecContext(ctx, QueryFailAttempt, time.Now(), rec.attemptID)
 		if err != nil {
 			return 0, fmt.Errorf("failing attempt %s: %w", rec.attemptID, err)
+		}
+		if newState == "Failed" {
+			var jobID string
+			if err := tx.QueryRowContext(ctx, QueryGetTaskJobID, rec.taskID).Scan(&jobID); err != nil {
+				return 0, fmt.Errorf("loading job for failed task %s: %w", rec.taskID, err)
+			}
+			if err := s.updateJobStatusTx(ctx, tx, jobID, "Failed"); err != nil {
+				return 0, fmt.Errorf("marking job %s failed: %w", jobID, err)
+			}
 		}
 		recoveredCount++
 	}

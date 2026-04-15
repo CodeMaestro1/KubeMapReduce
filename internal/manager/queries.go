@@ -23,7 +23,7 @@ const QueryCountFailedTasks = `SELECT COUNT(*) FROM TASKS WHERE job_id = $1 AND 
 // Uses PostgreSQL's FOR UPDATE SKIP LOCKED to prevent double-scheduling across
 // concurrent Manager replicas (Section 5.2: "Concurrency Control via Row-Level Locking").
 const QuerySelectIdleTask = `
-	SELECT task_id, job_id, task_type FROM TASKS
+	SELECT task_id, job_id, task_type, replica_index FROM TASKS
 	WHERE job_id = $1 AND status = 'Idle' AND replica_index = $2 AND task_type = $3
 	FOR UPDATE SKIP LOCKED LIMIT 1`
 
@@ -64,6 +64,19 @@ const QueryGetTaskInputs = `
 	FROM TASK_INPUTS
 	WHERE task_id = $1
 	ORDER BY input_assignment_id`
+
+// QueryGetReduceTaskInputs loads completed map outputs that belong to the reduce
+// partition represented by the reduce task's replica_index.
+const QueryGetReduceTaskInputs = `
+	SELECT COALESCE(o.partition_index, 0), o.output_uri, o.checksum
+	FROM TASK_OUTPUTS o
+	JOIN TASKS map_tasks ON map_tasks.task_id = o.task_id
+	JOIN TASKS reduce_task ON reduce_task.task_id = $1
+	WHERE map_tasks.job_id = reduce_task.job_id
+	  AND map_tasks.task_type = 'Map'
+	  AND map_tasks.status = 'Completed'
+	  AND (o.partition_index IS NULL OR o.partition_index = reduce_task.replica_index)
+	ORDER BY o.output_id`
 
 // QuerySelectTaskForUpdate locks a task row for safe state transition.
 // Used by CompleteTask, FailTask, and RenewLease to enforce serializable access.
@@ -140,6 +153,8 @@ const QueryGetReduceOutputs = `
 // Supports the UI Service's CQRS-style read path for the jobs status CLI command.
 const QueryGetTaskStatus = `SELECT status FROM TASKS WHERE task_id = $1`
 
+const QueryGetTaskJobID = `SELECT job_id FROM TASKS WHERE task_id = $1`
+
 // QueryGetTaskByID retrieves full task metadata including the current attempt binding.
 const QueryGetTaskByID = `SELECT task_id, job_id, task_type, status, current_attempt_id, replica_index FROM TASKS WHERE task_id = $1`
 
@@ -150,3 +165,34 @@ const QueryGetAttemptDetails = `SELECT worker_id, lease_id, start_time, last_ren
 // QueryCountPendingMapTasks counts Map tasks that haven't reached Completed.
 // Used by AllMapTasksCompleted to determine Map→Reduce phase transition readiness.
 const QueryCountPendingMapTasks = `SELECT COUNT(*) FROM TASKS WHERE job_id = $1 AND task_type = 'Map' AND status != 'Completed'`
+
+// ---------------------------------------------------------------------------
+// Job lifecycle and bootstrap queries
+// ---------------------------------------------------------------------------
+
+const QueryInsertJob = `
+	INSERT INTO JOBS (job_id, user_id, status, created_at, updated_at)
+	VALUES ($1, $2, 'Pending', $3, $4)`
+
+const QueryInsertJobConfig = `
+	INSERT INTO JOB_CONFIGS (job_id, input_uri, mapper_uri, reducer_uri, combiner_uri, m_tasks, r_tasks, input_checksum)
+	VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`
+
+const QueryInsertTask = `
+	INSERT INTO TASKS (task_id, job_id, current_attempt_id, task_type, status, replica_index)
+	VALUES ($1, $2, NULL, $3, 'Idle', $4)`
+
+const QueryInsertTaskInput = `
+	INSERT INTO TASK_INPUTS (task_id, input_uri, byte_start, byte_end, split_checksum)
+	VALUES ($1, $2, $3, $4, $5)`
+
+const QueryUpdateJobStatus = `UPDATE JOBS SET status = $2, updated_at = $3 WHERE job_id = $1`
+
+const QueryUpsertSystemConfig = `
+	INSERT INTO SYSTEM_CONFIG (config_id, max_concurrent_pods, cpu_limit, memory_limit, updated_at)
+	VALUES (1, $1, $2, $3, $4)
+	ON CONFLICT (config_id) DO UPDATE
+	SET max_concurrent_pods = EXCLUDED.max_concurrent_pods,
+	    cpu_limit = EXCLUDED.cpu_limit,
+	    memory_limit = EXCLUDED.memory_limit,
+	    updated_at = EXCLUDED.updated_at`

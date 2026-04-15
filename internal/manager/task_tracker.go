@@ -59,6 +59,45 @@ type TaskInputSplit struct {
 	SplitChecksum string
 }
 
+type TaskOutputRef struct {
+	PartitionIndex int
+	OutputURI      string
+	Checksum       string
+}
+
+type ScheduleTaskInput struct {
+	InputURI      string
+	ByteStart     int64
+	ByteEnd       int64
+	SplitChecksum string
+}
+
+type ScheduleTask struct {
+	TaskID       string
+	TaskType     string
+	ReplicaIndex int
+	InputSplits  []ScheduleTaskInput
+}
+
+type ScheduleJobRequest struct {
+	JobID         string
+	UserID        string
+	InputURI      string
+	MapperURI     string
+	ReducerURI    string
+	CombinerURI   string
+	MTasks        int
+	RTasks        int
+	InputChecksum string
+	Tasks         []ScheduleTask
+}
+
+type SystemConfigUpdate struct {
+	MaxConcurrentPods int
+	CPULimit          string
+	MemoryLimit       string
+}
+
 // Task represents the metadata the Master needs to track
 type Task struct {
 	ID              string
@@ -74,6 +113,7 @@ type Task struct {
 	CombinerURI     string // Optional combiner code location for local pre-aggregation
 	InputChecksum   string
 	InputSplits     []TaskInputSplit
+	ShuffleInputs   []TaskOutputRef
 	ReplicaIndex    int // Manager StatefulSet replica binding (DDS TASKS.replica_index)
 	TotalReducers   int // Number of reduce partitions (R) — map workers need this for hash(k) % R
 	startTime       time.Time
@@ -112,6 +152,10 @@ func (t *Task) Clone() Task {
 	if t.OutputURIs != nil {
 		clone.OutputURIs = make([]string, len(t.OutputURIs))
 		copy(clone.OutputURIs, t.OutputURIs)
+	}
+	if t.ShuffleInputs != nil {
+		clone.ShuffleInputs = make([]TaskOutputRef, len(t.ShuffleInputs))
+		copy(clone.ShuffleInputs, t.ShuffleInputs)
 	}
 	if t.OutputChecksums != nil {
 		clone.OutputChecksums = make([]string, len(t.OutputChecksums))
