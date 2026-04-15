@@ -7,8 +7,8 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/MicahParks/keyfunc"
-	"github.com/golang-jwt/jwt/v4"
+	"github.com/MicahParks/keyfunc/v3"
+	"github.com/golang-jwt/jwt/v5"
 )
 
 type contextKey string
@@ -16,17 +16,13 @@ type contextKey string
 const claimsKey contextKey = "claims"
 
 type JWTValidator struct {
-	jwks     *keyfunc.JWKS
+	jwks     keyfunc.Keyfunc
 	issuer   string
 	audience string
 }
 
 func NewJWTValidator(jwksURL string, issuer string, audience string) (*JWTValidator, error) {
-	options := keyfunc.Options{
-		Ctx: context.Background(),
-	}
-
-	jwks, err := keyfunc.Get(jwksURL, options)
+	jwks, err := keyfunc.NewDefaultCtx(context.Background(), []string{jwksURL})
 	if err != nil {
 		return nil, err
 	}
@@ -54,7 +50,10 @@ func (v *JWTValidator) Middleware(next http.Handler) http.Handler {
 
 		tokenString := parts[1]
 
-		token, err := jwt.Parse(tokenString, v.jwks.Keyfunc)
+		token, err := jwt.Parse(tokenString, v.jwks.Keyfunc,
+			jwt.WithIssuer(v.issuer),
+			jwt.WithAudience(v.audience),
+		)
 		if err != nil {
 			http.Error(w, "invalid token: "+err.Error(), http.StatusUnauthorized)
 			return
@@ -68,18 +67,6 @@ func (v *JWTValidator) Middleware(next http.Handler) http.Handler {
 		claims, ok := token.Claims.(jwt.MapClaims)
 		if !ok {
 			http.Error(w, "invalid token claims", http.StatusUnauthorized)
-			return
-		}
-
-		// Verify Issuer
-		if !claims.VerifyIssuer(v.issuer, true) {
-			http.Error(w, "invalid issuer", http.StatusUnauthorized)
-			return
-		}
-
-		// Verify Audience
-		if !claims.VerifyAudience(v.audience, true) {
-			http.Error(w, "invalid audience", http.StatusUnauthorized)
 			return
 		}
 

@@ -4,11 +4,11 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"log"
 	"time"
 
 	"github.com/google/uuid"
-	_ "github.com/jackc/pgx/v5/stdlib"
 )
 
 const MaxTaskAttempts = 3
@@ -57,11 +57,15 @@ func (s *Scheduler) GetNextTask(workerID string) (*Task, error) {
 	// 1. Quota Enforcement
 	var maxPods, activePods int
 	err = tx.QueryRowContext(ctx, QueryGetMaxConcurrentPods).Scan(&maxPods)
-	if err == nil {
-		err = tx.QueryRowContext(ctx, QueryCountRunningAttempts).Scan(&activePods)
-		if err == nil && activePods >= maxPods {
-			return nil, ErrQuotaExceeded
-		}
+	if err != nil {
+		return nil, err
+	}
+	err = tx.QueryRowContext(ctx, QueryCountRunningAttempts).Scan(&activePods)
+	if err != nil {
+		return nil, err
+	}
+	if activePods >= maxPods {
+		return nil, ErrQuotaExceeded
 	}
 
 	// 2. Check for failed job tasks
@@ -362,9 +366,13 @@ func (s *Scheduler) FailStaleTasks(timeout time.Duration) (int, error) {
 	var stales []staleRec
 	for rows.Next() {
 		var t, a string
-		if err := rows.Scan(&t, &a); err == nil {
-			stales = append(stales, staleRec{t, a})
+		if err := rows.Scan(&t, &a); err != nil {
+			return 0, fmt.Errorf("scanning stale task row: %w", err)
 		}
+		stales = append(stales, staleRec{t, a})
+	}
+	if err := rows.Err(); err != nil {
+		return 0, fmt.Errorf("iterating stale task rows: %w", err)
 	}
 
 	recoveredCount := 0
@@ -372,7 +380,7 @@ func (s *Scheduler) FailStaleTasks(timeout time.Duration) (int, error) {
 		var attemptCount int
 		err = tx.QueryRowContext(ctx, QueryCountAttemptsByTask, rec.taskID).Scan(&attemptCount)
 		if err != nil {
-			continue
+			return 0, fmt.Errorf("counting attempts for task %s: %w", rec.taskID, err)
 		}
 
 		newState := "Idle"
@@ -381,10 +389,15 @@ func (s *Scheduler) FailStaleTasks(timeout time.Duration) (int, error) {
 		}
 
 		_, err = tx.ExecContext(ctx, QueryUpdateTaskStatus, newState, rec.taskID)
-		if err == nil {
-			tx.ExecContext(ctx, QueryFailAttempt, time.Now(), rec.attemptID)
-			recoveredCount++
+		if err != nil {
+			return 0, fmt.Errorf("updating status for task %s: %w", rec.taskID, err)
 		}
+
+		_, err = tx.ExecContext(ctx, QueryFailAttempt, time.Now(), rec.attemptID)
+		if err != nil {
+			return 0, fmt.Errorf("failing attempt %s: %w", rec.attemptID, err)
+		}
+		recoveredCount++
 	}
 
 	if err := tx.Commit(); err != nil {
@@ -463,8 +476,9 @@ func (s *Scheduler) GetTaskStatus(taskID string) (TaskState, error) {
 		return Completed, nil
 	case "Failed":
 		return Failed, nil
+	default:
+		return 0, fmt.Errorf("unrecognized task status %q", status)
 	}
-	return Idle, nil
 }
 
 func (s *Scheduler) GetTaskByID(taskID string) (*Task, error) {
@@ -498,7 +512,13 @@ func (s *Scheduler) GetTaskByID(taskID string) (*Task, error) {
 	}
 	if attemptID.Valid {
 		t.ActiveAttemptID = attemptID.String
-		s.db.QueryRowContext(ctx, QueryGetAttemptDetails, attemptID.String).Scan(&t.workerID, &t.LeaseID, &t.startTime, &t.LastHeartbeat)
+		err = s.db.QueryRowContext(ctx, QueryGetAttemptDetails, attemptID.String).Scan(&t.workerID, &t.LeaseID, &t.startTime, &t.LastHeartbeat)
+		if err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return nil, fmt.Errorf("attempt %s referenced by task %s not found: %w", attemptID.String, taskID, err)
+			}
+			return nil, err
+		}
 	}
 
 	t.OutputURIs = []string{}
