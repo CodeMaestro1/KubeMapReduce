@@ -30,6 +30,7 @@ const (
 	TaskIdle       TaskStatus = "Idle"
 	TaskInProgress TaskStatus = "In-Progress"
 	TaskCompleted  TaskStatus = "Completed"
+	TaskFailed     TaskStatus = "Failed"
 )
 
 type AttemptStatus string

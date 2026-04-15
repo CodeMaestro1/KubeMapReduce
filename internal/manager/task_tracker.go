@@ -77,10 +77,8 @@ type Task struct {
 	LastFailedAt    time.Time
 }
 
-// TaskTracker tracks the overall job progress.
-// Note: Callers MUST NOT directly mutate the fields of this struct once
-// it has been passed to NewScheduler, as the Scheduler maintains an internal
-// index that will become out of sync.
+// TaskTracker tracks the overall job progress by storing the current
+// map and reduce task metadata for a job.
 type TaskTracker struct {
 	mapTasks    []Task
 	reduceTasks []Task

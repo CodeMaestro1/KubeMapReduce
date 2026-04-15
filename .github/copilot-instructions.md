@@ -83,7 +83,7 @@ protoc --go_out=. --go-grpc_out=. proto/mapreduce.proto
 | Component | Technology | Notes |
 |-----------|-----------|-------|
 | Language | Go 1.24+ | All services: UI, Manager, Worker, CLI |
-| Auth / SSO | Keycloak | OAuth2 Password Grant; JWT via `golang-jwt/jwt/v5` + `MicahParks/keyfunc` |
+| Auth / SSO | Keycloak | OAuth2 Password Grant; JWT via `golang-jwt/jwt/v5` + `MicahParks/keyfunc/v3` |
 | State Database | PostgreSQL | Row-level locking (`SELECT … FOR UPDATE SKIP LOCKED`) |
 | Shared Storage | MinIO | S3-compatible; pre-signed PUT/GET URLs for zero-trust access |
 | Internal RPC | gRPC + Protobuf (proto3) | HTTP/2 multiplexed streams for heartbeats |
