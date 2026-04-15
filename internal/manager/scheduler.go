@@ -21,8 +21,7 @@ var (
 	ErrInvalidStateTransition = errors.New("invalid state transition")
 	ErrEmptyJobID             = errors.New("jobID cannot be empty")
 	ErrEmptyWorkerID          = errors.New("workerID cannot be empty")
-	ErrInvalidTimeout         = errors.New("timeout must be strictly positive")
-	ErrStaleAttempt           = errors.New("stale commit attempt rejected to prevent split-brain")
+	ErrStaleAttempt = errors.New("stale commit attempt rejected to prevent split-brain")
 	ErrExpiredLease           = errors.New("lease expired or mismatched")
 	ErrOutputMismatch         = errors.New("outputURIs and outputChecksums must have the same length")
 	ErrJobFailed              = errors.New("job failed: one or more tasks reached maximum attempts")
@@ -52,6 +51,9 @@ func NewScheduler(db *sql.DB, replicaIndex int) (*Scheduler, error) {
 func (s *Scheduler) GetNextTask(jobID string, workerID string) (*Task, error) {
 	if jobID == "" {
 		return nil, ErrEmptyJobID
+	}
+	if _, err := uuid.Parse(jobID); err != nil {
+		return nil, fmt.Errorf("invalid job ID %q: %w", jobID, err)
 	}
 	if workerID == "" {
 		return nil, ErrEmptyWorkerID
@@ -295,6 +297,21 @@ func (s *Scheduler) ScheduleJob(req ScheduleJobRequest) error {
 	}
 	if len(req.Tasks) != req.MTasks+req.RTasks {
 		return errors.New("tasks must contain exactly mTasks + rTasks entries")
+	}
+	var mapCount, reduceCount int
+	for _, task := range req.Tasks {
+		switch task.TaskType {
+		case "Map":
+			mapCount++
+		case "Reduce":
+			reduceCount++
+		}
+	}
+	if mapCount != req.MTasks {
+		return fmt.Errorf("expected %d Map tasks but got %d", req.MTasks, mapCount)
+	}
+	if reduceCount != req.RTasks {
+		return fmt.Errorf("expected %d Reduce tasks but got %d", req.RTasks, reduceCount)
 	}
 
 	jobID, err := uuid.Parse(req.JobID)
@@ -561,11 +578,7 @@ func (s *Scheduler) FailTask(taskID string, attemptID string, leaseID string, re
 	return tx.Commit()
 }
 
-func (s *Scheduler) FailStaleTasks(timeout time.Duration) (int, error) {
-	if timeout <= 0 {
-		return 0, ErrInvalidTimeout
-	}
-
+func (s *Scheduler) FailStaleTasks() (int, error) {
 	ctx := context.Background()
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {

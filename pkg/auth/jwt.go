@@ -53,6 +53,7 @@ func (v *JWTValidator) Middleware(next http.Handler) http.Handler {
 		token, err := jwt.Parse(tokenString, v.jwks.Keyfunc,
 			jwt.WithIssuer(v.issuer),
 			jwt.WithAudience(v.audience),
+			jwt.WithValidMethods([]string{"RS256"}),
 		)
 		if err != nil {
 			http.Error(w, "invalid token: "+err.Error(), http.StatusUnauthorized)
