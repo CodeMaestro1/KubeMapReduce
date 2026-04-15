@@ -26,6 +26,18 @@ func setupMockDB(t *testing.T) (*sql.DB, sqlmock.Sqlmock, *Scheduler) {
 	return db, mock, scheduler
 }
 
+func expectTaskMetadataQueries(mock sqlmock.Sqlmock, taskID uuid.UUID, mapperURI, reducerURI string, rTasks int) {
+	mock.ExpectQuery(regexp.QuoteMeta(QueryGetJobConfigByTask)).
+		WithArgs(taskID.String()).
+		WillReturnRows(sqlmock.NewRows([]string{"mapper_uri", "reducer_uri", "combiner_uri", "r_tasks", "input_checksum"}).
+			AddRow(mapperURI, reducerURI, "s3://code/combiner.py", rTasks, "sha256-input"))
+
+	mock.ExpectQuery(regexp.QuoteMeta(QueryGetTaskInputs)).
+		WithArgs(taskID.String()).
+		WillReturnRows(sqlmock.NewRows([]string{"input_uri", "byte_start", "byte_end", "split_checksum"}).
+			AddRow("s3://inputs/split-0.jsonl", 0, 128, "sha256-split-0"))
+}
+
 func TestNewScheduler_NilDB(t *testing.T) {
 	_, err := NewScheduler(nil, 0)
 	if err == nil {
@@ -36,6 +48,7 @@ func TestNewScheduler_NilDB(t *testing.T) {
 func TestScheduler_GetNextTask_QuotaExceeded(t *testing.T) {
 	db, mock, scheduler := setupMockDB(t)
 	defer db.Close()
+	jobID := uuid.NewString()
 
 	mock.ExpectBegin()
 	mock.ExpectQuery(regexp.QuoteMeta(QueryGetMaxConcurrentPods)).
@@ -44,7 +57,7 @@ func TestScheduler_GetNextTask_QuotaExceeded(t *testing.T) {
 		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(10))
 	mock.ExpectRollback()
 
-	_, err := scheduler.GetNextTask("worker-1")
+	_, err := scheduler.GetNextTask(jobID, "worker-1")
 	if !errors.Is(err, ErrQuotaExceeded) {
 		t.Errorf("expected ErrQuotaExceeded, got %v", err)
 	}
@@ -57,6 +70,7 @@ func TestScheduler_GetNextTask_QuotaExceeded(t *testing.T) {
 func TestScheduler_GetNextTask_JobFailed(t *testing.T) {
 	db, mock, scheduler := setupMockDB(t)
 	defer db.Close()
+	jobID := uuid.NewString()
 
 	mock.ExpectBegin()
 	mock.ExpectQuery(regexp.QuoteMeta(QueryGetMaxConcurrentPods)).
@@ -64,10 +78,11 @@ func TestScheduler_GetNextTask_JobFailed(t *testing.T) {
 	mock.ExpectQuery(regexp.QuoteMeta(QueryCountRunningAttempts)).
 		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(5))
 	mock.ExpectQuery(regexp.QuoteMeta(QueryCountFailedTasks)).
+		WithArgs(jobID).
 		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(1))
 	mock.ExpectRollback()
 
-	_, err := scheduler.GetNextTask("worker-1")
+	_, err := scheduler.GetNextTask(jobID, "worker-1")
 	if !errors.Is(err, ErrJobFailed) {
 		t.Errorf("expected ErrJobFailed, got %v", err)
 	}
@@ -86,11 +101,14 @@ func TestScheduler_GetNextTask_MapSuccess(t *testing.T) {
 	mock.ExpectQuery(regexp.QuoteMeta(QueryCountRunningAttempts)).
 		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(5))
 	mock.ExpectQuery(regexp.QuoteMeta(QueryCountFailedTasks)).
+		WithArgs(jobID.String()).
 		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
 
 	mock.ExpectQuery(regexp.QuoteMeta(QuerySelectIdleTask)).
-		WithArgs(0, "Map").
+		WithArgs(jobID.String(), 0, "Map").
 		WillReturnRows(sqlmock.NewRows([]string{"task_id", "job_id", "task_type"}).AddRow(taskID, jobID, "Map"))
+
+	expectTaskMetadataQueries(mock, taskID, "s3://code/mapper.py", "s3://code/reducer.py", 4)
 
 	mock.ExpectExec(regexp.QuoteMeta(QueryUpdateTaskInProgress)).
 		WithArgs(sqlmock.AnyArg(), taskID).
@@ -102,7 +120,7 @@ func TestScheduler_GetNextTask_MapSuccess(t *testing.T) {
 
 	mock.ExpectCommit()
 
-	task, err := scheduler.GetNextTask("worker-1")
+	task, err := scheduler.GetNextTask(jobID.String(), "worker-1")
 	if err != nil {
 		t.Fatalf("expected task, got err: %v", err)
 	}
@@ -112,6 +130,21 @@ func TestScheduler_GetNextTask_MapSuccess(t *testing.T) {
 	}
 	if task.Type != MapTask {
 		t.Errorf("expected MapTask type, got %v", task.Type)
+	}
+	if task.JobID != jobID.String() {
+		t.Errorf("expected job ID %s, got %s", jobID.String(), task.JobID)
+	}
+	if task.CodeURI != "s3://code/mapper.py" {
+		t.Errorf("expected mapper code URI, got %s", task.CodeURI)
+	}
+	if task.TotalReducers != 4 {
+		t.Errorf("expected 4 reducers, got %d", task.TotalReducers)
+	}
+	if len(task.InputSplits) != 1 {
+		t.Fatalf("expected 1 input split, got %d", len(task.InputSplits))
+	}
+	if task.InputSplits[0].InputURI != "s3://inputs/split-0.jsonl" {
+		t.Errorf("unexpected split URI %s", task.InputSplits[0].InputURI)
 	}
 }
 
@@ -128,19 +161,22 @@ func TestScheduler_GetNextTask_NoMapIdle_ReduceSuccess(t *testing.T) {
 	mock.ExpectQuery(regexp.QuoteMeta(QueryCountRunningAttempts)).
 		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(5))
 	mock.ExpectQuery(regexp.QuoteMeta(QueryCountFailedTasks)).
+		WithArgs(jobID.String()).
 		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
 
 	mock.ExpectQuery(regexp.QuoteMeta(QuerySelectIdleTask)).
-		WithArgs(0, "Map").
+		WithArgs(jobID.String(), 0, "Map").
 		WillReturnError(sql.ErrNoRows)
 
 	mock.ExpectQuery(regexp.QuoteMeta(QueryCountPendingTasksByType)).
-		WithArgs("Map").
+		WithArgs(jobID.String(), "Map").
 		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
 
 	mock.ExpectQuery(regexp.QuoteMeta(QuerySelectIdleTask)).
-		WithArgs(0, "Reduce").
+		WithArgs(jobID.String(), 0, "Reduce").
 		WillReturnRows(sqlmock.NewRows([]string{"task_id", "job_id", "task_type"}).AddRow(taskID, jobID, "Reduce"))
+
+	expectTaskMetadataQueries(mock, taskID, "s3://code/mapper.py", "s3://code/reducer.py", 2)
 
 	mock.ExpectExec(regexp.QuoteMeta(QueryUpdateTaskInProgress)).
 		WithArgs(sqlmock.AnyArg(), taskID).
@@ -152,7 +188,7 @@ func TestScheduler_GetNextTask_NoMapIdle_ReduceSuccess(t *testing.T) {
 
 	mock.ExpectCommit()
 
-	task, err := scheduler.GetNextTask("worker-1")
+	task, err := scheduler.GetNextTask(jobID.String(), "worker-1")
 	if err != nil {
 		t.Fatalf("expected task, got err: %v", err)
 	}
@@ -163,11 +199,15 @@ func TestScheduler_GetNextTask_NoMapIdle_ReduceSuccess(t *testing.T) {
 	if task.Type != ReduceTask {
 		t.Errorf("expected ReduceTask type, got %v", task.Type)
 	}
+	if task.CodeURI != "s3://code/reducer.py" {
+		t.Errorf("expected reducer code URI, got %s", task.CodeURI)
+	}
 }
 
 func TestScheduler_GetNextTask_JobCompleted(t *testing.T) {
 	db, mock, scheduler := setupMockDB(t)
 	defer db.Close()
+	jobID := uuid.NewString()
 
 	mock.ExpectBegin()
 	mock.ExpectQuery(regexp.QuoteMeta(QueryGetMaxConcurrentPods)).
@@ -175,27 +215,28 @@ func TestScheduler_GetNextTask_JobCompleted(t *testing.T) {
 	mock.ExpectQuery(regexp.QuoteMeta(QueryCountRunningAttempts)).
 		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(5))
 	mock.ExpectQuery(regexp.QuoteMeta(QueryCountFailedTasks)).
+		WithArgs(jobID).
 		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
 
 	mock.ExpectQuery(regexp.QuoteMeta(QuerySelectIdleTask)).
-		WithArgs(0, "Map").
+		WithArgs(jobID, 0, "Map").
 		WillReturnError(sql.ErrNoRows)
 
 	mock.ExpectQuery(regexp.QuoteMeta(QueryCountPendingTasksByType)).
-		WithArgs("Map").
+		WithArgs(jobID, "Map").
 		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
 
 	mock.ExpectQuery(regexp.QuoteMeta(QuerySelectIdleTask)).
-		WithArgs(0, "Reduce").
+		WithArgs(jobID, 0, "Reduce").
 		WillReturnError(sql.ErrNoRows)
 
 	mock.ExpectQuery(regexp.QuoteMeta(QueryCountPendingTasksByType)).
-		WithArgs("Reduce").
+		WithArgs(jobID, "Reduce").
 		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
 
 	mock.ExpectRollback()
 
-	_, err := scheduler.GetNextTask("worker-1")
+	_, err := scheduler.GetNextTask(jobID, "worker-1")
 	if !errors.Is(err, ErrJobCompleted) {
 		t.Errorf("expected ErrJobCompleted, got %v", err)
 	}
@@ -204,9 +245,18 @@ func TestScheduler_GetNextTask_JobCompleted(t *testing.T) {
 func TestScheduler_GetNextTask_EmptyWorkerID(t *testing.T) {
 	_, _, scheduler := setupMockDB(t)
 
-	_, err := scheduler.GetNextTask("")
+	_, err := scheduler.GetNextTask(uuid.NewString(), "")
 	if !errors.Is(err, ErrEmptyWorkerID) {
 		t.Errorf("expected ErrEmptyWorkerID, got %v", err)
+	}
+}
+
+func TestScheduler_GetNextTask_EmptyJobID(t *testing.T) {
+	_, _, scheduler := setupMockDB(t)
+
+	_, err := scheduler.GetNextTask("", "worker-1")
+	if !errors.Is(err, ErrEmptyJobID) {
+		t.Errorf("expected ErrEmptyJobID, got %v", err)
 	}
 }
 
@@ -486,12 +536,22 @@ func TestScheduler_GetTaskByID_WithAttempt(t *testing.T) {
 	defer db.Close()
 
 	taskID := uuid.New().String()
+	jobID := uuid.New().String()
 	attemptID := uuid.New().String()
 
 	mock.ExpectQuery(regexp.QuoteMeta(QueryGetTaskByID)).
 		WithArgs(taskID).
-		WillReturnRows(sqlmock.NewRows([]string{"task_id", "task_type", "status", "current_attempt_id"}).
-			AddRow(taskID, "Reduce", "In-Progress", attemptID))
+		WillReturnRows(sqlmock.NewRows([]string{"task_id", "job_id", "task_type", "status", "current_attempt_id", "replica_index"}).
+			AddRow(taskID, jobID, "Reduce", "In-Progress", attemptID, 7))
+
+	mock.ExpectQuery(regexp.QuoteMeta(QueryGetJobConfigByTask)).
+		WithArgs(taskID).
+		WillReturnRows(sqlmock.NewRows([]string{"mapper_uri", "reducer_uri", "combiner_uri", "r_tasks", "input_checksum"}).
+			AddRow("s3://code/mapper.py", "s3://code/reducer.py", "s3://code/combiner.py", 3, "sha256-input"))
+
+	mock.ExpectQuery(regexp.QuoteMeta(QueryGetTaskInputs)).
+		WithArgs(taskID).
+		WillReturnRows(sqlmock.NewRows([]string{"input_uri", "byte_start", "byte_end", "split_checksum"}))
 
 	mock.ExpectQuery(regexp.QuoteMeta(QueryGetAttemptDetails)).
 		WithArgs(attemptID).
@@ -508,19 +568,30 @@ func TestScheduler_GetTaskByID_WithAttempt(t *testing.T) {
 	if task.State != InProgress {
 		t.Errorf("expected state InProgress, got %v", task.State)
 	}
+	if task.JobID != jobID {
+		t.Errorf("expected job ID %s, got %s", jobID, task.JobID)
+	}
 	if task.ActiveAttemptID != attemptID {
 		t.Errorf("expected attemptID %v, got %v", attemptID, task.ActiveAttemptID)
+	}
+	if task.CodeURI != "s3://code/reducer.py" {
+		t.Errorf("expected reducer code URI, got %s", task.CodeURI)
+	}
+	if task.ReplicaIndex != 7 {
+		t.Errorf("expected replica index 7, got %d", task.ReplicaIndex)
 	}
 }
 
 func TestScheduler_AllMapTasksCompleted_Negative(t *testing.T) {
 	db, mock, scheduler := setupMockDB(t)
 	defer db.Close()
+	jobID := uuid.NewString()
 
 	mock.ExpectQuery(regexp.QuoteMeta(QueryCountPendingMapTasks)).
+		WithArgs(jobID).
 		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(1))
 
-	if scheduler.AllMapTasksCompleted() {
+	if scheduler.AllMapTasksCompleted(jobID) {
 		t.Errorf("expected false")
 	}
 }
@@ -528,11 +599,13 @@ func TestScheduler_AllMapTasksCompleted_Negative(t *testing.T) {
 func TestScheduler_IsJobFinished_Negative(t *testing.T) {
 	db, mock, scheduler := setupMockDB(t)
 	defer db.Close()
+	jobID := uuid.NewString()
 
 	mock.ExpectQuery(regexp.QuoteMeta(QueryCountAllPendingTasks)).
+		WithArgs(jobID).
 		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(5))
 
-	if scheduler.IsJobFinished() {
+	if scheduler.IsJobFinished(jobID) {
 		t.Errorf("expected false")
 	}
 }
@@ -540,11 +613,13 @@ func TestScheduler_IsJobFinished_Negative(t *testing.T) {
 func TestScheduler_GetMapOutputs(t *testing.T) {
 	db, mock, scheduler := setupMockDB(t)
 	defer db.Close()
+	jobID := uuid.NewString()
 
 	mock.ExpectQuery(regexp.QuoteMeta(QueryGetMapOutputs)).
+		WithArgs(jobID).
 		WillReturnRows(sqlmock.NewRows([]string{"output_uri"}).AddRow("s3://map-out-1").AddRow("s3://map-out-2"))
 
-	outputs := scheduler.GetMapOutputs()
+	outputs := scheduler.GetMapOutputs(jobID)
 	if len(outputs) != 2 || outputs[0] != "s3://map-out-1" || outputs[1] != "s3://map-out-2" {
 		t.Errorf("unexpected map outputs: %v", outputs)
 	}
@@ -553,11 +628,13 @@ func TestScheduler_GetMapOutputs(t *testing.T) {
 func TestScheduler_GetReduceOutputs(t *testing.T) {
 	db, mock, scheduler := setupMockDB(t)
 	defer db.Close()
+	jobID := uuid.NewString()
 
 	mock.ExpectQuery(regexp.QuoteMeta(QueryGetReduceOutputs)).
+		WithArgs(jobID).
 		WillReturnRows(sqlmock.NewRows([]string{"output_uri"}).AddRow("s3://reduce-out-1"))
 
-	outputs := scheduler.GetReduceOutputs()
+	outputs := scheduler.GetReduceOutputs(jobID)
 	if len(outputs) != 1 || outputs[0] != "s3://reduce-out-1" {
 		t.Errorf("unexpected reduce outputs: %v", outputs)
 	}
