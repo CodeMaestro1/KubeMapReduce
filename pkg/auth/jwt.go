@@ -2,6 +2,7 @@ package auth
 
 import (
 	"context"
+	"log/slog"
 	"net/http"
 	"strings"
 
@@ -58,7 +59,8 @@ func (v *JWTValidator) Middleware(next http.Handler) http.Handler {
 			jwt.WithAudience(v.audience),
 		)
 		if err != nil {
-			http.Error(w, "invalid token: "+err.Error(), http.StatusUnauthorized)
+			slog.Warn("JWT validation failed", "error", err)
+			http.Error(w, "invalid token", http.StatusUnauthorized)
 			return
 		}
 

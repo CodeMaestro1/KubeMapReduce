@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/golang-jwt/jwt/v5"
@@ -141,6 +142,53 @@ func TestRequireRoles_MissingRequiredRoleReturnsForbidden(t *testing.T) {
 
 	if rr.Code != http.StatusForbidden {
 		t.Fatalf("expected status %d, got %d", http.StatusForbidden, rr.Code)
+	}
+}
+
+func TestRequireRoles_NoClaims_ReturnsGenericForbidden(t *testing.T) {
+	// Request without any claims in context triggers the error path.
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	rr := httptest.NewRecorder()
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("next handler should not be called")
+	})
+
+	requireRoles(rr, req, []string{"USER"}, false, next)
+
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("expected status %d, got %d", http.StatusForbidden, rr.Code)
+	}
+	body := strings.TrimSpace(rr.Body.String())
+	if body != "forbidden: insufficient permissions" {
+		t.Fatalf("expected stable error message, got %q", body)
+	}
+	// Ensure no internal details leak.
+	for _, leak := range []string{"no claims", "no realm_access", "no roles", "context"} {
+		if strings.Contains(strings.ToLower(body), leak) {
+			t.Fatalf("response body leaks internals: %q", body)
+		}
+	}
+}
+
+func TestRequireRoles_NoRealmAccess_ReturnsGenericForbidden(t *testing.T) {
+	claims := jwt.MapClaims{"sub": "user-123"}
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	ctx := context.WithValue(req.Context(), claimsKey, claims)
+	req = req.WithContext(ctx)
+
+	rr := httptest.NewRecorder()
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("next handler should not be called")
+	})
+
+	requireRoles(rr, req, []string{"USER"}, false, next)
+
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("expected status %d, got %d", http.StatusForbidden, rr.Code)
+	}
+	body := strings.TrimSpace(rr.Body.String())
+	if body != "forbidden: insufficient permissions" {
+		t.Fatalf("expected stable error message, got %q", body)
 	}
 }
 
