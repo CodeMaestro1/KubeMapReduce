@@ -211,7 +211,6 @@ func (s *Scheduler) CompleteTask(taskID string, attemptID string, leaseID string
 		return ErrExpiredLease
 	}
 
-
 	_, err = tx.ExecContext(ctx, QueryCompleteTask, taskID)
 	if err != nil {
 		return err
