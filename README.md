@@ -104,6 +104,10 @@ You can also pass `--username alice` to skip the username prompt.
 
 ### Submit a Job
 
+> **Note:** Job submission currently validates and stores the job *specification*
+> (metadata) only. No input data or code artifacts are transferred to the server.
+> File transfer will be added in a future release.
+
 ```bash
 go run ./cmd/cli jobs submit job.json
 ```
@@ -219,7 +223,7 @@ again.
 | -------- | ------------------------- | ----------------- | --------------------------- |
 | `GET`    | `/`                       | None              | API info (JSON)             |
 | `GET`    | `/health`                 | None              | Liveness check              |
-| `POST`   | `/jobs`                   | `USER` or `ADMIN` | Submit a MapReduce job spec |
+| `POST`   | `/jobs`                   | `USER` or `ADMIN` | Submit a MapReduce job spec (metadata only) |
 | `PUT`    | `/admin/workers/config`   | `ADMIN`           | Update worker configuration |
 | `POST`   | `/admin/users`            | `ADMIN`           | Create a user in Keycloak   |
 | `DELETE` | `/admin/users/{username}` | `ADMIN`           | Delete a user from Keycloak (204 No Content) |
