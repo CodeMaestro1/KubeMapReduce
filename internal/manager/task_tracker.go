@@ -52,8 +52,17 @@ func (t TaskType) String() string {
 }
 
 // Task represents the metadata the Master needs to track
+type TaskInputSplit struct {
+	InputURI      string
+	ByteStart     int64
+	ByteEnd       int64
+	SplitChecksum string
+}
+
+// Task represents the metadata the Master needs to track
 type Task struct {
 	ID              string
+	JobID           string
 	Type            TaskType // MapTask or ReduceTask
 	State           TaskState
 	workerID        string
@@ -64,6 +73,7 @@ type Task struct {
 	CodeURI         string
 	CombinerURI     string // Optional combiner code location for local pre-aggregation
 	InputChecksum   string
+	InputSplits     []TaskInputSplit
 	ReplicaIndex    int // Manager StatefulSet replica binding (DDS TASKS.replica_index)
 	TotalReducers   int // Number of reduce partitions (R) — map workers need this for hash(k) % R
 	startTime       time.Time
@@ -95,6 +105,10 @@ func (t *Task) GetHeartbeat() time.Time { return t.LastHeartbeat }
 // copied to new underlying arrays, preventing external mutation.
 func (t *Task) Clone() Task {
 	clone := *t
+	if t.InputSplits != nil {
+		clone.InputSplits = make([]TaskInputSplit, len(t.InputSplits))
+		copy(clone.InputSplits, t.InputSplits)
+	}
 	if t.OutputURIs != nil {
 		clone.OutputURIs = make([]string, len(t.OutputURIs))
 		copy(clone.OutputURIs, t.OutputURIs)

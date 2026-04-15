@@ -164,10 +164,19 @@ func TestJobRecord_Fields(t *testing.T) {
 func TestTask_NewFields(t *testing.T) {
 	src := []Task{
 		{
-			ID:            "m1",
-			Type:          MapTask,
-			State:         Idle,
-			CombinerURI:   "s3://code/combiner.py",
+			ID:          "m1",
+			JobID:       "job-1",
+			Type:        MapTask,
+			State:       Idle,
+			CombinerURI: "s3://code/combiner.py",
+			InputSplits: []TaskInputSplit{
+				{
+					InputURI:      "s3://inputs/split-0.jsonl",
+					ByteStart:     0,
+					ByteEnd:       128,
+					SplitChecksum: "sha256-split",
+				},
+			},
 			ReplicaIndex:  3,
 			TotalReducers: 10,
 		},
@@ -177,12 +186,19 @@ func TestTask_NewFields(t *testing.T) {
 
 	// Mutate source to confirm defensive copy
 	src[0].CombinerURI = "MUTATED"
+	src[0].InputSplits[0].InputURI = "MUTATED"
 	src[0].ReplicaIndex = 99
 	src[0].TotalReducers = 99
 
 	task := tracker.mapTasks[0]
+	if task.JobID != "job-1" {
+		t.Fatalf("expected JobID 'job-1', got %q", task.JobID)
+	}
 	if task.CombinerURI != "s3://code/combiner.py" {
 		t.Fatalf("expected CombinerURI 's3://code/combiner.py', got %q", task.CombinerURI)
+	}
+	if len(task.InputSplits) != 1 || task.InputSplits[0].InputURI != "s3://inputs/split-0.jsonl" {
+		t.Fatalf("expected defensive copy of input splits, got %+v", task.InputSplits)
 	}
 	if task.ReplicaIndex != 3 {
 		t.Fatalf("expected ReplicaIndex 3, got %d", task.ReplicaIndex)
