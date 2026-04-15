@@ -227,6 +227,14 @@ func (h *Handlers) HandleWorkerConfig(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "maxConcurrentPods must be positive", http.StatusBadRequest)
 		return
 	}
+	if strings.TrimSpace(request.CPULimit) == "" {
+		http.Error(w, "cpuLimit must be non-empty", http.StatusBadRequest)
+		return
+	}
+	if strings.TrimSpace(request.MemoryLimit) == "" {
+		http.Error(w, "memoryLimit must be non-empty", http.StatusBadRequest)
+		return
+	}
 
 	if err := httputil.WriteJSON(w, http.StatusNotImplemented, map[string]interface{}{
 		"status":            "not_implemented",

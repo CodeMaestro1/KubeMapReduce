@@ -170,3 +170,31 @@ func TestHandleWorkerConfig_ReturnsNotImplemented(t *testing.T) {
 		t.Fatalf("expected status not_implemented, got %v", got)
 	}
 }
+
+func TestHandleWorkerConfig_RejectsEmptyCPULimit(t *testing.T) {
+	h := NewHandlers(&fakeAdminClient{}, "", UIConfig{})
+
+	body := `{"maxConcurrentPods":20,"cpuLimit":"","memoryLimit":"1Gi"}`
+	req := httptest.NewRequest(http.MethodPut, "/admin/workers/config", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+
+	h.HandleWorkerConfig(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected status %d, got %d", http.StatusBadRequest, rec.Code)
+	}
+}
+
+func TestHandleWorkerConfig_RejectsEmptyMemoryLimit(t *testing.T) {
+	h := NewHandlers(&fakeAdminClient{}, "", UIConfig{})
+
+	body := `{"maxConcurrentPods":20,"cpuLimit":"500m","memoryLimit":""}`
+	req := httptest.NewRequest(http.MethodPut, "/admin/workers/config", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+
+	h.HandleWorkerConfig(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected status %d, got %d", http.StatusBadRequest, rec.Code)
+	}
+}
