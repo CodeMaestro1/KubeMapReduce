@@ -21,7 +21,7 @@ var (
 	ErrInvalidStateTransition = errors.New("invalid state transition")
 	ErrEmptyJobID             = errors.New("jobID cannot be empty")
 	ErrEmptyWorkerID          = errors.New("workerID cannot be empty")
-	ErrStaleAttempt = errors.New("stale commit attempt rejected to prevent split-brain")
+	ErrStaleAttempt           = errors.New("stale commit attempt rejected to prevent split-brain")
 	ErrExpiredLease           = errors.New("lease expired or mismatched")
 	ErrOutputMismatch         = errors.New("outputURIs and outputChecksums must have the same length")
 	ErrJobFailed              = errors.New("job failed: one or more tasks reached maximum attempts")
