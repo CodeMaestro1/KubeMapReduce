@@ -263,7 +263,8 @@ func TestScheduler_GetNextTask_JobCompleted(t *testing.T) {
 }
 
 func TestScheduler_GetNextTask_EmptyWorkerID(t *testing.T) {
-	_, _, scheduler := setupMockDB(t)
+	db, _, scheduler := setupMockDB(t)
+	defer db.Close()
 
 	_, err := scheduler.GetNextTask(uuid.NewString(), "")
 	if !errors.Is(err, ErrEmptyWorkerID) {
@@ -272,11 +273,22 @@ func TestScheduler_GetNextTask_EmptyWorkerID(t *testing.T) {
 }
 
 func TestScheduler_GetNextTask_EmptyJobID(t *testing.T) {
-	_, _, scheduler := setupMockDB(t)
+	db, _, scheduler := setupMockDB(t)
+	defer db.Close()
 
 	_, err := scheduler.GetNextTask("", "worker-1")
 	if !errors.Is(err, ErrEmptyJobID) {
 		t.Errorf("expected ErrEmptyJobID, got %v", err)
+	}
+}
+
+func TestScheduler_GetNextTask_InvalidJobID(t *testing.T) {
+	db, _, scheduler := setupMockDB(t)
+	defer db.Close()
+
+	_, err := scheduler.GetNextTask("not-a-uuid", "worker-1")
+	if err == nil {
+		t.Fatal("expected error for invalid job ID format")
 	}
 }
 
@@ -526,15 +538,20 @@ func TestScheduler_RenewLease_Mismatched(t *testing.T) {
 }
 
 func TestScheduler_FailStaleTasks_WithInvalidTimeout(t *testing.T) {
-	_, _, scheduler := setupMockDB(t)
-	_, err := scheduler.FailStaleTasks(0)
-	if !errors.Is(err, ErrInvalidTimeout) {
-		t.Fatalf("expected ErrInvalidTimeout")
-	}
+	db, mock, scheduler := setupMockDB(t)
+	defer db.Close()
 
-	_, err = scheduler.FailStaleTasks(-5 * time.Second)
-	if !errors.Is(err, ErrInvalidTimeout) {
-		t.Fatalf("expected ErrInvalidTimeout for negative interval")
+	mock.ExpectBegin()
+	mock.ExpectQuery(regexp.QuoteMeta(QuerySelectStaleTasks)).
+		WillReturnRows(sqlmock.NewRows([]string{"task_id", "attempt_id"}))
+	mock.ExpectCommit()
+
+	recovered, err := scheduler.FailStaleTasks()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if recovered != 0 {
+		t.Fatalf("expected 0 recovered tasks, got %d", recovered)
 	}
 }
 
@@ -563,7 +580,7 @@ func TestScheduler_FailStaleTasks_Success(t *testing.T) {
 
 	mock.ExpectCommit()
 
-	recovered, err := scheduler.FailStaleTasks(30 * time.Second)
+	recovered, err := scheduler.FailStaleTasks()
 	if err != nil {
 		t.Errorf("unexpected error: %v", err)
 	}
@@ -606,7 +623,7 @@ func TestScheduler_FailStaleTasks_MarksJobFailedAtMaxAttempts(t *testing.T) {
 
 	mock.ExpectCommit()
 
-	recovered, err := scheduler.FailStaleTasks(30 * time.Second)
+	recovered, err := scheduler.FailStaleTasks()
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
