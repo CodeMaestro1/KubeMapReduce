@@ -120,7 +120,7 @@ func (h *Handlers) HandleJobsSubmit(w http.ResponseWriter, r *http.Request) {
 	jobStatus := models.JobStatus{
 		JobID:     jobID,
 		Status:    "accepted",
-		Message:   "job specification validated and accepted",
+		Message:   "job specification validated and accepted (metadata only — no file transfer)",
 		Filename:  request.Filename,
 		Reducers:  request.Reducers,
 		CreatedAt: now,
