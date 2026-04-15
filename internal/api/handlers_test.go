@@ -585,6 +585,7 @@ func TestHandleJobsGet_ReturnsNotFoundWhenExpiredByTTL(t *testing.T) {
 	now = now.Add(2 * time.Second)
 
 	getReq := httptest.NewRequest(http.MethodGet, "/jobs/"+submitResp.JobID, nil)
+	getReq.SetPathValue("job_id", submitResp.JobID)
 	getRec := httptest.NewRecorder()
 	h.HandleJobsGet(getRec, getReq)
 
@@ -695,6 +696,7 @@ func TestHandleJobsGet_ReturnsKnownJob(t *testing.T) {
 	}
 
 	getReq := httptest.NewRequest(http.MethodGet, "/jobs/"+submitResp.JobID, nil)
+	getReq.SetPathValue("job_id", submitResp.JobID)
 	getRec := httptest.NewRecorder()
 	h.HandleJobsGet(getRec, getReq)
 
@@ -710,6 +712,7 @@ func TestHandleJobsGet_ReturnsNotFoundForUnknownJob(t *testing.T) {
 	h := newTestHandlers()
 
 	req := httptest.NewRequest(http.MethodGet, "/jobs/job-doesnotexist", nil)
+	req.SetPathValue("job_id", "job-doesnotexist")
 	rec := httptest.NewRecorder()
 	h.HandleJobsGet(rec, req)
 
@@ -724,6 +727,7 @@ func TestHandleJobsDownload_NotFoundForUnknownJob(t *testing.T) {
 	h := newTestHandlers()
 
 	req := httptest.NewRequest(http.MethodGet, "/jobs/job-doesnotexist/results", nil)
+	req.SetPathValue("job_id", "job-doesnotexist")
 	rec := httptest.NewRecorder()
 	h.HandleJobsDownload(rec, req)
 
@@ -751,6 +755,7 @@ func TestHandleJobsDownload_NotImplementedForKnownJob(t *testing.T) {
 	}
 
 	dlReq := httptest.NewRequest(http.MethodGet, "/jobs/"+submitResp.JobID+"/results", nil)
+	dlReq.SetPathValue("job_id", submitResp.JobID)
 	dlRec := httptest.NewRecorder()
 	h.HandleJobsDownload(dlRec, dlReq)
 
@@ -827,5 +832,93 @@ func TestHandleConfigureNodes_AcceptsValidConfig(t *testing.T) {
 	}
 	if !strings.Contains(rec.Body.String(), "not_implemented") {
 		t.Fatalf("expected not_implemented in body, got %q", rec.Body.String())
+	}
+}
+
+// ── Route parsing edge-case regression tests ────────────────
+
+func TestHandleJobsGet_EmptyPathValue_Returns400(t *testing.T) {
+	h := newTestHandlers()
+
+	req := httptest.NewRequest(http.MethodGet, "/jobs/", nil)
+	req.SetPathValue("job_id", "")
+	rec := httptest.NewRecorder()
+	h.HandleJobsGet(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected %d, got %d", http.StatusBadRequest, rec.Code)
+	}
+}
+
+func TestHandleJobsDownload_EmptyPathValue_Returns400(t *testing.T) {
+	h := newTestHandlers()
+
+	req := httptest.NewRequest(http.MethodGet, "/jobs//results", nil)
+	req.SetPathValue("job_id", "")
+	rec := httptest.NewRecorder()
+	h.HandleJobsDownload(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected %d, got %d", http.StatusBadRequest, rec.Code)
+	}
+}
+
+func TestRouting_TrailingSlashOnJobDetail_Returns404(t *testing.T) {
+	h := newTestHandlers()
+	mux := http.NewServeMux()
+	mux.Handle("GET /jobs/{job_id}/results", http.HandlerFunc(h.HandleJobsDownload))
+	mux.Handle("GET /jobs/{job_id}", http.HandlerFunc(h.HandleJobsGet))
+
+	req := httptest.NewRequest(http.MethodGet, "/jobs/some-id/", nil)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 for trailing slash, got %d", rec.Code)
+	}
+}
+
+func TestRouting_UnexpectedSegment_Returns404(t *testing.T) {
+	h := newTestHandlers()
+	mux := http.NewServeMux()
+	mux.Handle("GET /jobs/{job_id}/results", http.HandlerFunc(h.HandleJobsDownload))
+	mux.Handle("GET /jobs/{job_id}", http.HandlerFunc(h.HandleJobsGet))
+
+	req := httptest.NewRequest(http.MethodGet, "/jobs/some-id/unknown", nil)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 for unexpected segment, got %d", rec.Code)
+	}
+}
+
+func TestRouting_ResultsTrailingSlash_Returns404(t *testing.T) {
+	h := newTestHandlers()
+	mux := http.NewServeMux()
+	mux.Handle("GET /jobs/{job_id}/results", http.HandlerFunc(h.HandleJobsDownload))
+	mux.Handle("GET /jobs/{job_id}", http.HandlerFunc(h.HandleJobsGet))
+
+	req := httptest.NewRequest(http.MethodGet, "/jobs/some-id/results/", nil)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 for results trailing slash, got %d", rec.Code)
+	}
+}
+
+func TestRouting_PostToJobDetail_Returns405(t *testing.T) {
+	h := newTestHandlers()
+	mux := http.NewServeMux()
+	mux.Handle("GET /jobs/{job_id}/results", http.HandlerFunc(h.HandleJobsDownload))
+	mux.Handle("GET /jobs/{job_id}", http.HandlerFunc(h.HandleJobsGet))
+
+	req := httptest.NewRequest(http.MethodPost, "/jobs/some-id", nil)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("expected 405 for POST on job detail, got %d", rec.Code)
 	}
 }

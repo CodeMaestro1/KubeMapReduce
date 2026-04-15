@@ -2,7 +2,6 @@ package api
 
 import (
 	"net/http"
-	"strings"
 
 	"kubemapreduce/pkg/auth"
 )
@@ -28,26 +27,16 @@ func RegisterRoutes(mux *http.ServeMux, h *Handlers, validator *auth.JWTValidato
 		}),
 	))
 
-	mux.Handle("/jobs/", auth.RequireAnyRole(
+	mux.Handle("GET /jobs/{job_id}/results", auth.RequireAnyRole(
 		[]string{"USER", "ADMIN"},
 		validator,
-		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			path := strings.TrimPrefix(r.URL.Path, "/jobs/")
-			parts := strings.SplitN(path, "/", 2)
-			if len(parts) == 2 && parts[1] == "results" {
-				if r.Method != http.MethodGet {
-					http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-					return
-				}
-				h.HandleJobsDownload(w, r)
-			} else {
-				if r.Method != http.MethodGet {
-					http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-					return
-				}
-				h.HandleJobsGet(w, r)
-			}
-		}),
+		http.HandlerFunc(h.HandleJobsDownload),
+	))
+
+	mux.Handle("GET /jobs/{job_id}", auth.RequireAnyRole(
+		[]string{"USER", "ADMIN"},
+		validator,
+		http.HandlerFunc(h.HandleJobsGet),
 	))
 
 	// Admin routes
