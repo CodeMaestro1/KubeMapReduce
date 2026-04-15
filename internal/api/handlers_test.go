@@ -164,7 +164,7 @@ func TestHandleJobsSubmit_DefaultsReducersToOneWhenZeroProvided(t *testing.T) {
 func TestHandleWorkerConfig_RejectsInvalidValues(t *testing.T) {
 	h := newTestHandlers()
 
-	body := `{"workerReplicas":0,"maxJobsPerNode":5}`
+	body := `{"maxConcurrentPods":0,"cpuLimit":"500m","memoryLimit":"1Gi"}`
 	req := httptest.NewRequest(http.MethodPut, "/admin/workers/config", strings.NewReader(body))
 	rec := httptest.NewRecorder()
 
@@ -178,7 +178,7 @@ func TestHandleWorkerConfig_RejectsInvalidValues(t *testing.T) {
 func TestHandleWorkerConfig_AcceptsValidConfig(t *testing.T) {
 	h := newTestHandlers()
 
-	body := `{"workerReplicas":4,"maxJobsPerNode":8}`
+	body := `{"maxConcurrentPods":20,"cpuLimit":"500m","memoryLimit":"1Gi"}`
 	req := httptest.NewRequest(http.MethodPut, "/admin/workers/config", strings.NewReader(body))
 	rec := httptest.NewRecorder()
 
@@ -621,7 +621,7 @@ func TestHandleJobsSubmit_EvictsOldestWhenMaxCapacityExceeded(t *testing.T) {
 		t.Fatalf("expected %d, got %d", http.StatusOK, listRec.Code)
 	}
 
-	var jobs []models.JobStatus
+	var jobs []models.JobStatusResponse
 	if err := json.Unmarshal(listRec.Body.Bytes(), &jobs); err != nil {
 		t.Fatalf("decode jobs list: %v", err)
 	}

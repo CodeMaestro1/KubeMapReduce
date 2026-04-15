@@ -20,7 +20,7 @@ import (
 
 type Handlers struct {
 	adminClient   *auth.KeycloakAdminClient
-	jobs          sync.Map // key: string (jobID) → models.JobStatus
+	jobs          sync.Map // key: string (jobID) → models.JobStatusResponse
 	jobsMu        sync.Mutex
 	jobStatusTTL  time.Duration
 	maxStoredJobs int
@@ -117,7 +117,7 @@ func (h *Handlers) HandleJobsSubmit(w http.ResponseWriter, r *http.Request) {
 	}
 
 	now := h.now().UTC()
-	jobStatus := models.JobStatus{
+	jobStatus := models.JobStatusResponse{
 		JobID:     jobID,
 		Status:    "accepted",
 		Message:   "job specification validated and accepted (metadata only — no file transfer)",
@@ -147,16 +147,16 @@ func (h *Handlers) HandleJobsList(w http.ResponseWriter, r *http.Request) {
 
 	h.cleanupJobsStore()
 
-	var list []models.JobStatus
+	var list []models.JobStatusResponse
 	h.jobs.Range(func(_, v any) bool {
-		list = append(list, v.(models.JobStatus))
+		list = append(list, v.(models.JobStatusResponse))
 		return true
 	})
 	sort.Slice(list, func(i, j int) bool {
 		return list[i].CreatedAt.Before(list[j].CreatedAt)
 	})
 	if list == nil {
-		list = []models.JobStatus{}
+		list = []models.JobStatusResponse{}
 	}
 
 	if err := httputil.WriteJSON(w, http.StatusOK, list); err != nil {
@@ -184,7 +184,7 @@ func (h *Handlers) HandleJobsGet(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := httputil.WriteJSON(w, http.StatusOK, v.(models.JobStatus)); err != nil {
+	if err := httputil.WriteJSON(w, http.StatusOK, v.(models.JobStatusResponse)); err != nil {
 		return
 	}
 }
@@ -262,16 +262,25 @@ func (h *Handlers) HandleWorkerConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if request.WorkerReplicas < 1 || request.MaxJobsPerNode < 1 {
-		http.Error(w, "workerReplicas and maxJobsPerNode must be positive", http.StatusBadRequest)
+	if request.MaxConcurrentPods < 1 {
+		http.Error(w, "maxConcurrentPods must be positive", http.StatusBadRequest)
+		return
+	}
+	if strings.TrimSpace(request.CPULimit) == "" {
+		http.Error(w, "cpuLimit must be non-empty", http.StatusBadRequest)
+		return
+	}
+	if strings.TrimSpace(request.MemoryLimit) == "" {
+		http.Error(w, "memoryLimit must be non-empty", http.StatusBadRequest)
 		return
 	}
 
 	if err := httputil.WriteJSON(w, http.StatusAccepted, map[string]interface{}{
-		"status":         "accepted",
-		"message":        "worker configuration update accepted",
-		"workerReplicas": request.WorkerReplicas,
-		"maxJobsPerNode": request.MaxJobsPerNode,
+		"status":            "accepted",
+		"message":           "worker configuration update accepted",
+		"maxConcurrentPods": request.MaxConcurrentPods,
+		"cpuLimit":          request.CPULimit,
+		"memoryLimit":       request.MemoryLimit,
 	}); err != nil {
 		return
 	}
@@ -295,7 +304,7 @@ func (h *Handlers) cleanupJobsStore() {
 		if !ok {
 			return true
 		}
-		status, ok := v.(models.JobStatus)
+		status, ok := v.(models.JobStatusResponse)
 		if !ok {
 			h.jobs.Delete(jobID)
 			return true
@@ -321,7 +330,7 @@ func (h *Handlers) cleanupJobsStore() {
 		if !ok {
 			return true
 		}
-		status, ok := v.(models.JobStatus)
+		status, ok := v.(models.JobStatusResponse)
 		if !ok {
 			h.jobs.Delete(jobID)
 			return true
