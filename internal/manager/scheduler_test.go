@@ -537,7 +537,7 @@ func TestScheduler_RenewLease_Mismatched(t *testing.T) {
 	}
 }
 
-func TestScheduler_FailStaleTasks_WithInvalidTimeout(t *testing.T) {
+func TestScheduler_FailStaleTasks_NoStaleTasks(t *testing.T) {
 	db, mock, scheduler := setupMockDB(t)
 	defer db.Close()
 
