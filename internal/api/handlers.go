@@ -160,7 +160,7 @@ func (h *Handlers) HandleJobsList(w http.ResponseWriter, r *http.Request) {
 		return true
 	})
 	sort.Slice(list, func(i, j int) bool {
-		return list[i].CreatedAt.Before(list[j].CreatedAt)
+		return list[i].CreatedAt.After(list[j].CreatedAt)
 	})
 	if list == nil {
 		list = []models.JobStatus{}
