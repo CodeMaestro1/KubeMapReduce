@@ -95,18 +95,21 @@ func TestCreateUserRequest_JSON(t *testing.T) {
 }
 
 func TestWorkerConfigRequest_JSON(t *testing.T) {
-	input := `{"workerReplicas":4,"maxJobsPerNode":8}`
+	input := `{"maxConcurrentPods":20,"cpuLimit":"500m","memoryLimit":"1Gi"}`
 
 	var req WorkerConfigRequest
 	if err := json.Unmarshal([]byte(input), &req); err != nil {
 		t.Fatalf("unmarshal failed: %v", err)
 	}
 
-	if req.WorkerReplicas != 4 {
-		t.Errorf("WorkerReplicas = %d, want %d", req.WorkerReplicas, 4)
+	if req.MaxConcurrentPods != 20 {
+		t.Errorf("MaxConcurrentPods = %d, want %d", req.MaxConcurrentPods, 20)
 	}
-	if req.MaxJobsPerNode != 8 {
-		t.Errorf("MaxJobsPerNode = %d, want %d", req.MaxJobsPerNode, 8)
+	if req.CPULimit != "500m" {
+		t.Errorf("CPULimit = %q, want %q", req.CPULimit, "500m")
+	}
+	if req.MemoryLimit != "1Gi" {
+		t.Errorf("MemoryLimit = %q, want %q", req.MemoryLimit, "1Gi")
 	}
 }
 
@@ -126,7 +129,7 @@ func TestWorkerConfigRequest_ZeroValues(t *testing.T) {
 	if err := json.Unmarshal([]byte(`{}`), &req); err != nil {
 		t.Fatalf("unmarshal failed: %v", err)
 	}
-	if req.WorkerReplicas != 0 || req.MaxJobsPerNode != 0 {
+	if req.MaxConcurrentPods != 0 || req.CPULimit != "" || req.MemoryLimit != "" {
 		t.Errorf("expected zero values, got %+v", req)
 	}
 }
