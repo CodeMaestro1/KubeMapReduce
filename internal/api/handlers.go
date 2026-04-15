@@ -18,9 +18,16 @@ import (
 	"kubemapreduce/pkg/httputil"
 )
 
+// Handlers holds HTTP handler state for the API server.
+//
+// TEMPORARY: Job storage uses an in-memory sync.Map. This means:
+//   - All job data is lost on server restart.
+//   - Job visibility is not shared across multiple replicas.
+//
+// This will be replaced with a persistent store (e.g. database) in a future release.
 type Handlers struct {
 	adminClient   *auth.KeycloakAdminClient
-	jobs          sync.Map // key: string (jobID) → models.JobStatus
+	jobs          sync.Map // key: string (jobID) → models.JobStatus  [interim: in-memory only]
 	jobsMu        sync.Mutex
 	jobStatusTTL  time.Duration
 	maxStoredJobs int
