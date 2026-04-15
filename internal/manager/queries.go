@@ -120,11 +120,12 @@ const QueryFailAttempt = `UPDATE TASK_ATTEMPTS SET status = 'Failed', end_time =
 
 // QuerySelectStaleTasks finds in-progress tasks whose lease has expired.
 // The Manager's Active Reaper uses this to reclaim zombie workers (Section 5.1).
+// Expiry is computed using lease_ttl so correctness does not depend on the caller's timeout value.
 const QuerySelectStaleTasks = `
 	SELECT t.task_id, a.attempt_id
 	FROM TASKS t
 	JOIN TASK_ATTEMPTS a ON t.current_attempt_id = a.attempt_id
-	WHERE t.status = 'In-Progress' AND a.status = 'Running' AND a.last_renewed_at < $1
+	WHERE t.status = 'In-Progress' AND a.status = 'Running' AND a.last_renewed_at + a.lease_ttl * INTERVAL '1 second' < NOW()
 	FOR UPDATE OF t`
 
 // ---------------------------------------------------------------------------

@@ -547,7 +547,6 @@ func TestScheduler_FailStaleTasks_Success(t *testing.T) {
 
 	mock.ExpectBegin()
 	mock.ExpectQuery(regexp.QuoteMeta(QuerySelectStaleTasks)).
-		WithArgs(sqlmock.AnyArg()).
 		WillReturnRows(sqlmock.NewRows([]string{"task_id", "attempt_id"}).AddRow(taskID, attemptID))
 
 	mock.ExpectQuery(regexp.QuoteMeta(QueryCountAttemptsByTask)).
@@ -583,7 +582,6 @@ func TestScheduler_FailStaleTasks_MarksJobFailedAtMaxAttempts(t *testing.T) {
 
 	mock.ExpectBegin()
 	mock.ExpectQuery(regexp.QuoteMeta(QuerySelectStaleTasks)).
-		WithArgs(sqlmock.AnyArg()).
 		WillReturnRows(sqlmock.NewRows([]string{"task_id", "attempt_id"}).AddRow(taskID, attemptID))
 
 	mock.ExpectQuery(regexp.QuoteMeta(QueryCountAttemptsByTask)).
@@ -709,7 +707,10 @@ func TestScheduler_GetMapOutputs(t *testing.T) {
 		WithArgs(jobID).
 		WillReturnRows(sqlmock.NewRows([]string{"output_uri"}).AddRow("s3://map-out-1").AddRow("s3://map-out-2"))
 
-	outputs := scheduler.GetMapOutputs(jobID)
+	outputs, err := scheduler.GetMapOutputs(jobID)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 	if len(outputs) != 2 || outputs[0] != "s3://map-out-1" || outputs[1] != "s3://map-out-2" {
 		t.Errorf("unexpected map outputs: %v", outputs)
 	}
@@ -724,7 +725,10 @@ func TestScheduler_GetReduceOutputs(t *testing.T) {
 		WithArgs(jobID).
 		WillReturnRows(sqlmock.NewRows([]string{"output_uri"}).AddRow("s3://reduce-out-1"))
 
-	outputs := scheduler.GetReduceOutputs(jobID)
+	outputs, err := scheduler.GetReduceOutputs(jobID)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 	if len(outputs) != 1 || outputs[0] != "s3://reduce-out-1" {
 		t.Errorf("unexpected reduce outputs: %v", outputs)
 	}

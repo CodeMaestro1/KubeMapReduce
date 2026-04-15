@@ -81,7 +81,10 @@ func (s *Scheduler) GetNextTask(jobID string, workerID string) (*Task, error) {
 	// 2. Check for failed job tasks
 	var failedCount int
 	err = tx.QueryRowContext(ctx, QueryCountFailedTasks, jobID).Scan(&failedCount)
-	if err == nil && failedCount > 0 {
+	if err != nil {
+		return nil, err
+	}
+	if failedCount > 0 {
 		return nil, ErrJobFailed
 	}
 
@@ -158,10 +161,13 @@ func (s *Scheduler) tryAssignTask(ctx context.Context, tx *sql.Tx, requestedJobI
 	t.ID = taskID.String()
 	t.JobID = dbJobID.String()
 	t.ReplicaIndex = replicaIndex
-	if tType == "Map" {
+	switch tType {
+	case "Map":
 		t.Type = MapTask
-	} else {
+	case "Reduce":
 		t.Type = ReduceTask
+	default:
+		return nil, fmt.Errorf("unexpected task type %q for task %s", tType, taskID.String())
 	}
 
 	attemptID := uuid.New()
@@ -172,7 +178,11 @@ func (s *Scheduler) tryAssignTask(ctx context.Context, tx *sql.Tx, requestedJobI
 	now := time.Now()
 	t.startTime = now
 	t.LastHeartbeat = now
-	if t.JobID != requestedJobID {
+	requestedUUID, err := uuid.Parse(requestedJobID)
+	if err != nil {
+		return nil, fmt.Errorf("invalid requested job ID %q: %w", requestedJobID, err)
+	}
+	if dbJobID != requestedUUID {
 		return nil, fmt.Errorf("scheduled task %s belongs to unexpected job %s", t.ID, t.JobID)
 	}
 	if err := s.hydrateTaskMetadata(ctx, tx, &t); err != nil {
@@ -320,6 +330,9 @@ func (s *Scheduler) ScheduleJob(req ScheduleJobRequest) error {
 		}
 		if strings.TrimSpace(task.TaskType) == "" {
 			return errors.New("task type cannot be empty")
+		}
+		if task.TaskType != "Map" && task.TaskType != "Reduce" {
+			return fmt.Errorf("invalid task type %q: must be Map or Reduce", task.TaskType)
 		}
 		if _, err := tx.ExecContext(ctx, QueryInsertTask, taskID, jobID, task.TaskType, task.ReplicaIndex); err != nil {
 			return err
@@ -560,7 +573,7 @@ func (s *Scheduler) FailStaleTasks(timeout time.Duration) (int, error) {
 	}
 	defer tx.Rollback()
 
-	rows, err := tx.QueryContext(ctx, QuerySelectStaleTasks, time.Now().Add(-timeout))
+	rows, err := tx.QueryContext(ctx, QuerySelectStaleTasks)
 	if err != nil {
 		return 0, err
 	}
@@ -623,40 +636,48 @@ func (s *Scheduler) FailStaleTasks(timeout time.Duration) (int, error) {
 	return recoveredCount, nil
 }
 
-func (s *Scheduler) GetMapOutputs(jobID string) []string {
+func (s *Scheduler) GetMapOutputs(jobID string) ([]string, error) {
 	ctx := context.Background()
 	rows, err := s.db.QueryContext(ctx, QueryGetMapOutputs, jobID)
 	if err != nil {
-		return nil
+		return nil, err
 	}
 	defer rows.Close()
 
 	var outputs []string
 	for rows.Next() {
 		var uri string
-		if err := rows.Scan(&uri); err == nil {
-			outputs = append(outputs, uri)
+		if err := rows.Scan(&uri); err != nil {
+			return nil, err
 		}
+		outputs = append(outputs, uri)
 	}
-	return outputs
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return outputs, nil
 }
 
-func (s *Scheduler) GetReduceOutputs(jobID string) []string {
+func (s *Scheduler) GetReduceOutputs(jobID string) ([]string, error) {
 	ctx := context.Background()
 	rows, err := s.db.QueryContext(ctx, QueryGetReduceOutputs, jobID)
 	if err != nil {
-		return nil
+		return nil, err
 	}
 	defer rows.Close()
 
 	var outputs []string
 	for rows.Next() {
 		var uri string
-		if err := rows.Scan(&uri); err == nil {
-			outputs = append(outputs, uri)
+		if err := rows.Scan(&uri); err != nil {
+			return nil, err
 		}
+		outputs = append(outputs, uri)
 	}
-	return outputs
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return outputs, nil
 }
 
 func (s *Scheduler) AllMapTasksCompleted(jobID string) bool {
@@ -712,10 +733,13 @@ func (s *Scheduler) GetTaskByID(taskID string) (*Task, error) {
 		return nil, err
 	}
 
-	if dbType == "Map" {
+	switch dbType {
+	case "Map":
 		t.Type = MapTask
-	} else {
+	case "Reduce":
 		t.Type = ReduceTask
+	default:
+		return nil, fmt.Errorf("unknown task type %q for task %s", dbType, taskID)
 	}
 	t.JobID = jobID.String()
 	switch dbStatus {
@@ -727,6 +751,8 @@ func (s *Scheduler) GetTaskByID(taskID string) (*Task, error) {
 		t.State = Completed
 	case "Failed":
 		t.State = Failed
+	default:
+		return nil, fmt.Errorf("unrecognized task status %q for task %s", dbStatus, taskID)
 	}
 	if err := s.hydrateTaskMetadata(ctx, s.db, &t); err != nil {
 		return nil, err
