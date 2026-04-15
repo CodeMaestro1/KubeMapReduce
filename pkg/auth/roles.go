@@ -3,6 +3,7 @@ package auth
 import (
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 
 	"github.com/golang-jwt/jwt/v5"
@@ -63,7 +64,8 @@ func requireRoles(w http.ResponseWriter, r *http.Request, requiredRoles []string
 			http.Error(w, "service unavailable", http.StatusServiceUnavailable)
 			return
 		}
-		http.Error(w, "forbidden: "+err.Error(), http.StatusForbidden)
+		slog.Warn("role extraction failed", "error", err)
+		http.Error(w, "forbidden: insufficient permissions", http.StatusForbidden)
 		return
 	}
 
