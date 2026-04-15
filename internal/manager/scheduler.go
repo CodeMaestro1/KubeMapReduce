@@ -299,7 +299,7 @@ func (s *Scheduler) GetTaskByID(taskID string) (*Task, error) {
 	return &taskCopy, nil
 }
 
-func (s *Scheduler) RenewLease(taskID string, leaseID string) error {
+func (s *Scheduler) RenewLease(taskID string, attemptID string, leaseID string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -310,6 +310,10 @@ func (s *Scheduler) RenewLease(taskID string, leaseID string) error {
 
 	if task.State != InProgress {
 		return ErrInvalidStateTransition
+	}
+
+	if task.ActiveAttemptID != attemptID {
+		return ErrStaleAttempt
 	}
 
 	if task.LeaseID != leaseID {
