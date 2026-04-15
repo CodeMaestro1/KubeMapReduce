@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"net/url"
@@ -147,17 +148,47 @@ func cmdAdminConfigureNodes(args []string) {
 		"memoryLimit": strings.TrimSpace(*memoryLimit),
 	})
 
-	resp := doAuthRequestExpect(
+	resp, err := doAuthRequest(
 		http.MethodPut,
 		serverURL+"/admin/nodes/config",
 		token,
 		payload,
-		http.StatusNotImplemented,
-		"configure nodes failed",
 	)
+	if err != nil {
+		log.Fatalf("request failed: %v", err)
+	}
+
+	if resp.StatusCode != http.StatusAccepted {
+		defer resp.Body.Close()
+		respBody, _ := io.ReadAll(resp.Body)
+		if statusErr := configureNodesStatusError(resp.StatusCode, string(respBody)); statusErr != nil {
+			log.Fatal(statusErr)
+		}
+	}
 	defer resp.Body.Close()
 
 	printResponse(resp)
+}
+
+func configureNodesStatusError(statusCode int, responseBody string) error {
+	if statusCode == http.StatusAccepted {
+		return nil
+	}
+
+	body := strings.TrimSpace(responseBody)
+
+	if statusCode == http.StatusNotImplemented {
+		if body == "" {
+			body = "no additional details"
+		}
+		return fmt.Errorf("configure-nodes endpoint is not implemented by the API (HTTP 501): %s. Hint: this endpoint is pending backend implementation", body)
+	}
+
+	if body == "" {
+		body = http.StatusText(statusCode)
+	}
+
+	return fmt.Errorf("configure nodes failed (HTTP %d): %s", statusCode, body)
 }
 
 // ── admin worker-config ────────────────────────────────────
