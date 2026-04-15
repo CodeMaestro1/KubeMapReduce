@@ -197,7 +197,7 @@ func (s *Scheduler) tryAssignTask(ctx context.Context, tx *sql.Tx, requestedJobI
 	}
 
 	_, err = tx.ExecContext(ctx, QueryInsertAttempt,
-		attemptID, taskID, workerID, leaseID, now, now)
+		attemptID, taskID, workerID, leaseID)
 	if err != nil {
 		return nil, err
 	}
@@ -381,6 +381,18 @@ func (s *Scheduler) updateJobStatusTx(ctx context.Context, tx *sql.Tx, jobID str
 	return err
 }
 
+func (s *Scheduler) validateLeaseTx(ctx context.Context, tx *sql.Tx, attemptID string, leaseID string) error {
+	var leaseValid bool
+	err := tx.QueryRowContext(ctx, QueryCheckLeaseValid, attemptID, leaseID).Scan(&leaseValid)
+	if err != nil {
+		return err
+	}
+	if !leaseValid {
+		return ErrExpiredLease
+	}
+	return nil
+}
+
 func (s *Scheduler) CompleteTask(taskID string, attemptID string, leaseID string, outputURIs []string, outputChecksums []string) error {
 	if len(outputURIs) != len(outputChecksums) {
 		return ErrOutputMismatch
@@ -416,16 +428,8 @@ func (s *Scheduler) CompleteTask(taskID string, attemptID string, leaseID string
 		return ErrStaleAttempt
 	}
 
-	var dbLeaseID string
-	var lastRenewed time.Time
-	var ttl int
-	err = tx.QueryRowContext(ctx, QuerySelectLeaseInfo, attemptID).Scan(&dbLeaseID, &lastRenewed, &ttl)
-	if err != nil {
+	if err := s.validateLeaseTx(ctx, tx, attemptID, leaseID); err != nil {
 		return err
-	}
-
-	if dbLeaseID != leaseID || time.Now().After(lastRenewed.Add(time.Duration(ttl)*time.Second)) {
-		return ErrExpiredLease
 	}
 
 	_, err = tx.ExecContext(ctx, QueryCompleteTask, taskID)
@@ -433,7 +437,7 @@ func (s *Scheduler) CompleteTask(taskID string, attemptID string, leaseID string
 		return err
 	}
 
-	_, err = tx.ExecContext(ctx, QuerySucceedAttempt, time.Now(), attemptID)
+	_, err = tx.ExecContext(ctx, QuerySucceedAttempt, attemptID)
 	if err != nil {
 		return err
 	}
@@ -487,19 +491,11 @@ func (s *Scheduler) RenewLease(taskID string, attemptID string, leaseID string) 
 		return ErrStaleAttempt
 	}
 
-	var dbLeaseID string
-	var lastRenewed time.Time
-	var ttl int
-	err = tx.QueryRowContext(ctx, QuerySelectLeaseInfo, attemptID).Scan(&dbLeaseID, &lastRenewed, &ttl)
-	if err != nil {
+	if err := s.validateLeaseTx(ctx, tx, attemptID, leaseID); err != nil {
 		return err
 	}
 
-	if dbLeaseID != leaseID || time.Now().After(lastRenewed.Add(time.Duration(ttl)*time.Second)) {
-		return ErrExpiredLease
-	}
-
-	_, err = tx.ExecContext(ctx, QueryRenewLease, time.Now(), attemptID)
+	_, err = tx.ExecContext(ctx, QueryRenewLease, attemptID)
 	if err != nil {
 		return err
 	}
@@ -532,16 +528,8 @@ func (s *Scheduler) FailTask(taskID string, attemptID string, leaseID string, re
 		return ErrStaleAttempt
 	}
 
-	var dbLeaseID string
-	var lastRenewed time.Time
-	var ttl int
-	err = tx.QueryRowContext(ctx, QuerySelectLeaseInfo, attemptID).Scan(&dbLeaseID, &lastRenewed, &ttl)
-	if err != nil {
+	if err := s.validateLeaseTx(ctx, tx, attemptID, leaseID); err != nil {
 		return err
-	}
-
-	if dbLeaseID != leaseID || time.Now().After(lastRenewed.Add(time.Duration(ttl)*time.Second)) {
-		return ErrExpiredLease
 	}
 
 	var attemptCount int
@@ -560,7 +548,7 @@ func (s *Scheduler) FailTask(taskID string, attemptID string, leaseID string, re
 		return err
 	}
 
-	_, err = tx.ExecContext(ctx, QueryFailAttempt, time.Now(), attemptID)
+	_, err = tx.ExecContext(ctx, QueryFailAttempt, attemptID)
 	if err != nil {
 		return err
 	}
@@ -626,7 +614,7 @@ func (s *Scheduler) FailStaleTasks() (int, error) {
 			return 0, fmt.Errorf("updating status for task %s: %w", rec.taskID, err)
 		}
 
-		_, err = tx.ExecContext(ctx, QueryFailAttempt, time.Now(), rec.attemptID)
+		_, err = tx.ExecContext(ctx, QueryFailAttempt, rec.attemptID)
 		if err != nil {
 			return 0, fmt.Errorf("failing attempt %s: %w", rec.attemptID, err)
 		}
