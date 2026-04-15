@@ -628,8 +628,49 @@ func TestHandleJobsSubmit_EvictsOldestWhenMaxCapacityExceeded(t *testing.T) {
 	if len(jobs) != 2 {
 		t.Fatalf("expected 2 jobs after eviction, got %d", len(jobs))
 	}
-	if jobs[0].Filename != "job-2.csv" || jobs[1].Filename != "job-3.csv" {
-		t.Fatalf("expected oldest job to be evicted, got %+v", jobs)
+	if jobs[0].Filename != "job-3.csv" || jobs[1].Filename != "job-2.csv" {
+		t.Fatalf("expected newest-first order after eviction, got %+v", jobs)
+	}
+}
+
+func TestHandleJobsList_ReturnsNewestFirst(t *testing.T) {
+	now := time.Date(2026, 1, 1, 10, 0, 0, 0, time.UTC)
+	h := newTestHandlersWithRetention(func() time.Time { return now }, 1*time.Hour, 100)
+
+	submit := func(filename string) {
+		body := `{"filename":"` + filename + `","mapper":{"language":"python","artifact":"m.py","entrypoint":"map","interface":"map(key,value)->[]KeyValue"},"reducer":{"language":"python","artifact":"r.py","entrypoint":"reduce","interface":"reduce(key,values)->Value"}}`
+		req := httptest.NewRequest(http.MethodPost, "/jobs", strings.NewReader(body))
+		rec := httptest.NewRecorder()
+		h.HandleJobsSubmit(rec, req)
+		if rec.Code != http.StatusAccepted {
+			t.Fatalf("submit failed with %d: %s", rec.Code, rec.Body.String())
+		}
+	}
+
+	submit("first.csv")
+	now = now.Add(1 * time.Second)
+	submit("second.csv")
+	now = now.Add(1 * time.Second)
+	submit("third.csv")
+
+	listReq := httptest.NewRequest(http.MethodGet, "/jobs", nil)
+	listRec := httptest.NewRecorder()
+	h.HandleJobsList(listRec, listReq)
+
+	if listRec.Code != http.StatusOK {
+		t.Fatalf("expected %d, got %d", http.StatusOK, listRec.Code)
+	}
+
+	var jobs []models.JobStatusResponse
+	if err := json.Unmarshal(listRec.Body.Bytes(), &jobs); err != nil {
+		t.Fatalf("decode jobs list: %v", err)
+	}
+	if len(jobs) != 3 {
+		t.Fatalf("expected 3 jobs, got %d", len(jobs))
+	}
+	if jobs[0].Filename != "third.csv" || jobs[1].Filename != "second.csv" || jobs[2].Filename != "first.csv" {
+		t.Fatalf("expected newest-first ordering [third, second, first], got [%s, %s, %s]",
+			jobs[0].Filename, jobs[1].Filename, jobs[2].Filename)
 	}
 }
 
