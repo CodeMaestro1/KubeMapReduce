@@ -189,7 +189,7 @@ SYSTEM_CONFIG   (config_id INT PK, max_concurrent_pods INT, cpu_limit, memory_li
 
 **Status enumerations:**
 - `JOBS.status`: `Pending | Running | Completed | Cancelled | Failed | Cleaning`
-- `TASKS.status`: `Idle | In-Progress | Completed`
+- `TASKS.status`: `Idle | In-Progress | Completed | Failed`
 - `TASK_ATTEMPTS.status`: `Running | Success | Failed`
 
 ---
