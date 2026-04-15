@@ -48,7 +48,7 @@ const QueryUpdateTaskInProgress = `UPDATE TASKS SET status = 'In-Progress', curr
 // The lease_ttl of 30 seconds matches the 3-heartbeat timeout window from Section 5.
 const QueryInsertAttempt = `
 	INSERT INTO TASK_ATTEMPTS (attempt_id, task_id, worker_id, lease_id, last_renewed_at, lease_ttl, start_time, status)
-	VALUES ($1, $2, $3, $4, $5, 30, $6, 'Running')`
+	VALUES ($1, $2, $3, $4, NOW(), 30, NOW(), 'Running')`
 
 // QueryGetJobConfigByTask loads immutable job configuration needed to build
 // a worker-facing task assignment.
@@ -86,7 +86,7 @@ const QuerySelectTaskForUpdate = `SELECT status, current_attempt_id FROM TASKS W
 const QueryCompleteTask = `UPDATE TASKS SET status = 'Completed', current_attempt_id = NULL WHERE task_id = $1`
 
 // QuerySucceedAttempt marks the current attempt as successful with an end timestamp.
-const QuerySucceedAttempt = `UPDATE TASK_ATTEMPTS SET status = 'Success', end_time = $1 WHERE attempt_id = $2`
+const QuerySucceedAttempt = `UPDATE TASK_ATTEMPTS SET status = 'Success', end_time = NOW() WHERE attempt_id = $1`
 
 // QueryInsertOutput persists a single output shard to TASK_OUTPUTS (1NF compliant).
 const QueryInsertOutput = `INSERT INTO TASK_OUTPUTS (task_id, partition_index, output_uri, checksum) VALUES ($1, $2, $3, $4)`
@@ -95,13 +95,16 @@ const QueryInsertOutput = `INSERT INTO TASK_OUTPUTS (task_id, partition_index, o
 // Lease management queries
 // ---------------------------------------------------------------------------
 
-// QuerySelectLeaseInfo fetches lease credentials for fencing validation.
-// Lease expiry is computed at runtime as last_renewed_at + lease_ttl
-// (Section 5.1: "Lease-Based Locking for Split-Brain Prevention").
-const QuerySelectLeaseInfo = `SELECT lease_id, last_renewed_at, lease_ttl FROM TASK_ATTEMPTS WHERE attempt_id = $1`
+// QueryCheckLeaseValid validates both the fence token and expiry against the DB clock.
+// This keeps commit/renew/fail lease checks aligned with stale-task reaping.
+const QueryCheckLeaseValid = `
+	SELECT lease_id = $2
+	   AND last_renewed_at + lease_ttl * INTERVAL '1 second' >= NOW() AS lease_valid
+	FROM TASK_ATTEMPTS
+	WHERE attempt_id = $1`
 
 // QueryRenewLease updates the heartbeat timestamp, extending the lease TTL window.
-const QueryRenewLease = `UPDATE TASK_ATTEMPTS SET last_renewed_at = $1 WHERE attempt_id = $2`
+const QueryRenewLease = `UPDATE TASK_ATTEMPTS SET last_renewed_at = NOW() WHERE attempt_id = $1`
 
 // ---------------------------------------------------------------------------
 // Failure and recovery queries
@@ -116,7 +119,7 @@ const QueryCountAttemptsByTask = `SELECT COUNT(*) FROM TASK_ATTEMPTS WHERE task_
 const QueryUpdateTaskStatus = `UPDATE TASKS SET status = $1, current_attempt_id = NULL WHERE task_id = $2`
 
 // QueryFailAttempt marks an attempt as Failed with an end timestamp.
-const QueryFailAttempt = `UPDATE TASK_ATTEMPTS SET status = 'Failed', end_time = $1 WHERE attempt_id = $2`
+const QueryFailAttempt = `UPDATE TASK_ATTEMPTS SET status = 'Failed', end_time = NOW() WHERE attempt_id = $1`
 
 // QuerySelectStaleTasks finds in-progress tasks whose lease has expired.
 // The Manager's Active Reaper uses this to reclaim zombie workers (Section 5.1).
