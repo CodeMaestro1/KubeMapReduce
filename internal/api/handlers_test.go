@@ -408,6 +408,26 @@ func TestHandleAdminCreateUser_NilClientUnavailable(t *testing.T) {
 	if rec.Code != http.StatusServiceUnavailable {
 		t.Fatalf("expected %d, got %d", http.StatusServiceUnavailable, rec.Code)
 	}
+	if !strings.Contains(rec.Body.String(), "authentication admin client not configured") {
+		t.Fatalf("expected explicit admin client unavailable message, got %q", rec.Body.String())
+	}
+}
+
+func TestHandleAdminDeleteUser_NilClientUnavailable(t *testing.T) {
+	h := newTestHandlers() // nil adminClient
+
+	req := httptest.NewRequest(http.MethodDelete, "/admin/users/alice", nil)
+	req.SetPathValue("username", "alice")
+	rec := httptest.NewRecorder()
+
+	h.HandleAdminDeleteUser(rec, req)
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected %d, got %d", http.StatusServiceUnavailable, rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "authentication admin client not configured") {
+		t.Fatalf("expected explicit admin client unavailable message, got %q", rec.Body.String())
+	}
 }
 
 func TestHandleAdminCreateUser_KeycloakDown_Returns503(t *testing.T) {
