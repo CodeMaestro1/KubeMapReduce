@@ -424,12 +424,7 @@ func (h *Handlers) HandleAdminDeleteUser(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	if err := httputil.WriteJSON(w, http.StatusOK, map[string]string{
-		"status":   "deleted",
-		"username": username,
-	}); err != nil {
-		return
-	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // isAuthDependencyError reports whether the error indicates the authentication
