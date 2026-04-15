@@ -663,7 +663,7 @@ func TestScheduler_CompleteTask_NoMutation(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	// Mutate the original slices. Since the task stores a deep copy locally or in the DB, 
+	// Mutate the original slices. Since the task stores a deep copy locally or in the DB,
 	// this shouldn't affect anything, but the test fulfills criteria 3 explicitly
 	origURIs[0] = "mutated-uri"
 	origChecksums[0] = "mutated-hash"
