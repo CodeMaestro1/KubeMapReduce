@@ -23,7 +23,7 @@ func requireAdminRole(accessToken string) {
 		log.Fatalf("failed to read token: %v", err)
 	}
 
-	if hasRealmRole(claims, "ADMIN") {
+	if hasAdminRole(claims) {
 		return
 	}
 

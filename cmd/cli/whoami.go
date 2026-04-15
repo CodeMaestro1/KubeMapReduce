@@ -125,10 +125,19 @@ func extractRealmRoles(claims map[string]any) []string {
 }
 
 func hasRealmRole(claims map[string]any, role string) bool {
+	targetRole := strings.TrimSpace(role)
+	if targetRole == "" {
+		return false
+	}
+
 	for _, r := range extractRealmRoles(claims) {
-		if r == role {
+		if strings.EqualFold(strings.TrimSpace(r), targetRole) {
 			return true
 		}
 	}
 	return false
+}
+
+func hasAdminRole(claims map[string]any) bool {
+	return hasRealmRole(claims, "ADMIN")
 }
