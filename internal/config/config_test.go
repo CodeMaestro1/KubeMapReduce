@@ -146,12 +146,15 @@ func TestLoad_MissingAdminUsernameFails(t *testing.T) {
 	t.Setenv("KEYCLOAK_ADMIN_USERNAME", "")
 	t.Setenv("KEYCLOAK_ADMIN_PASSWORD", "secret")
 
-	_, err := Load()
-	if err == nil {
-		t.Fatal("expected error when KEYCLOAK_ADMIN_USERNAME is missing")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() returned error: %v", err)
 	}
-	if err.Error() != "KEYCLOAK_ADMIN_USERNAME is required" {
-		t.Fatalf("unexpected error: %v", err)
+	if cfg.AdminUsername != "" {
+		t.Fatalf("expected empty AdminUsername when KEYCLOAK_ADMIN_USERNAME is missing, got %q", cfg.AdminUsername)
+	}
+	if cfg.AdminPassword != "secret" {
+		t.Fatalf("expected AdminPassword to remain set, got %q", cfg.AdminPassword)
 	}
 }
 
@@ -159,11 +162,27 @@ func TestLoad_MissingAdminPasswordFails(t *testing.T) {
 	t.Setenv("KEYCLOAK_ADMIN_USERNAME", "admin")
 	t.Setenv("KEYCLOAK_ADMIN_PASSWORD", "")
 
-	_, err := Load()
-	if err == nil {
-		t.Fatal("expected error when KEYCLOAK_ADMIN_PASSWORD is missing")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() returned error: %v", err)
 	}
-	if err.Error() != "KEYCLOAK_ADMIN_PASSWORD is required" {
-		t.Fatalf("unexpected error: %v", err)
+	if cfg.AdminUsername != "admin" {
+		t.Fatalf("expected AdminUsername to remain set, got %q", cfg.AdminUsername)
+	}
+	if cfg.AdminPassword != "" {
+		t.Fatalf("expected empty AdminPassword when KEYCLOAK_ADMIN_PASSWORD is missing, got %q", cfg.AdminPassword)
+	}
+}
+
+func TestLoad_MissingBothAdminCredentialsDoesNotFail(t *testing.T) {
+	t.Setenv("KEYCLOAK_ADMIN_USERNAME", "")
+	t.Setenv("KEYCLOAK_ADMIN_PASSWORD", "")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() returned error: %v", err)
+	}
+	if cfg.AdminUsername != "" || cfg.AdminPassword != "" {
+		t.Fatalf("expected empty admin credentials, got username=%q password=%q", cfg.AdminUsername, cfg.AdminPassword)
 	}
 }

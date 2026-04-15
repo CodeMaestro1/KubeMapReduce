@@ -32,12 +32,17 @@ func main() {
 			cfg.JWKSURL, cfg.Issuer, cfg.Audience, err)
 	}
 
-	adminClient := auth.NewKeycloakAdminClient(
-		cfg.KeycloakBaseURL,
-		cfg.Realm,
-		cfg.AdminUsername,
-		cfg.AdminPassword,
-	)
+	var adminClient *auth.KeycloakAdminClient
+	if cfg.AdminUsername != "" && cfg.AdminPassword != "" {
+		adminClient = auth.NewKeycloakAdminClient(
+			cfg.KeycloakBaseURL,
+			cfg.Realm,
+			cfg.AdminUsername,
+			cfg.AdminPassword,
+		)
+	} else {
+		log.Printf("admin credentials not configured; /admin/* endpoints will return %d", http.StatusServiceUnavailable)
+	}
 
 	handlers := api.NewHandlers(adminClient)
 
