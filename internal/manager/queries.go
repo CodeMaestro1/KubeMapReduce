@@ -17,24 +17,24 @@ const QueryCountRunningAttempts = `SELECT COUNT(*) FROM TASK_ATTEMPTS WHERE stat
 
 // QueryCountFailedTasks checks if any task in the job has reached the Failed state.
 // A non-zero result means the job is irrecoverable and GetNextTask returns ErrJobFailed.
-const QueryCountFailedTasks = `SELECT COUNT(*) FROM TASKS WHERE status = 'Failed'`
+const QueryCountFailedTasks = `SELECT COUNT(*) FROM TASKS WHERE job_id = $1 AND status = 'Failed'`
 
 // QuerySelectIdleTask atomically locks and retrieves the next schedulable task.
 // Uses PostgreSQL's FOR UPDATE SKIP LOCKED to prevent double-scheduling across
 // concurrent Manager replicas (Section 5.2: "Concurrency Control via Row-Level Locking").
 const QuerySelectIdleTask = `
 	SELECT task_id, job_id, task_type FROM TASKS
-	WHERE status = 'Idle' AND replica_index = $1 AND task_type = $2
+	WHERE job_id = $1 AND status = 'Idle' AND replica_index = $2 AND task_type = $3
 	FOR UPDATE SKIP LOCKED LIMIT 1`
 
 // QueryCountPendingTasksByType counts non-completed tasks of a given type.
 // Used to determine whether the Map phase is fully finished before allowing
 // the scheduler to transition into the Reduce phase.
-const QueryCountPendingTasksByType = `SELECT COUNT(*) FROM TASKS WHERE task_type = $1 AND status != 'Completed'`
+const QueryCountPendingTasksByType = `SELECT COUNT(*) FROM TASKS WHERE job_id = $1 AND task_type = $2 AND status != 'Completed'`
 
 // QueryCountAllPendingTasks counts all non-completed tasks regardless of type.
 // Returns 0 when every map AND reduce task has completed (job is done).
-const QueryCountAllPendingTasks = `SELECT COUNT(*) FROM TASKS WHERE status != 'Completed'`
+const QueryCountAllPendingTasks = `SELECT COUNT(*) FROM TASKS WHERE job_id = $1 AND status != 'Completed'`
 
 // ---------------------------------------------------------------------------
 // Task state mutation queries
@@ -49,6 +49,21 @@ const QueryUpdateTaskInProgress = `UPDATE TASKS SET status = 'In-Progress', curr
 const QueryInsertAttempt = `
 	INSERT INTO TASK_ATTEMPTS (attempt_id, task_id, worker_id, lease_id, last_renewed_at, lease_ttl, start_time, status)
 	VALUES ($1, $2, $3, $4, $5, 30, $6, 'Running')`
+
+// QueryGetJobConfigByTask loads immutable job configuration needed to build
+// a worker-facing task assignment.
+const QueryGetJobConfigByTask = `
+	SELECT jc.mapper_uri, jc.reducer_uri, jc.combiner_uri, jc.r_tasks, jc.input_checksum
+	FROM JOB_CONFIGS jc
+	JOIN TASKS t ON t.job_id = jc.job_id
+	WHERE t.task_id = $1`
+
+// QueryGetTaskInputs loads all logical input splits assigned to a task.
+const QueryGetTaskInputs = `
+	SELECT input_uri, byte_start, byte_end, split_checksum
+	FROM TASK_INPUTS
+	WHERE task_id = $1
+	ORDER BY input_assignment_id`
 
 // QuerySelectTaskForUpdate locks a task row for safe state transition.
 // Used by CompleteTask, FailTask, and RenewLease to enforce serializable access.
@@ -108,14 +123,14 @@ const QuerySelectStaleTasks = `
 const QueryGetMapOutputs = `
 	SELECT o.output_uri FROM TASK_OUTPUTS o
 	JOIN TASKS t ON o.task_id = t.task_id
-	WHERE t.task_type = 'Map' AND t.status = 'Completed'`
+	WHERE t.job_id = $1 AND t.task_type = 'Map' AND t.status = 'Completed'`
 
 // QueryGetReduceOutputs collects output URIs from all completed Reduce tasks.
 // Used by the Manager to build the final result set for the Retrieve Result flow.
 const QueryGetReduceOutputs = `
 	SELECT o.output_uri FROM TASK_OUTPUTS o
 	JOIN TASKS t ON o.task_id = t.task_id
-	WHERE t.task_type = 'Reduce' AND t.status = 'Completed'`
+	WHERE t.job_id = $1 AND t.task_type = 'Reduce' AND t.status = 'Completed'`
 
 // ---------------------------------------------------------------------------
 // Read-only status queries
@@ -126,7 +141,7 @@ const QueryGetReduceOutputs = `
 const QueryGetTaskStatus = `SELECT status FROM TASKS WHERE task_id = $1`
 
 // QueryGetTaskByID retrieves full task metadata including the current attempt binding.
-const QueryGetTaskByID = `SELECT task_id, task_type, status, current_attempt_id FROM TASKS WHERE task_id = $1`
+const QueryGetTaskByID = `SELECT task_id, job_id, task_type, status, current_attempt_id, replica_index FROM TASKS WHERE task_id = $1`
 
 // QueryGetAttemptDetails fetches worker and lease info for an active attempt.
 // Used by GetTaskByID to hydrate the full Task struct when an attempt is active.
@@ -134,4 +149,4 @@ const QueryGetAttemptDetails = `SELECT worker_id, lease_id, start_time, last_ren
 
 // QueryCountPendingMapTasks counts Map tasks that haven't reached Completed.
 // Used by AllMapTasksCompleted to determine Map→Reduce phase transition readiness.
-const QueryCountPendingMapTasks = `SELECT COUNT(*) FROM TASKS WHERE task_type = 'Map' AND status != 'Completed'`
+const QueryCountPendingMapTasks = `SELECT COUNT(*) FROM TASKS WHERE job_id = $1 AND task_type = 'Map' AND status != 'Completed'`
