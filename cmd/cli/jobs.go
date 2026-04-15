@@ -112,6 +112,7 @@ func cmdJobsSubmit(args []string) {
 	defer resp.Body.Close()
 
 	printResponse(resp)
+	fmt.Println("\nNote: this submits job metadata only. No file data is transferred to the server.")
 }
 
 // ── jobs list ──────────────────────────────────────────────
