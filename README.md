@@ -235,6 +235,12 @@ Some HTTP clients and proxies do not fully support bodies on `DELETE` requests, 
 
 All protected endpoints require a Bearer token from Keycloak.
 
+## Known Limitations
+
+- **In-memory job store (temporary):** Job data is held in memory only.
+  All jobs are lost on server restart, and job visibility is not shared across
+  multiple API replicas. A persistent store will replace this in a future release.
+
 ## Common Issues
 
 - JWKS `404` on startup: realm/client missing or wrong realm settings.
