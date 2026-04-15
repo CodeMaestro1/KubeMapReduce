@@ -179,7 +179,7 @@ func (h *Handlers) HandleJobsGet(w http.ResponseWriter, r *http.Request) {
 
 	h.cleanupJobsStore()
 
-	jobID := strings.TrimPrefix(r.URL.Path, "/jobs/")
+	jobID := r.PathValue("job_id")
 	if jobID == "" {
 		http.Error(w, "job id required", http.StatusBadRequest)
 		return
@@ -199,8 +199,7 @@ func (h *Handlers) HandleJobsGet(w http.ResponseWriter, r *http.Request) {
 func (h *Handlers) HandleJobsDownload(w http.ResponseWriter, r *http.Request) {
 	h.cleanupJobsStore()
 
-	jobID := strings.TrimPrefix(r.URL.Path, "/jobs/")
-	jobID = strings.TrimSuffix(jobID, "/results")
+	jobID := r.PathValue("job_id")
 	if jobID == "" {
 		http.Error(w, "job id required", http.StatusBadRequest)
 		return
