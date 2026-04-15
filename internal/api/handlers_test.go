@@ -383,14 +383,11 @@ func TestHandleAdminDeleteUser_AcceptsPathUsername(t *testing.T) {
 	rec := httptest.NewRecorder()
 	h.HandleAdminDeleteUser(rec, req)
 
-	if rec.Code != http.StatusOK {
-		t.Fatalf("expected %d, got %d: %s", http.StatusOK, rec.Code, rec.Body.String())
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("expected %d, got %d: %s", http.StatusNoContent, rec.Code, rec.Body.String())
 	}
-	if !strings.Contains(rec.Body.String(), `"status":"deleted"`) {
-		t.Fatalf("expected deleted status in body, got %q", rec.Body.String())
-	}
-	if !strings.Contains(rec.Body.String(), `"username":"alice"`) {
-		t.Fatalf("expected username in body, got %q", rec.Body.String())
+	if rec.Body.Len() != 0 {
+		t.Fatalf("expected empty body for 204, got %q", rec.Body.String())
 	}
 }
 
