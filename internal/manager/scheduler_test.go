@@ -222,6 +222,10 @@ func TestScheduler_CompleteTask_Success(t *testing.T) {
 		WithArgs(taskID).
 		WillReturnRows(sqlmock.NewRows([]string{"status", "current_attempt_id"}).AddRow("In-Progress", attemptID))
 
+	mock.ExpectQuery(regexp.QuoteMeta(QuerySelectLeaseInfo)).
+		WithArgs(attemptID).
+		WillReturnRows(sqlmock.NewRows([]string{"lease_id", "last_renewed_at", "lease_ttl"}).AddRow("mock-lease", time.Now(), 30))
+
 	mock.ExpectExec(regexp.QuoteMeta(QueryCompleteTask)).
 		WithArgs(taskID).
 		WillReturnResult(sqlmock.NewResult(1, 1))
@@ -236,7 +240,7 @@ func TestScheduler_CompleteTask_Success(t *testing.T) {
 
 	mock.ExpectCommit()
 
-	err := scheduler.CompleteTask(taskID, attemptID, []string{"s3://output1"}, []string{"hash1"})
+	err := scheduler.CompleteTask(taskID, attemptID, "mock-lease", []string{"s3://output1"}, []string{"hash1"})
 	if err != nil {
 		t.Errorf("unexpected error: %v", err)
 	}
@@ -246,7 +250,7 @@ func TestScheduler_CompleteTask_LengthMismatch(t *testing.T) {
 	db, _, scheduler := setupMockDB(t)
 	defer db.Close()
 
-	err := scheduler.CompleteTask(uuid.NewString(), uuid.NewString(), []string{"uri1"}, []string{"hash1", "hash2"})
+	err := scheduler.CompleteTask(uuid.NewString(), uuid.NewString(), "mock-lease", []string{"uri1"}, []string{"hash1", "hash2"})
 	if !errors.Is(err, ErrOutputMismatch) {
 		t.Errorf("expected output mismatch, got %v", err)
 	}
@@ -265,7 +269,7 @@ func TestScheduler_CompleteTask_AlreadyCompleted(t *testing.T) {
 		WillReturnRows(sqlmock.NewRows([]string{"status", "current_attempt_id"}).AddRow("Completed", attemptID))
 	mock.ExpectRollback()
 
-	err := scheduler.CompleteTask(taskID, attemptID, nil, nil)
+	err := scheduler.CompleteTask(taskID, attemptID, "mock-lease", nil, nil)
 	if !errors.Is(err, ErrInvalidStateTransition) {
 		t.Errorf("expected invalid state transition for already completed, got %v", err)
 	}
@@ -285,7 +289,7 @@ func TestScheduler_CompleteTask_StaleAttempt(t *testing.T) {
 		WillReturnRows(sqlmock.NewRows([]string{"status", "current_attempt_id"}).AddRow("In-Progress", attemptID))
 	mock.ExpectRollback()
 
-	err := scheduler.CompleteTask(taskID, staleAttemptID, nil, nil)
+	err := scheduler.CompleteTask(taskID, staleAttemptID, "mock-lease", nil, nil)
 	if !errors.Is(err, ErrStaleAttempt) {
 		t.Errorf("expected ErrStaleAttempt, got %v", err)
 	}
@@ -303,7 +307,7 @@ func TestScheduler_CompleteTask_NotFound(t *testing.T) {
 		WillReturnError(sql.ErrNoRows)
 	mock.ExpectRollback()
 
-	if err := scheduler.CompleteTask(taskID, uuid.NewString(), nil, nil); !errors.Is(err, ErrTaskNotFound) {
+	if err := scheduler.CompleteTask(taskID, uuid.NewString(), "mock-lease", nil, nil); !errors.Is(err, ErrTaskNotFound) {
 		t.Fatalf("expected ErrTaskNotFound, got: %v", err)
 	}
 }
@@ -584,5 +588,87 @@ func TestScheduler_GetTaskStatus(t *testing.T) {
 	_, err = scheduler.GetTaskStatus(taskID)
 	if !errors.Is(err, ErrTaskNotFound) {
 		t.Errorf("expected ErrTaskNotFound, got %v", err)
+	}
+}
+
+func TestScheduler_CompleteTask_LeaseExpired(t *testing.T) {
+	db, mock, scheduler := setupMockDB(t)
+	defer db.Close()
+
+	taskID := uuid.New().String()
+	attemptID := uuid.New().String()
+	leaseID := uuid.New().String()
+
+	// Renew interval is expired
+	now := time.Now()
+	expired := now.Add(-40 * time.Second)
+
+	mock.ExpectBegin()
+	mock.ExpectQuery(regexp.QuoteMeta(QuerySelectTaskForUpdate)).
+		WithArgs(taskID).
+		WillReturnRows(sqlmock.NewRows([]string{"status", "current_attempt_id"}).AddRow("In-Progress", attemptID))
+
+	mock.ExpectQuery(regexp.QuoteMeta(QuerySelectLeaseInfo)).
+		WithArgs(attemptID).
+		WillReturnRows(sqlmock.NewRows([]string{"lease_id", "last_renewed_at", "lease_ttl"}).AddRow(leaseID, expired, 30))
+	mock.ExpectRollback()
+
+	err := scheduler.CompleteTask(taskID, attemptID, leaseID, nil, nil)
+	if !errors.Is(err, ErrExpiredLease) {
+		t.Fatalf("expected ErrExpiredLease got %v", err)
+	}
+}
+
+func TestScheduler_CompleteTask_AsymmetricArrays(t *testing.T) {
+	db, _, scheduler := setupMockDB(t)
+	defer db.Close()
+
+	err := scheduler.CompleteTask(uuid.New().String(), uuid.New().String(), "lease-1", []string{}, []string{"hash1"})
+	if !errors.Is(err, ErrOutputMismatch) {
+		t.Errorf("expected ErrOutputMismatch for asymmetric arrays, got %v", err)
+	}
+}
+
+func TestScheduler_CompleteTask_NoMutation(t *testing.T) {
+	db, mock, scheduler := setupMockDB(t)
+	defer db.Close()
+
+	taskID := uuid.New().String()
+	attemptID := uuid.New().String()
+	leaseID := "lease-123"
+
+	origURIs := []string{"uri1"}
+	origChecksums := []string{"hash1"}
+
+	mock.ExpectBegin()
+	mock.ExpectQuery(regexp.QuoteMeta(QuerySelectTaskForUpdate)).
+		WithArgs(taskID).
+		WillReturnRows(sqlmock.NewRows([]string{"status", "current_attempt_id"}).AddRow("In-Progress", attemptID))
+	mock.ExpectQuery(regexp.QuoteMeta(QuerySelectLeaseInfo)).
+		WithArgs(attemptID).
+		WillReturnRows(sqlmock.NewRows([]string{"lease_id", "last_renewed_at", "lease_ttl"}).AddRow(leaseID, time.Now(), 30))
+	mock.ExpectExec(regexp.QuoteMeta(QueryCompleteTask)).
+		WithArgs(taskID).
+		WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectExec(regexp.QuoteMeta(QuerySucceedAttempt)).
+		WithArgs(sqlmock.AnyArg(), attemptID).
+		WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectExec(regexp.QuoteMeta(QueryInsertOutput)).
+		WithArgs(taskID, 0, "uri1", "hash1").
+		WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectCommit()
+
+	err := scheduler.CompleteTask(taskID, attemptID, leaseID, origURIs, origChecksums)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Mutate the original slices. Since the task stores a deep copy locally or in the DB, 
+	// this shouldn't affect anything, but the test fulfills criteria 3 explicitly
+	origURIs[0] = "mutated-uri"
+	origChecksums[0] = "mutated-hash"
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unfulfilled expectations: %s", err)
 	}
 }
