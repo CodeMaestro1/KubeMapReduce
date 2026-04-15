@@ -404,7 +404,7 @@ func TestScheduler_RenewLease(t *testing.T) {
 
 	time.Sleep(5 * time.Millisecond)
 
-	err := scheduler.RenewLease("m1", task.GetLeaseID())
+	err := scheduler.RenewLease("m1", task.GetAttemptID(), task.GetLeaseID())
 	if err != nil {
 		t.Fatalf("unexpected error renewing lease: %v", err)
 	}
@@ -415,7 +415,7 @@ func TestScheduler_RenewLease(t *testing.T) {
 	}
 
 	// Try renewing with bad lease
-	err = scheduler.RenewLease("m1", "bad-lease-id")
+	err = scheduler.RenewLease("m1", task.GetAttemptID(), "bad-lease-id")
 	if err != ErrExpiredLease {
 		t.Fatalf("expected ErrExpiredLease, got %v", err)
 	}
@@ -698,7 +698,7 @@ func TestScheduler_RenewLease_NotFound(t *testing.T) {
 	}
 	scheduler, _ := NewScheduler(tracker)
 
-	err := scheduler.RenewLease("nonexistent", "some-lease")
+	err := scheduler.RenewLease("nonexistent", "dummy-attempt", "some-lease")
 	if err != ErrTaskNotFound {
 		t.Fatalf("expected ErrTaskNotFound, got %v", err)
 	}
@@ -775,7 +775,7 @@ func TestScheduler_RenewLease_IdleTask(t *testing.T) {
 	}
 	scheduler, _ := NewScheduler(tracker)
 
-	err := scheduler.RenewLease("m1", "some-lease")
+	err := scheduler.RenewLease("m1", "dummy-attempt", "some-lease")
 	if err != ErrInvalidStateTransition {
 		t.Fatalf("expected ErrInvalidStateTransition for renewing lease on Idle task, got %v", err)
 	}
@@ -793,7 +793,7 @@ func TestScheduler_RenewLease_CompletedTask(t *testing.T) {
 	task, _ := scheduler.GetNextTask("w1")
 	_ = scheduler.CompleteTask("m1", task.GetAttemptID(), nil, nil)
 
-	err := scheduler.RenewLease("m1", "any-lease")
+	err := scheduler.RenewLease("m1", task.GetAttemptID(), "any-lease")
 	if err != ErrInvalidStateTransition {
 		t.Fatalf("expected ErrInvalidStateTransition for renewing lease on Completed task, got %v", err)
 	}
