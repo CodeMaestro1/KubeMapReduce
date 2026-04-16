@@ -187,3 +187,154 @@ func TestSafeJobResultFilename_DefaultsOnEmptyInput(t *testing.T) {
 		t.Fatalf("safeJobResultFilename() = %q, want %q", got, want)
 	}
 }
+
+// ── cmdJobsList tests ──────────────────────────────────────
+
+// saveAndRestoreJobsList saves the current jobsList function vars and restores
+// them when the returned function is called.
+func saveAndRestoreJobsList(t *testing.T) {
+	t.Helper()
+	origGetToken := jobsListGetValidToken
+	origDoReq := jobsListDoAuthRequestExpect
+	origExit := jobsListExit
+	t.Cleanup(func() {
+		jobsListGetValidToken = origGetToken
+		jobsListDoAuthRequestExpect = origDoReq
+		jobsListExit = origExit
+	})
+}
+
+func TestCmdJobsList_UnexpectedSchema_ExitsNonZero(t *testing.T) {
+	saveAndRestoreJobsList(t)
+
+	jobsListGetValidToken = func() (string, string) {
+		return "tok", "http://test"
+	}
+	jobsListDoAuthRequestExpect = func(method, reqURL, token string, body []byte, expectedStatus int, failPrefix string) *http.Response {
+		// Return a valid HTTP 200 but with a non-array JSON body.
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body:       io.NopCloser(bytes.NewBufferString(`{"unexpected":"object"}`)),
+		}
+	}
+	jobsListExit = func(code int) {
+		panic(testExit{code: code})
+	}
+
+	// Capture stderr for diagnostic message.
+	origStderr := os.Stderr
+	r, w, _ := os.Pipe()
+	os.Stderr = w
+	defer func() { os.Stderr = origStderr }()
+
+	func() {
+		defer func() {
+			rec := recover()
+			if rec == nil {
+				t.Fatal("expected non-zero exit on unexpected schema")
+			}
+			exitErr, ok := rec.(testExit)
+			if !ok {
+				t.Fatalf("expected testExit panic, got %T: %v", rec, rec)
+			}
+			if exitErr.code != 1 {
+				t.Fatalf("expected exit code 1, got %d", exitErr.code)
+			}
+		}()
+		cmdJobsList()
+	}()
+
+	_ = w.Close()
+	stderrBytes, _ := io.ReadAll(r)
+	stderr := string(stderrBytes)
+	if !strings.Contains(stderr, "unexpected response schema") {
+		t.Fatalf("expected diagnostic message in stderr, got %q", stderr)
+	}
+	if !strings.Contains(stderr, "raw response") {
+		t.Fatalf("expected raw response in stderr, got %q", stderr)
+	}
+}
+
+func TestCmdJobsList_InvalidJSON_ExitsNonZero(t *testing.T) {
+	saveAndRestoreJobsList(t)
+
+	jobsListGetValidToken = func() (string, string) {
+		return "tok", "http://test"
+	}
+	jobsListDoAuthRequestExpect = func(method, reqURL, token string, body []byte, expectedStatus int, failPrefix string) *http.Response {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body:       io.NopCloser(bytes.NewBufferString(`not json at all`)),
+		}
+	}
+	jobsListExit = func(code int) {
+		panic(testExit{code: code})
+	}
+
+	func() {
+		defer func() {
+			rec := recover()
+			if rec == nil {
+				t.Fatal("expected non-zero exit on invalid JSON")
+			}
+			exitErr, ok := rec.(testExit)
+			if !ok {
+				t.Fatalf("expected testExit panic, got %T: %v", rec, rec)
+			}
+			if exitErr.code != 1 {
+				t.Fatalf("expected exit code 1, got %d", exitErr.code)
+			}
+		}()
+		cmdJobsList()
+	}()
+}
+
+func TestCmdJobsList_ValidResponse_ExitsZero(t *testing.T) {
+	saveAndRestoreJobsList(t)
+
+	jobsListGetValidToken = func() (string, string) {
+		return "tok", "http://test"
+	}
+	jobsListDoAuthRequestExpect = func(method, reqURL, token string, body []byte, expectedStatus int, failPrefix string) *http.Response {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body:       io.NopCloser(bytes.NewBufferString(`[{"jobId":"j1","status":"Running","filename":"data.jsonl","createdAt":"2026-04-17T10:00:00Z"}]`)),
+		}
+	}
+
+	exitCalled := false
+	jobsListExit = func(code int) {
+		exitCalled = true
+	}
+
+	cmdJobsList()
+
+	if exitCalled {
+		t.Fatal("expected no exit call for valid response")
+	}
+}
+
+func TestCmdJobsList_EmptyArray_PrintsNoJobs(t *testing.T) {
+	saveAndRestoreJobsList(t)
+
+	jobsListGetValidToken = func() (string, string) {
+		return "tok", "http://test"
+	}
+	jobsListDoAuthRequestExpect = func(method, reqURL, token string, body []byte, expectedStatus int, failPrefix string) *http.Response {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body:       io.NopCloser(bytes.NewBufferString(`[]`)),
+		}
+	}
+
+	exitCalled := false
+	jobsListExit = func(code int) {
+		exitCalled = true
+	}
+
+	cmdJobsList()
+
+	if exitCalled {
+		t.Fatal("expected no exit call for empty jobs array")
+	}
+}

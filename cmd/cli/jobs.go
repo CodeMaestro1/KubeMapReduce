@@ -35,6 +35,10 @@ var jobsSubmitGetValidToken = getValidToken
 var jobsSubmitDoAuthRequestExpect = doAuthRequestExpect
 var jobsSubmitExit = os.Exit
 
+var jobsListGetValidToken = getValidToken
+var jobsListDoAuthRequestExpect = doAuthRequestExpect
+var jobsListExit = os.Exit
+
 func validateReducersCount(reducers int) error {
 	if reducers < 1 {
 		return fmt.Errorf("--reducers must be > 0")
@@ -137,8 +141,8 @@ func cmdJobsSubmit(args []string) {
 // ── jobs list ──────────────────────────────────────────────
 
 func cmdJobsList() {
-	token, serverURL := getValidToken()
-	resp := doAuthRequestExpect(
+	token, serverURL := jobsListGetValidToken()
+	resp := jobsListDoAuthRequestExpect(
 		http.MethodGet,
 		serverURL+"/jobs",
 		token,
@@ -160,7 +164,9 @@ func cmdJobsList() {
 		CreatedAt time.Time `json:"createdAt"`
 	}
 	if err := json.Unmarshal(body, &jobs); err != nil {
-		fmt.Print(string(body))
+		fmt.Fprintf(os.Stderr, "error: unexpected response schema: %v\n", err)
+		fmt.Fprintf(os.Stderr, "raw response: %s\n", string(body))
+		jobsListExit(1)
 		return
 	}
 
