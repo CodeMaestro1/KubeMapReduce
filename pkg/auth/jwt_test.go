@@ -89,7 +89,7 @@ func TestMiddleware_InvalidToken_ReturnsGenericError(t *testing.T) {
 	}))
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
-	req.Header.Set("Authorization", "Bearer invalid-token")
+	req.Header.Set("Authorization", "Bearer e30.e30.invalid")
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 
