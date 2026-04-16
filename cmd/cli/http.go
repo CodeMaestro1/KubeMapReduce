@@ -33,6 +33,9 @@ func keycloakClientID() string { return getEnv("KEYCLOAK_AUDIENCE", "mapreduce-a
 const cliRequestTimeout = 30 * time.Second
 
 var cliHTTPClient = &http.Client{Timeout: cliRequestTimeout}
+var loadStoredTokens = auth.LoadTokens
+var saveStoredTokens = auth.SaveTokens
+var refreshStoredTokens = auth.RefreshTokensWithContext
 
 func cliRequestContext() (context.Context, context.CancelFunc) {
 	return context.WithTimeout(context.Background(), cliRequestTimeout)
@@ -40,21 +43,44 @@ func cliRequestContext() (context.Context, context.CancelFunc) {
 
 // ── token management ───────────────────────────────────────
 
+// resolveServerURL returns a deterministic API base URL.
+// Precedence: stored credentials server_url, then API_URL env/default.
+func resolveServerURL(tokens *auth.StoredTokens) (string, bool) {
+	if tokens == nil {
+		return apiURL(), false
+	}
+
+	storedServerURL := strings.TrimSpace(tokens.ServerURL)
+	if storedServerURL != "" {
+		return storedServerURL, false
+	}
+
+	tokens.ServerURL = apiURL()
+	return tokens.ServerURL, true
+}
+
 func getValidToken() (token string, serverURL string) {
-	tokens, err := auth.LoadTokens()
+	tokens, err := loadStoredTokens()
 	if err != nil {
 		log.Fatalf("%v\nRun 'kubemapreduce login' first.", err)
 	}
 
+	resolvedServerURL, migratedServerURL := resolveServerURL(tokens)
+	if migratedServerURL {
+		if err := saveStoredTokens(tokens); err != nil {
+			log.Printf("warning: failed to persist resolved server_url; continuing with fallback API URL: %v", err)
+		}
+	}
+
 	if !tokens.IsAccessExpired() {
-		return tokens.AccessToken, tokens.ServerURL
+		return tokens.AccessToken, resolvedServerURL
 	}
 
 	// Access token expired — try refreshing with the refresh token.
 	ctx, cancel := cliRequestContext()
 	defer cancel()
 
-	tokenResp, err := auth.RefreshTokensWithContext(
+	tokenResp, err := refreshStoredTokens(
 		ctx,
 		cliHTTPClient,
 		keycloakBaseURL(),
@@ -69,12 +95,13 @@ func getValidToken() (token string, serverURL string) {
 	tokens.AccessToken = tokenResp.AccessToken
 	tokens.RefreshToken = tokenResp.RefreshToken
 	tokens.ExpiresAt = time.Now().Unix() + int64(tokenResp.ExpiresIn)
+	tokens.ServerURL = resolvedServerURL
 
-	if err := auth.SaveTokens(tokens); err != nil {
+	if err := saveStoredTokens(tokens); err != nil {
 		log.Fatalf("failed to update credentials: %v", err)
 	}
 
-	return tokens.AccessToken, tokens.ServerURL
+	return tokens.AccessToken, resolvedServerURL
 }
 
 // ── HTTP helpers ───────────────────────────────────────────

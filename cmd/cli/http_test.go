@@ -7,7 +7,128 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"kubemapreduce/pkg/auth"
 )
+
+func TestResolveServerURL_StoredValueWins(t *testing.T) {
+	tokens := &auth.StoredTokens{ServerURL: "http://stored.example:8081"}
+	resolved, migrated := resolveServerURL(tokens)
+
+	if resolved != "http://stored.example:8081" {
+		t.Fatalf("expected stored server URL to be used, got %q", resolved)
+	}
+	if migrated {
+		t.Fatal("expected no migration when stored server_url exists")
+	}
+}
+
+func TestResolveServerURL_FallsBackToAPIURLForLegacyTokens(t *testing.T) {
+	t.Setenv("API_URL", "http://env.example:9999")
+	tokens := &auth.StoredTokens{}
+	resolved, migrated := resolveServerURL(tokens)
+
+	if resolved != "http://env.example:9999" {
+		t.Fatalf("expected API_URL fallback, got %q", resolved)
+	}
+	if !migrated {
+		t.Fatal("expected migration=true when server_url missing")
+	}
+	if tokens.ServerURL != "http://env.example:9999" {
+		t.Fatalf("expected server_url to be backfilled in tokens, got %q", tokens.ServerURL)
+	}
+}
+
+func TestGetValidToken_LegacyCredentialsFallbackAndPersist(t *testing.T) {
+	originalLoad := loadStoredTokens
+	originalSave := saveStoredTokens
+	originalRefresh := refreshStoredTokens
+	defer func() {
+		loadStoredTokens = originalLoad
+		saveStoredTokens = originalSave
+		refreshStoredTokens = originalRefresh
+	}()
+
+	t.Setenv("API_URL", "http://fallback.example:8081")
+
+	loadStoredTokens = func() (*auth.StoredTokens, error) {
+		return &auth.StoredTokens{
+			AccessToken:  "legacy-access",
+			RefreshToken: "legacy-refresh",
+			ExpiresAt:    time.Now().Unix() + 600,
+			ServerURL:    "",
+		}, nil
+	}
+
+	refreshCalled := false
+	refreshStoredTokens = func(ctx context.Context, client *http.Client, keycloakBaseURL, realm, clientID, refreshToken string) (*auth.OAuthTokenResponse, error) {
+		refreshCalled = true
+		return &auth.OAuthTokenResponse{}, nil
+	}
+
+	saveCalled := false
+	var saved *auth.StoredTokens
+	saveStoredTokens = func(tokens *auth.StoredTokens) error {
+		saveCalled = true
+		snapshot := *tokens
+		saved = &snapshot
+		return nil
+	}
+
+	token, serverURL := getValidToken()
+	if token != "legacy-access" {
+		t.Fatalf("expected existing access token, got %q", token)
+	}
+	if serverURL != "http://fallback.example:8081" {
+		t.Fatalf("expected fallback server URL, got %q", serverURL)
+	}
+	if !saveCalled {
+		t.Fatal("expected migrated server_url to be persisted")
+	}
+	if saved == nil || saved.ServerURL != "http://fallback.example:8081" {
+		t.Fatalf("expected persisted server_url fallback, got %+v", saved)
+	}
+	if refreshCalled {
+		t.Fatal("did not expect refresh for non-expired token")
+	}
+}
+
+func TestGetValidToken_NewCredentialsUseStoredServerURL(t *testing.T) {
+	originalLoad := loadStoredTokens
+	originalSave := saveStoredTokens
+	originalRefresh := refreshStoredTokens
+	defer func() {
+		loadStoredTokens = originalLoad
+		saveStoredTokens = originalSave
+		refreshStoredTokens = originalRefresh
+	}()
+
+	loadStoredTokens = func() (*auth.StoredTokens, error) {
+		return &auth.StoredTokens{
+			AccessToken:  "new-access",
+			RefreshToken: "new-refresh",
+			ExpiresAt:    time.Now().Unix() + 600,
+			ServerURL:    "http://stored.example:8081",
+		}, nil
+	}
+
+	saveCalled := false
+	saveStoredTokens = func(tokens *auth.StoredTokens) error {
+		saveCalled = true
+		return nil
+	}
+
+	token, serverURL := getValidToken()
+	if token != "new-access" {
+		t.Fatalf("expected existing access token, got %q", token)
+	}
+	if serverURL != "http://stored.example:8081" {
+		t.Fatalf("expected stored server URL, got %q", serverURL)
+	}
+	if saveCalled {
+		t.Fatal("did not expect save when server_url already present and token not expired")
+	}
+}
 
 func TestDoAuthRequestWithContext_CanceledContext(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
