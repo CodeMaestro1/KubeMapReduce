@@ -31,6 +31,18 @@ type cliJobPayload struct {
 	Reducers int             `json:"reducers,omitempty"`
 }
 
+var jobsSubmitGetValidToken = getValidToken
+var jobsSubmitDoAuthRequestExpect = doAuthRequestExpect
+var jobsSubmitExit = os.Exit
+
+func validateReducersCount(reducers int) error {
+	if reducers < 1 {
+		return fmt.Errorf("--reducers must be > 0")
+	}
+
+	return nil
+}
+
 func inferLanguage(path string) string {
 	switch strings.ToLower(filepath.Ext(path)) {
 	case ".py":
@@ -67,7 +79,14 @@ func cmdJobsSubmit(args []string) {
 	} else {
 		if *mapperPath == "" || *reducerPath == "" || *inputFile == "" {
 			fmt.Fprintln(os.Stderr, "usage: kubemapreduce jobs submit --mapper <file> --reducer <file> --input <file> [--combiner <file>] [--reducers N]")
-			os.Exit(1)
+			jobsSubmitExit(1)
+			return
+		}
+		if err := validateReducersCount(*numReducers); err != nil {
+			fmt.Fprintln(os.Stderr, "usage: kubemapreduce jobs submit --mapper <file> --reducer <file> --input <file> [--combiner <file>] [--reducers N]")
+			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+			jobsSubmitExit(1)
+			return
 		}
 		payload := cliJobPayload{
 			Filename: filepath.Base(*inputFile),
@@ -100,8 +119,8 @@ func cmdJobsSubmit(args []string) {
 		}
 	}
 
-	token, serverURL := getValidToken()
-	resp := doAuthRequestExpect(
+	token, serverURL := jobsSubmitGetValidToken()
+	resp := jobsSubmitDoAuthRequestExpect(
 		http.MethodPost,
 		serverURL+"/jobs",
 		token,
