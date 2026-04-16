@@ -36,16 +36,20 @@ func main() {
 	promptPassword := flag.Bool("prompt-password", false, "Prompt securely for new user password (input hidden)")
 	role := flag.String("role", "ADMIN", "Role to assign: ADMIN or USER")
 
-	flag.Parse()
+	bootstrapTimeout := flag.Duration("bootstrap-timeout", 60*time.Second, "Timeout for the bootstrap phase")
+	userCreationTimeout := flag.Duration("user-creation-timeout", 30*time.Second, "Timeout for the user creation phase")
 
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-	defer cancel()
+	flag.Parse()
 
 	// --- Step 1: Bootstrap realm, client, roles, audience mapper ---
 	fmt.Println("==> Bootstrapping Keycloak realm...")
-	if err := auth.BootstrapKeycloakWithContext(ctx, cfg, os.Stdout); err != nil {
+	bootstrapCtx, bootstrapCancel := context.WithTimeout(context.Background(), *bootstrapTimeout)
+	defer bootstrapCancel()
+
+	if err := auth.BootstrapKeycloakWithContext(bootstrapCtx, cfg, os.Stdout); err != nil {
 		log.Fatalf("bootstrap failed: %v", err)
 	}
+	bootstrapCancel()
 	fmt.Println("==> Bootstrap completed.")
 
 	// --- Step 2 (optional): Create initial user ---
@@ -81,6 +85,9 @@ func main() {
 
 	fmt.Printf("==> Creating %s user %q...\n", normalizedRole, strings.TrimSpace(*username))
 
+	userCtx, userCancel := context.WithTimeout(context.Background(), *userCreationTimeout)
+	defer userCancel()
+
 	client := auth.NewKeycloakAdminClient(
 		strings.TrimSpace(cfg.BaseURL),
 		strings.TrimSpace(cfg.Realm),
@@ -88,7 +95,7 @@ func main() {
 		strings.TrimSpace(cfg.AdminPassword),
 	)
 
-	if err := client.CreateUser(ctx, auth.CreateUserRequest{
+	if err := client.CreateUser(userCtx, auth.CreateUserRequest{
 		Username: strings.TrimSpace(*username),
 		Email:    strings.TrimSpace(*email),
 		Password: userPassword,
