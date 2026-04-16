@@ -217,6 +217,15 @@ When the access token expires, the CLI silently refreshes it using the refresh
 token. If the refresh token itself has expired, the user is prompted to log in
 again.
 
+For request base URL resolution, the CLI uses deterministic precedence:
+
+1. `server_url` from stored credentials, when present.
+2. `API_URL` environment variable (or `http://localhost:8081` if unset).
+
+Legacy credentials that do not contain `server_url` are supported. The CLI
+falls back to `API_URL` and best-effort persists the resolved value back to
+the credentials file for future runs.
+
 ## API Endpoints
 
 | Method   | Path                      | Auth              | Description                 |
