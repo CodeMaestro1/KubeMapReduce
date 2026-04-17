@@ -22,12 +22,12 @@ func setupMockServer(t *testing.T) (*sql.DB, sqlmock.Sqlmock, *WorkerServer) {
 		t.Fatalf("an error '%s' was not expected when opening a stub database connection", err)
 	}
 
-	scheduler, err := manager.NewScheduler(db, 0, 1, &manager.MockOrchestrator{}, "manager-0:50051")
+	scheduler, err := manager.NewScheduler(db, 0, 1, &manager.MockOrchestrator{}, "manager-0:50051", 30)
 	if err != nil {
 		t.Fatalf("unexpected error creating scheduler: %v", err)
 	}
 
-	return db, mock, NewWorkerServer(scheduler)
+	return db, mock, NewWorkerServer(scheduler, nil)
 }
 
 func TestWorkerServer_Register_Success(t *testing.T) {
