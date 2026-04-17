@@ -92,14 +92,21 @@ func (s *Scheduler) Recover(ctx context.Context) error {
 
 	spawnCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
 	defer cancel()
+	spawnFailures := 0
 	for _, rec := range attemptsToSpawn {
 		if err := s.orchestrator.SpawnWorker(spawnCtx, rec.taskID, rec.attemptID, s.managerAddr); err != nil {
 			log.Printf("Failed to spawn worker for recovered task %s (attempt %s): %v", rec.taskID, rec.attemptID, err)
+			spawnFailures++
 		}
+	}
+	if spawnFailures > 0 {
+		return fmt.Errorf("failed to spawn %d/%d recovered workers", spawnFailures, len(attemptsToSpawn))
 	}
 	return nil
 }
 
+// prepareRetryAttemptTx creates a fresh attempt and lease for a retryable task and
+// atomically rebinds TASKS.current_attempt_id to the new attempt within the same transaction.
 func (s *Scheduler) prepareRetryAttemptTx(ctx context.Context, tx *sql.Tx, taskID string) (string, error) {
 	attemptID := uuid.New()
 	leaseID := uuid.New()
@@ -672,7 +679,7 @@ func (s *Scheduler) FailTask(taskID string, attemptID string, leaseID string, re
 	}
 
 	if newState == "Idle" {
-		spawnCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		spawnCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
 		defer cancel()
 		if err := s.orchestrator.SpawnWorker(spawnCtx, taskID, retryAttemptID, s.managerAddr); err != nil {
 			log.Printf("Failed to respawn worker for failed task %s (attempt %s): %v", taskID, retryAttemptID, err)
@@ -762,7 +769,7 @@ func (s *Scheduler) FailStaleTasks() (int, error) {
 		return 0, err
 	}
 
-	spawnCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	spawnCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
 	defer cancel()
 	for _, rec := range respawnTasks {
 		if err := s.orchestrator.SpawnWorker(spawnCtx, rec.taskID, rec.attemptID, s.managerAddr); err != nil {
