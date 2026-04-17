@@ -11,15 +11,17 @@ type Config struct {
 	JWKSURL         string
 	Issuer          string
 	Audience        string
+	ServerAddr      string
 	AdminUsername   string
 	AdminPassword   string
-	ServerAddr      string
 }
 
-func Load() *Config {
+func Load() (*Config, error) {
 	keycloakBaseURL := getEnv("KEYCLOAK_BASE_URL", "http://localhost:8080")
 	realm := getEnv("KEYCLOAK_REALM", "mapreduce")
 	audience := getEnv("KEYCLOAK_AUDIENCE", "mapreduce-api")
+	adminUsername := strings.TrimSpace(os.Getenv("KEYCLOAK_ADMIN_USERNAME"))
+	adminPassword := strings.TrimSpace(os.Getenv("KEYCLOAK_ADMIN_PASSWORD"))
 
 	return &Config{
 		KeycloakBaseURL: keycloakBaseURL,
@@ -27,10 +29,10 @@ func Load() *Config {
 		JWKSURL:         getEnv("KEYCLOAK_JWKS_URL", keycloakBaseURL+"/realms/"+realm+"/protocol/openid-connect/certs"),
 		Issuer:          getEnv("KEYCLOAK_ISSUER", keycloakBaseURL+"/realms/"+realm),
 		Audience:        audience,
-		AdminUsername:   strings.TrimSpace(os.Getenv("KEYCLOAK_ADMIN_USERNAME")),
-		AdminPassword:   strings.TrimSpace(os.Getenv("KEYCLOAK_ADMIN_PASSWORD")),
 		ServerAddr:      getEnv("SERVER_ADDR", ":8081"),
-	}
+		AdminUsername:   adminUsername,
+		AdminPassword:   adminPassword,
+	}, nil
 }
 
 func getEnv(key string, fallback string) string {

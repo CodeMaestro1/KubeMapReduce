@@ -1,9 +1,8 @@
-// Package auth provides JWT authentication and middleware functions.
 package auth
 
 import (
 	"context"
-	"fmt"
+	"log/slog"
 	"net/http"
 	"strings"
 
@@ -11,6 +10,8 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 )
 
+// contextKey is an unexported type used for context keys in this package,
+// preventing collisions with keys defined in other packages.
 type contextKey string
 
 const claimsKey contextKey = "claims"
@@ -50,13 +51,16 @@ func (v *JWTValidator) Middleware(next http.Handler) http.Handler {
 
 		tokenString := parts[1]
 
-		token, err := jwt.Parse(tokenString, v.jwks.Keyfunc,
+		token, err := jwt.ParseWithClaims(
+			tokenString,
+			jwt.MapClaims{},
+			v.jwks.Keyfunc,
 			jwt.WithIssuer(v.issuer),
 			jwt.WithAudience(v.audience),
-			jwt.WithValidMethods([]string{"RS256"}),
 		)
 		if err != nil {
-			http.Error(w, "invalid token: "+err.Error(), http.StatusUnauthorized)
+			slog.Warn("JWT validation failed", "error", err)
+			http.Error(w, "invalid token", http.StatusUnauthorized)
 			return
 		}
 
@@ -75,87 +79,4 @@ func (v *JWTValidator) Middleware(next http.Handler) http.Handler {
 		ctx := context.WithValue(r.Context(), claimsKey, claims)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
-}
-
-// GetRoles extracts the roles from the JWT claims in the request context.
-func GetRoles(r *http.Request) ([]string, error) {
-	claims, ok := r.Context().Value(claimsKey).(jwt.MapClaims)
-	if !ok {
-		return nil, fmt.Errorf("no claims in context")
-	}
-
-	realmAccess, ok := claims["realm_access"].(map[string]interface{})
-	if !ok {
-		return nil, fmt.Errorf("no realm_access")
-	}
-
-	rawRoles, ok := realmAccess["roles"].([]interface{})
-	if !ok {
-		return nil, fmt.Errorf("no roles")
-	}
-
-	roles := make([]string, len(rawRoles))
-	for i, role := range rawRoles {
-		roles[i] = role.(string)
-	}
-
-	return roles, nil
-}
-
-// RequireRole returns a middleware handler that verifies the user has the specified role.
-// It wraps the provided next handler with JWT validation automatically.
-func RequireRole(role string, validator *JWTValidator, next http.Handler) http.Handler {
-	return validator.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		roles, err := GetRoles(r)
-		if err != nil {
-			http.Error(w, "forbidden: "+err.Error(), http.StatusForbidden)
-			return
-		}
-
-		hasRole := containsRole(roles, role)
-
-		if !hasRole {
-			http.Error(w, "forbidden: required role missing", http.StatusForbidden)
-			return
-		}
-
-		next.ServeHTTP(w, r)
-	}))
-}
-
-// RequireAnyRole returns a middleware handler that verifies the user has at least one
-// of the specified roles. It wraps the provided next handler with JWT validation.
-func RequireAnyRole(requiredRoles []string, validator *JWTValidator, next http.Handler) http.Handler {
-	return validator.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		roles, err := GetRoles(r)
-		if err != nil {
-			http.Error(w, "forbidden: "+err.Error(), http.StatusForbidden)
-			return
-		}
-
-		hasRole := false
-		for _, requiredRole := range requiredRoles {
-			if containsRole(roles, requiredRole) {
-				hasRole = true
-				break
-			}
-		}
-
-		if !hasRole {
-			http.Error(w, "forbidden: required role missing", http.StatusForbidden)
-			return
-		}
-
-		next.ServeHTTP(w, r)
-	}))
-}
-
-func containsRole(roles []string, expected string) bool {
-	for _, role := range roles {
-		if role == expected {
-			return true
-		}
-	}
-
-	return false
 }

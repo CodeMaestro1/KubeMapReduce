@@ -1,0 +1,135 @@
+package auth
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"net/url"
+	"strings"
+	"time"
+)
+
+const DefaultOAuthHTTPTimeout = 30 * time.Second
+
+var defaultOAuthHTTPClient = &http.Client{Timeout: DefaultOAuthHTTPTimeout}
+
+// OAuthTokenResponse represents the token endpoint response from Keycloak.
+type OAuthTokenResponse struct {
+	AccessToken  string `json:"access_token"`
+	RefreshToken string `json:"refresh_token"`
+	ExpiresIn    int    `json:"expires_in"`
+	TokenType    string `json:"token_type"`
+}
+
+// RequestTokens authenticates a user via the Resource Owner Password
+// Credentials grant and returns an access token + refresh token pair.
+func RequestTokens(keycloakBaseURL, realm, clientID, username, password string) (*OAuthTokenResponse, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), DefaultOAuthHTTPTimeout)
+	defer cancel()
+
+	return RequestTokensWithContext(ctx, defaultOAuthHTTPClient, keycloakBaseURL, realm, clientID, username, password)
+}
+
+// RequestTokensWithContext authenticates a user via the Resource Owner Password
+// Credentials grant and returns an access token + refresh token pair.
+func RequestTokensWithContext(ctx context.Context, client *http.Client, keycloakBaseURL, realm, clientID, username, password string) (*OAuthTokenResponse, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if client == nil {
+		client = defaultOAuthHTTPClient
+	}
+
+	tokenURL := fmt.Sprintf("%s/realms/%s/protocol/openid-connect/token", keycloakBaseURL, realm)
+
+	form := url.Values{}
+	form.Set("grant_type", "password")
+	form.Set("client_id", clientID)
+	form.Set("username", username)
+	form.Set("password", password)
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, tokenURL, strings.NewReader(form.Encode()))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create authentication request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to contact authentication server: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read response: %w", err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("authentication failed (HTTP %d): %s", resp.StatusCode, string(body))
+	}
+
+	var tokenResp OAuthTokenResponse
+	if err := json.Unmarshal(body, &tokenResp); err != nil {
+		return nil, fmt.Errorf("failed to parse token response: %w", err)
+	}
+
+	return &tokenResp, nil
+}
+
+// RefreshTokens uses a refresh token to obtain a new access/refresh token
+// pair from Keycloak.
+func RefreshTokens(keycloakBaseURL, realm, clientID, refreshToken string) (*OAuthTokenResponse, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), DefaultOAuthHTTPTimeout)
+	defer cancel()
+
+	return RefreshTokensWithContext(ctx, defaultOAuthHTTPClient, keycloakBaseURL, realm, clientID, refreshToken)
+}
+
+// RefreshTokensWithContext uses a refresh token to obtain a new access/refresh
+// token pair from Keycloak.
+func RefreshTokensWithContext(ctx context.Context, client *http.Client, keycloakBaseURL, realm, clientID, refreshToken string) (*OAuthTokenResponse, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if client == nil {
+		client = defaultOAuthHTTPClient
+	}
+
+	tokenURL := fmt.Sprintf("%s/realms/%s/protocol/openid-connect/token", keycloakBaseURL, realm)
+
+	form := url.Values{}
+	form.Set("grant_type", "refresh_token")
+	form.Set("client_id", clientID)
+	form.Set("refresh_token", refreshToken)
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, tokenURL, strings.NewReader(form.Encode()))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create token refresh request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to contact authentication server: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read response: %w", err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("token refresh failed (HTTP %d): %s", resp.StatusCode, string(body))
+	}
+
+	var tokenResp OAuthTokenResponse
+	if err := json.Unmarshal(body, &tokenResp); err != nil {
+		return nil, fmt.Errorf("failed to parse token response: %w", err)
+	}
+
+	return &tokenResp, nil
+}
