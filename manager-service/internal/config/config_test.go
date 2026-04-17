@@ -194,3 +194,26 @@ func TestLoad_MissingBothAdminCredentialsDoesNotFail(t *testing.T) {
 		t.Fatalf("expected empty admin credentials, got username=%q password=%q", cfg.AdminUsername, cfg.AdminPassword)
 	}
 }
+
+func TestLoad_InvalidStatefulSetReplicasReturnsError(t *testing.T) {
+	t.Setenv("STATEFULSET_REPLICAS", "not-a-number")
+
+	_, err := Load()
+	if err == nil {
+		t.Fatal("expected Load to fail for non-numeric STATEFULSET_REPLICAS")
+	}
+}
+
+func TestLoad_ParsesStatefulSetReplicas(t *testing.T) {
+	t.Setenv("STATEFULSET_REPLICAS", "3")
+	t.Setenv("KEYCLOAK_ADMIN_USERNAME", "admin")
+	t.Setenv("KEYCLOAK_ADMIN_PASSWORD", "admin")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("expected Load to succeed, got %v", err)
+	}
+	if cfg.TotalReplicas != 3 {
+		t.Fatalf("expected TotalReplicas=3, got %d", cfg.TotalReplicas)
+	}
+}

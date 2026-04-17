@@ -63,6 +63,19 @@ func TestNewScheduler_NilDB(t *testing.T) {
 	}
 }
 
+func TestNewScheduler_NilOrchestrator(t *testing.T) {
+	db, _, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("failed to create mock DB: %v", err)
+	}
+	defer db.Close()
+
+	_, err = NewScheduler(db, 0, 1, nil, "manager-0:50051")
+	if err == nil {
+		t.Fatalf("expected error when passing nil orchestrator to NewScheduler")
+	}
+}
+
 func TestScheduler_GetNextTask_QuotaExceeded(t *testing.T) {
 	db, mock, scheduler := setupMockDB(t)
 	defer db.Close()
@@ -957,8 +970,16 @@ func TestScheduler_CompleteTask_NoMutation(t *testing.T) {
 }
 
 func TestScheduler_ScheduleJob_PersistsDDSRecords(t *testing.T) {
-	db, mock, scheduler := setupMockDB(t)
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("failed to open mock DB: %v", err)
+	}
 	defer db.Close()
+
+	scheduler, err := NewScheduler(db, 0, 4, &MockOrchestrator{}, "manager-0:50051")
+	if err != nil {
+		t.Fatalf("unexpected error creating scheduler: %v", err)
+	}
 
 	req := ScheduleJobRequest{
 		JobID:         uuid.NewString(),
@@ -974,7 +995,7 @@ func TestScheduler_ScheduleJob_PersistsDDSRecords(t *testing.T) {
 			{
 				TaskID:       uuid.NewString(),
 				TaskType:     "Map",
-				ReplicaIndex: 0,
+				ReplicaIndex: 99,
 				InputSplits: []ScheduleTaskInput{{
 					InputURI:      "s3://inputs/job-1/split-0.jsonl",
 					ByteStart:     0,
@@ -985,9 +1006,13 @@ func TestScheduler_ScheduleJob_PersistsDDSRecords(t *testing.T) {
 			{
 				TaskID:       uuid.NewString(),
 				TaskType:     "Reduce",
-				ReplicaIndex: 0,
+				ReplicaIndex: 3,
 			},
 		},
+	}
+	expectedReplicaIndex, err := ComputeReplicaIndex(req.JobID, 4)
+	if err != nil {
+		t.Fatalf("failed to compute expected replica index: %v", err)
 	}
 
 	mock.ExpectBegin()
@@ -998,13 +1023,13 @@ func TestScheduler_ScheduleJob_PersistsDDSRecords(t *testing.T) {
 		WithArgs(sqlmock.AnyArg(), req.InputURI, req.MapperURI, req.ReducerURI, req.CombinerURI, req.MTasks, req.RTasks, req.InputChecksum).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 	mock.ExpectExec(regexp.QuoteMeta(QueryInsertTask)).
-		WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg(), "Map", 0).
+		WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg(), "Map", expectedReplicaIndex).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 	mock.ExpectExec(regexp.QuoteMeta(QueryInsertTaskInput)).
 		WithArgs(sqlmock.AnyArg(), "s3://inputs/job-1/split-0.jsonl", int64(0), int64(128), "sha256-split-0").
 		WillReturnResult(sqlmock.NewResult(1, 1))
 	mock.ExpectExec(regexp.QuoteMeta(QueryInsertTask)).
-		WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg(), "Reduce", 0).
+		WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg(), "Reduce", 3).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 	mock.ExpectCommit()
 
