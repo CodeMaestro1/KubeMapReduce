@@ -18,7 +18,7 @@ func setupMockDB(t *testing.T) (*sql.DB, sqlmock.Sqlmock, *Scheduler) {
 		t.Fatalf("an error '%s' was not expected when opening a stub database connection", err)
 	}
 
-	scheduler, err := NewScheduler(db, 0)
+	scheduler, err := NewScheduler(db, 0, 1, &MockOrchestrator{}, "manager-0:50051")
 	if err != nil {
 		t.Fatalf("unexpected error creating scheduler: %v", err)
 	}
@@ -57,7 +57,7 @@ func expectReduceTaskMetadataQueries(mock sqlmock.Sqlmock, taskID uuid.UUID, map
 }
 
 func TestNewScheduler_NilDB(t *testing.T) {
-	_, err := NewScheduler(nil, 0)
+	_, err := NewScheduler(nil, 0, 1, &MockOrchestrator{}, "manager-0:50051")
 	if err == nil {
 		t.Fatalf("expected error when passing nil DB to NewScheduler")
 	}

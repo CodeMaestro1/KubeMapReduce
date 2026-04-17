@@ -29,8 +29,11 @@ var (
 )
 
 type Scheduler struct {
-	db           *sql.DB
-	replicaIndex int
+	db            *sql.DB
+	replicaIndex  int
+	totalReplicas int
+	orchestrator  WorkerOrchestrator
+	managerAddr   string
 }
 
 type taskMetadataQuerier interface {
@@ -38,13 +41,22 @@ type taskMetadataQuerier interface {
 	QueryRowContext(context.Context, string, ...any) *sql.Row
 }
 
-func NewScheduler(db *sql.DB, replicaIndex int) (*Scheduler, error) {
+func NewScheduler(db *sql.DB, replicaIndex int, totalReplicas int, orchestrator WorkerOrchestrator, managerAddr string) (*Scheduler, error) {
 	if db == nil {
 		return nil, errors.New("db cannot be nil")
 	}
+	if totalReplicas <= 0 {
+		totalReplicas = 1
+	}
+	if orchestrator == nil {
+		orchestrator = &MockOrchestrator{}
+	}
 	return &Scheduler{
-		db:           db,
-		replicaIndex: replicaIndex,
+		db:            db,
+		replicaIndex:  replicaIndex,
+		totalReplicas: totalReplicas,
+		orchestrator:  orchestrator,
+		managerAddr:   managerAddr,
 	}, nil
 }
 
@@ -340,6 +352,12 @@ func (s *Scheduler) ScheduleJob(req ScheduleJobRequest) error {
 		return err
 	}
 
+	expectedReplicaIndex, err := ComputeReplicaIndex(req.JobID, s.totalReplicas)
+	if err != nil {
+		return fmt.Errorf("failed to compute replica index: %w", err)
+	}
+
+	var scheduledTasks []string
 	for _, task := range req.Tasks {
 		taskID, err := uuid.Parse(task.TaskID)
 		if err != nil {
@@ -351,9 +369,15 @@ func (s *Scheduler) ScheduleJob(req ScheduleJobRequest) error {
 		if task.TaskType != "Map" && task.TaskType != "Reduce" {
 			return fmt.Errorf("invalid task type %q: must be Map or Reduce", task.TaskType)
 		}
+
+		// Normalization: overwrite externally supplied replica_index
+		task.ReplicaIndex = expectedReplicaIndex
+
 		if _, err := tx.ExecContext(ctx, QueryInsertTask, taskID, jobID, task.TaskType, task.ReplicaIndex); err != nil {
 			return err
 		}
+		scheduledTasks = append(scheduledTasks, task.TaskID)
+
 		for _, split := range task.InputSplits {
 			if _, err := tx.ExecContext(ctx, QueryInsertTaskInput,
 				taskID,
@@ -367,7 +391,22 @@ func (s *Scheduler) ScheduleJob(req ScheduleJobRequest) error {
 		}
 	}
 
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+
+	// Asynchronously spawn worker pods using the orchestrator
+	go func() {
+		spawnCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		defer cancel()
+		for _, taskID := range scheduledTasks {
+			if err := s.orchestrator.SpawnWorker(spawnCtx, taskID, s.managerAddr); err != nil {
+				log.Printf("Failed to spawn worker for task %s: %v", taskID, err)
+			}
+		}
+	}()
+
+	return nil
 }
 
 func (s *Scheduler) UpsertSystemConfig(req SystemConfigUpdate) error {
