@@ -49,7 +49,7 @@ func NewScheduler(db *sql.DB, replicaIndex int, totalReplicas int, orchestrator 
 		totalReplicas = 1
 	}
 	if orchestrator == nil {
-		orchestrator = &MockOrchestrator{}
+		return nil, errors.New("orchestrator cannot be nil")
 	}
 	return &Scheduler{
 		db:            db,
@@ -370,13 +370,16 @@ func (s *Scheduler) ScheduleJob(req ScheduleJobRequest) error {
 			return fmt.Errorf("invalid task type %q: must be Map or Reduce", task.TaskType)
 		}
 
-		// Normalization: overwrite externally supplied replica_index
-		task.ReplicaIndex = expectedReplicaIndex
+		// Keep reduce partition semantics intact; only map tasks are normalized
+		// to the manager replica selected for this job.
+		if task.TaskType == "Map" {
+			task.ReplicaIndex = expectedReplicaIndex
+		}
 
 		if _, err := tx.ExecContext(ctx, QueryInsertTask, taskID, jobID, task.TaskType, task.ReplicaIndex); err != nil {
 			return err
 		}
-		scheduledTasks = append(scheduledTasks, task.TaskID)
+		scheduledTasks = append(scheduledTasks, taskID.String())
 
 		for _, split := range task.InputSplits {
 			if _, err := tx.ExecContext(ctx, QueryInsertTaskInput,
@@ -395,16 +398,7 @@ func (s *Scheduler) ScheduleJob(req ScheduleJobRequest) error {
 		return err
 	}
 
-	// Asynchronously spawn worker pods using the orchestrator
-	go func() {
-		spawnCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-		defer cancel()
-		for _, taskID := range scheduledTasks {
-			if err := s.orchestrator.SpawnWorker(spawnCtx, taskID, s.managerAddr); err != nil {
-				log.Printf("Failed to spawn worker for task %s: %v", taskID, err)
-			}
-		}
-	}()
+	log.Printf("Scheduled job %s with %d tasks; worker orchestration deferred to attempt assignment", jobID, len(scheduledTasks))
 
 	return nil
 }

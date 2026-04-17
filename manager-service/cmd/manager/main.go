@@ -46,6 +46,14 @@ func main() {
 	// For StatefulSet replica routing
 	hostname, _ := os.Hostname()
 	replicaIndex := resolveReplicaIndex(hostname)
+	namespace := strings.TrimSpace(os.Getenv("POD_NAMESPACE"))
+	if namespace == "" {
+		namespace = "default"
+	}
+	headlessService := strings.TrimSpace(os.Getenv("MANAGER_HEADLESS_SERVICE"))
+	if headlessService == "" {
+		headlessService = "manager-headless"
+	}
 
 	// 2. Initialize Kubernetes Orchestrator
 	k8sConfig, err := rest.InClusterConfig()
@@ -58,7 +66,7 @@ func main() {
 		if err != nil {
 			log.Fatalf("failed to create k8s clientset: %v", err)
 		}
-		orchestrator = manager.NewKubeOrchestrator(clientset, "default", "kubemapreduce-worker:latest")
+		orchestrator = manager.NewKubeOrchestrator(clientset, namespace, "kubemapreduce-worker:latest")
 	}
 
 	// 3. Initialize Scheduler
@@ -66,7 +74,7 @@ func main() {
 	if err != nil {
 		port = "50051"
 	}
-	managerAddr := net.JoinHostPort(hostname, port) // Or specifically from an environment variable if preferred
+	managerAddr := resolveManagerAddr(hostname, headlessService, namespace, port)
 	scheduler, err := manager.NewScheduler(db, replicaIndex, cfg.TotalReplicas, orchestrator, managerAddr)
 	if err != nil {
 		log.Fatalf("failed to create scheduler: %v", err)
@@ -179,4 +187,11 @@ func parseReplicaIndexFromHostname(hostname string) int {
 		return 0
 	}
 	return idx
+}
+
+func resolveManagerAddr(hostname, headlessService, namespace, port string) string {
+	if explicit := strings.TrimSpace(os.Getenv("MANAGER_ADDR")); explicit != "" {
+		return explicit
+	}
+	return net.JoinHostPort(hostname+"."+headlessService+"."+namespace+".svc.cluster.local", port)
 }
