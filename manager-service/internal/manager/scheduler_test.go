@@ -1,9 +1,11 @@
 package manager
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"regexp"
+	"sync"
 	"testing"
 	"time"
 
@@ -24,6 +26,40 @@ func setupMockDB(t *testing.T) (*sql.DB, sqlmock.Sqlmock, *Scheduler) {
 	}
 
 	return db, mock, scheduler
+}
+
+func setupMockDBWithOrchestrator(t *testing.T, orchestrator WorkerOrchestrator) (*sql.DB, sqlmock.Sqlmock, *Scheduler) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("an error '%s' was not expected when opening a stub database connection", err)
+	}
+	scheduler, err := NewScheduler(db, 0, 1, orchestrator, "manager-0:50051", 30)
+	if err != nil {
+		t.Fatalf("unexpected error creating scheduler: %v", err)
+	}
+	return db, mock, scheduler
+}
+
+type spawnCall struct {
+	taskID      string
+	attemptID   string
+	managerAddr string
+}
+
+type recordingOrchestrator struct {
+	mu    sync.Mutex
+	calls []spawnCall
+	err   error
+}
+
+func (r *recordingOrchestrator) SpawnWorker(ctx context.Context, taskID string, attemptID string, managerAddr string) error {
+	r.mu.Lock()
+	r.calls = append(r.calls, spawnCall{taskID: taskID, attemptID: attemptID, managerAddr: managerAddr})
+	r.mu.Unlock()
+	if r.err != nil {
+		return r.err
+	}
+	return nil
 }
 
 func expectLeaseValidation(mock sqlmock.Sqlmock, attemptID string, leaseID string, leaseValid bool) {
@@ -491,6 +527,14 @@ func TestScheduler_FailTask_RetryableSuccess(t *testing.T) {
 		WithArgs(attemptID).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
+	mock.ExpectExec(regexp.QuoteMeta(QueryUpdateTaskInProgress)).
+		WithArgs(sqlmock.AnyArg(), taskID).
+		WillReturnResult(sqlmock.NewResult(1, 1))
+
+	mock.ExpectExec(regexp.QuoteMeta(QueryInsertAttempt)).
+		WithArgs(sqlmock.AnyArg(), taskID, "system-recovery", sqlmock.AnyArg(), sqlmock.AnyArg()).
+		WillReturnResult(sqlmock.NewResult(1, 1))
+
 	mock.ExpectCommit()
 
 	err := scheduler.FailTask(taskID, attemptID, leaseID, "worker exited")
@@ -618,6 +662,50 @@ func TestScheduler_RenewLease_Mismatched(t *testing.T) {
 	}
 }
 
+func TestScheduler_Recover_SpawnsRecoverableAttempts(t *testing.T) {
+	rec := &recordingOrchestrator{}
+	db, mock, scheduler := setupMockDBWithOrchestrator(t, rec)
+	defer db.Close()
+
+	taskID := uuid.New().String()
+	attemptID := uuid.New().String()
+	mock.ExpectQuery(regexp.QuoteMeta(QuerySelectRecoverableAttempts)).
+		WithArgs(0).
+		WillReturnRows(sqlmock.NewRows([]string{"task_id", "current_attempt_id"}).
+			AddRow(taskID, attemptID))
+
+	if err := scheduler.Recover(context.Background()); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(rec.calls) != 1 {
+		t.Fatalf("expected one spawn call, got %d", len(rec.calls))
+	}
+	if rec.calls[0].taskID != taskID {
+		t.Fatalf("expected spawned task %s, got %s", taskID, rec.calls[0].taskID)
+	}
+	if rec.calls[0].attemptID != attemptID {
+		t.Fatalf("expected spawned attempt %s, got %s", attemptID, rec.calls[0].attemptID)
+	}
+}
+
+func TestScheduler_Recover_NoRecoverableAttempts_NoSpawn(t *testing.T) {
+	rec := &recordingOrchestrator{}
+	db, mock, scheduler := setupMockDBWithOrchestrator(t, rec)
+	defer db.Close()
+
+	mock.ExpectQuery(regexp.QuoteMeta(QuerySelectRecoverableAttempts)).
+		WithArgs(0).
+		WillReturnRows(sqlmock.NewRows([]string{"task_id", "current_attempt_id"}))
+
+	if err := scheduler.Recover(context.Background()); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(rec.calls) != 0 {
+		t.Fatalf("expected no spawn calls, got %d", len(rec.calls))
+	}
+}
+
 func TestScheduler_FailStaleTasks_NoStaleTasks(t *testing.T) {
 	db, mock, scheduler := setupMockDB(t)
 	defer db.Close()
@@ -657,6 +745,14 @@ func TestScheduler_FailStaleTasks_Success(t *testing.T) {
 
 	mock.ExpectExec(regexp.QuoteMeta(QueryFailAttempt)).
 		WithArgs(attemptID).
+		WillReturnResult(sqlmock.NewResult(1, 1))
+
+	mock.ExpectExec(regexp.QuoteMeta(QueryUpdateTaskInProgress)).
+		WithArgs(sqlmock.AnyArg(), taskID).
+		WillReturnResult(sqlmock.NewResult(1, 1))
+
+	mock.ExpectExec(regexp.QuoteMeta(QueryInsertAttempt)).
+		WithArgs(sqlmock.AnyArg(), taskID, "system-recovery", sqlmock.AnyArg(), sqlmock.AnyArg()).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
 	mock.ExpectCommit()

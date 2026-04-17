@@ -64,9 +64,9 @@ func Load() (*Config, error) {
 		TotalReplicas:       totalReplicas,
 		HeartbeatInterval:   hbInterval,
 		MaxMissedHeartbeats: maxMissed,
-		MinioEndpoint:       getEnv("MINIO_ENDPOINT", "minio.default.svc.cluster.local:9000"),
-		MinioAccessKey:      getEnv("MINIO_ACCESS_KEY", "minioadmin"),
-		MinioSecretKey:      getEnv("MINIO_SECRET_KEY", "minioadmin"),
+		MinioEndpoint:       getEnv("MINIO_ENDPOINT", ""),
+		MinioAccessKey:      getEnv("MINIO_ACCESS_KEY", ""),
+		MinioSecretKey:      getEnv("MINIO_SECRET_KEY", ""),
 		MinioUseSSL:         getEnvBool("MINIO_USE_SSL", false),
 	}
 	cfg.LeaseTTL = cfg.HeartbeatInterval * cfg.MaxMissedHeartbeats

@@ -45,7 +45,7 @@ const QueryCountAllPendingTasks = `SELECT COUNT(*) FROM TASKS WHERE job_id = $1 
 const QueryUpdateTaskInProgress = `UPDATE TASKS SET status = 'In-Progress', current_attempt_id = $1 WHERE task_id = $2`
 
 // QueryInsertAttempt creates a new TASK_ATTEMPTS record when a worker is assigned.
-// The lease_ttl of 30 seconds matches the 3-heartbeat timeout window from Section 5.
+// lease_ttl is caller-provided from scheduler config (HeartbeatInterval * MaxMissedHeartbeats).
 const QueryInsertAttempt = `
 	INSERT INTO TASK_ATTEMPTS (attempt_id, task_id, worker_id, lease_id, last_renewed_at, lease_ttl, start_time, status)
 	VALUES ($1, $2, $3, $4, NOW(), $5, NOW(), 'Running')`
@@ -130,6 +130,13 @@ const QuerySelectStaleTasks = `
 	JOIN TASK_ATTEMPTS a ON t.current_attempt_id = a.attempt_id
 	WHERE t.status = 'In-Progress' AND a.status = 'Running' AND a.last_renewed_at + a.lease_ttl * INTERVAL '1 second' < NOW()
 	FOR UPDATE OF t`
+
+// QuerySelectRecoverableAttempts returns active attempts that belong to this manager replica.
+// Recovery uses these rows to re-spawn workers with the existing attempt_id fence token.
+const QuerySelectRecoverableAttempts = `
+	SELECT task_id, current_attempt_id
+	FROM TASKS
+	WHERE status = 'In-Progress' AND replica_index = $1 AND current_attempt_id IS NOT NULL`
 
 // ---------------------------------------------------------------------------
 // Read-only output queries
