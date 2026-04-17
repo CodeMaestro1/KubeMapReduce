@@ -1,24 +1,57 @@
 package auth
 
 import (
+	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
+
+	"github.com/MicahParks/jwkset"
+	"github.com/golang-jwt/jwt/v5"
 )
 
-func TestMiddleware_MissingAuthHeader(t *testing.T) {
-	// We can't create a real JWTValidator without a JWKS endpoint,
-	// but we can test the middleware's early-exit paths by calling
-	// the Middleware method on a minimal validator. Since creating
-	// the validator requires a live JWKS, we test the handler logic
-	// at the HTTP level indirectly via RequireRole helpers.
+// stubKeyfunc satisfies the keyfunc.Keyfunc interface for testing,
+// delegating only the Keyfunc method to a user-supplied function.
+type stubKeyfunc struct {
+	fn jwt.Keyfunc
+}
 
-	// Instead, test the header parsing logic manually.
+func (s stubKeyfunc) Keyfunc(token *jwt.Token) (interface{}, error) { return s.fn(token) }
+func (s stubKeyfunc) KeyfuncCtx(_ context.Context) jwt.Keyfunc      { return s.fn }
+func (s stubKeyfunc) Storage() jwkset.Storage                       { return nil }
+func (s stubKeyfunc) VerificationKeySet(_ context.Context) (jwt.VerificationKeySet, error) {
+	return jwt.VerificationKeySet{}, nil
+}
+
+// newTestValidator creates a JWTValidator that uses f as the key function,
+// enabling tests to control token parsing without a live JWKS endpoint.
+func newTestValidator(f jwt.Keyfunc, issuer, audience string) *JWTValidator {
+	return &JWTValidator{
+		jwks:     stubKeyfunc{fn: f},
+		issuer:   issuer,
+		audience: audience,
+	}
+}
+
+func TestMiddleware_MissingAuthHeader(t *testing.T) {
+	v := newTestValidator(nil, "", "")
+	handler := v.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("next handler should not be called")
+	}))
+
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
-	// No Authorization header
-	authHeader := req.Header.Get("Authorization")
-	if authHeader != "" {
-		t.Errorf("expected empty auth header, got %q", authHeader)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected %d, got %d", http.StatusUnauthorized, rec.Code)
+	}
+	if body := strings.TrimSpace(rec.Body.String()); body != "authorization header missing" {
+		t.Fatalf("expected 'authorization header missing', got %q", body)
 	}
 }
 
@@ -40,6 +73,40 @@ func TestMiddleware_InvalidAuthHeaderFormat(t *testing.T) {
 				t.Errorf("expected nil for invalid header %q, got %v", tt.header, parts)
 			}
 		})
+	}
+}
+
+func TestMiddleware_InvalidToken_ReturnsGenericError(t *testing.T) {
+	// Use a keyfunc that rejects all tokens to trigger a parse error.
+	v := newTestValidator(func(token *jwt.Token) (interface{}, error) {
+		// Return a valid-type but wrong key so parsing fails with a signature error.
+		wrongKey, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+		return &wrongKey.PublicKey, nil
+	}, "", "")
+
+	handler := v.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("next handler should not be called")
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	// Use a structurally valid but unsigned/bad JWT.
+	req.Header.Set("Authorization", "Bearer not-a-jwt-token")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected %d, got %d", http.StatusUnauthorized, rec.Code)
+	}
+
+	body := strings.TrimSpace(rec.Body.String())
+	if body != "invalid token" {
+		t.Fatalf("expected stable error 'invalid token', got %q", body)
+	}
+	// Ensure no raw parser details leak.
+	for _, leak := range []string{"signing method", "crypto", "base64", "cannot", "unexpected"} {
+		if strings.Contains(strings.ToLower(body), leak) {
+			t.Fatalf("response body leaks parser internals: %q", body)
+		}
 	}
 }
 
