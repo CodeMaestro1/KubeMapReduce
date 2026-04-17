@@ -109,6 +109,19 @@ func main() {
 
 	// 4. Start HTTP Server for Health & Readiness
 	mux := http.NewServeMux()
+	mux.HandleFunc("DELETE /internal/jobs/{job_id}", func(w http.ResponseWriter, r *http.Request) {
+		jobID := r.PathValue("job_id")
+		if jobID == "" {
+			http.Error(w, "missing job_id", http.StatusBadRequest)
+			return
+		}
+		if err := scheduler.CancelJob(jobID); err != nil {
+			log.Printf("failed to cancel job %s: %v", jobID, err)
+			http.Error(w, "failed to cancel job", http.StatusInternalServerError)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	})
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte("OK"))
