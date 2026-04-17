@@ -23,9 +23,11 @@ type Config struct {
 	MaxMissedHeartbeats int
 	LeaseTTL            int
 	MinioEndpoint       string
-	MinioAccessKey      string
-	MinioSecretKey      string
-	MinioUseSSL         bool
+	// MinioAccessKey and MinioSecretKey are expected to be injected via environment
+	// variables (typically from Kubernetes Secrets) when manifest fallback is enabled.
+	MinioAccessKey string
+	MinioSecretKey string
+	MinioUseSSL    bool
 }
 
 func Load() (*Config, error) {
