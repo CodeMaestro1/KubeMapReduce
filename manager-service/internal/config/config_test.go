@@ -11,6 +11,7 @@ func TestLoad_Defaults(t *testing.T) {
 		"KEYCLOAK_BASE_URL", "KEYCLOAK_REALM", "KEYCLOAK_AUDIENCE",
 		"KEYCLOAK_JWKS_URL", "KEYCLOAK_ISSUER", "SERVER_ADDR",
 		"KEYCLOAK_ADMIN_USERNAME", "KEYCLOAK_ADMIN_PASSWORD",
+		"GRPC_ADDR", "GRPC_PORT",
 	}
 	for _, key := range envVars {
 		t.Setenv(key, "")
@@ -35,6 +36,9 @@ func TestLoad_Defaults(t *testing.T) {
 	}
 	if cfg.ServerAddr != ":8081" {
 		t.Errorf("ServerAddr = %q, want %q", cfg.ServerAddr, ":8081")
+	}
+	if cfg.GRPCAddr != ":50051" {
+		t.Errorf("GRPCAddr = %q, want %q", cfg.GRPCAddr, ":50051")
 	}
 	if cfg.AdminUsername != "admin" {
 		t.Errorf("AdminUsername = %q, want %q", cfg.AdminUsername, "admin")
@@ -61,6 +65,7 @@ func TestLoad_CustomEnvVars(t *testing.T) {
 	t.Setenv("KEYCLOAK_JWKS_URL", "http://kc:9090/jwks")
 	t.Setenv("KEYCLOAK_ISSUER", "http://kc:9090/issuer")
 	t.Setenv("SERVER_ADDR", ":9999")
+	t.Setenv("GRPC_ADDR", "0.0.0.0:50052")
 	t.Setenv("KEYCLOAK_ADMIN_USERNAME", "u")
 	t.Setenv("KEYCLOAK_ADMIN_PASSWORD", "p")
 
@@ -86,6 +91,9 @@ func TestLoad_CustomEnvVars(t *testing.T) {
 	}
 	if cfg.ServerAddr != ":9999" {
 		t.Errorf("ServerAddr = %q, want %q", cfg.ServerAddr, ":9999")
+	}
+	if cfg.GRPCAddr != "0.0.0.0:50052" {
+		t.Errorf("GRPCAddr = %q, want %q", cfg.GRPCAddr, "0.0.0.0:50052")
 	}
 	if cfg.AdminUsername != "u" {
 		t.Errorf("AdminUsername = %q, want %q", cfg.AdminUsername, "u")

@@ -51,19 +51,32 @@ func (s *WorkerServer) Register(ctx context.Context, req *pb.RegisterRequest) (*
 		RuntimeEnv:       "",
 		ByteStart:        task.ByteStart,
 		ByteEnd:          task.ByteEnd,
-		PartitionId:      int32(task.PartitionIndex),
+		PartitionId:      0,
 		TotalReducers:    int32(task.TotalReducers),
-		SplitChecksum:    task.InputChecksum,
+		SplitChecksum:    "",
 		LeaseId:          task.LeaseID,
 	}
 
 	if task.Type == manager.MapTask {
 		assignment.Type = pb.TaskType_MAP
+		if len(task.InputSplits) > 0 {
+			selectedSplit := task.InputSplits[0]
+			for _, split := range task.InputSplits {
+				if split.ByteStart == task.ByteStart && split.ByteEnd == task.ByteEnd {
+					selectedSplit = split
+					break
+				}
+			}
+			assignment.ByteStart = selectedSplit.ByteStart
+			assignment.ByteEnd = selectedSplit.ByteEnd
+			assignment.SplitChecksum = selectedSplit.SplitChecksum
+		}
 		for _, split := range task.InputSplits {
 			assignment.DataLocations = append(assignment.DataLocations, split.InputURI)
 		}
 	} else if task.Type == manager.ReduceTask {
 		assignment.Type = pb.TaskType_REDUCE
+		assignment.PartitionId = int32(task.ReplicaIndex)
 		for _, input := range task.ShuffleInputs {
 			assignment.DataLocations = append(assignment.DataLocations, input.OutputURI)
 		}

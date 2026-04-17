@@ -15,7 +15,7 @@ type Config struct {
 	AdminUsername   string
 	AdminPassword   string
 	DatabaseDSN     string
-	GRPCPort        string
+	GRPCAddr        string
 }
 
 func Load() (*Config, error) {
@@ -35,7 +35,7 @@ func Load() (*Config, error) {
 		AdminUsername:   adminUsername,
 		AdminPassword:   adminPassword,
 		DatabaseDSN:     getEnv("DATABASE_DSN", "postgres://user:pass@localhost:5432/mapreduce?sslmode=disable"),
-		GRPCPort:        getEnv("GRPC_PORT", ":50051"),
+		GRPCAddr:        getEnv("GRPC_ADDR", getEnv("GRPC_PORT", ":50051")),
 	}, nil
 }
 
