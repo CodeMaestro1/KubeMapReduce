@@ -47,9 +47,11 @@ type spawnCall struct {
 }
 
 type recordingOrchestrator struct {
-	mu    sync.Mutex
-	calls []spawnCall
-	err   error
+	mu         sync.Mutex
+	calls      []spawnCall
+	cancelJobs []string
+	cancelCh   chan string
+	err        error
 }
 
 func (r *recordingOrchestrator) SpawnWorker(ctx context.Context, taskID string, jobID string, attemptID string, managerAddr string) error {
@@ -63,6 +65,12 @@ func (r *recordingOrchestrator) SpawnWorker(ctx context.Context, taskID string, 
 }
 
 func (r *recordingOrchestrator) CancelJob(ctx context.Context, jobID string) error {
+	r.mu.Lock()
+	r.cancelJobs = append(r.cancelJobs, jobID)
+	r.mu.Unlock()
+	if r.cancelCh != nil {
+		r.cancelCh <- jobID
+	}
 	return nil
 }
 
@@ -821,6 +829,78 @@ func TestScheduler_FailStaleTasks_MarksJobFailedAtMaxAttempts(t *testing.T) {
 	}
 }
 
+func TestScheduler_FailStaleTasks_DeduplicatesJobCancellation(t *testing.T) {
+	rec := &recordingOrchestrator{cancelCh: make(chan string, 2)}
+	db, mock, scheduler := setupMockDBWithOrchestrator(t, rec)
+	defer db.Close()
+
+	task1 := uuid.New().String()
+	task2 := uuid.New().String()
+	attempt1 := uuid.New().String()
+	attempt2 := uuid.New().String()
+	jobID := uuid.New().String()
+
+	mock.ExpectBegin()
+	mock.ExpectQuery(regexp.QuoteMeta(QuerySelectStaleTasks)).
+		WillReturnRows(sqlmock.NewRows([]string{"task_id", "attempt_id"}).
+			AddRow(task1, attempt1).
+			AddRow(task2, attempt2))
+
+	mock.ExpectQuery(regexp.QuoteMeta(QueryGetTaskJobID)).
+		WithArgs(task1).
+		WillReturnRows(sqlmock.NewRows([]string{"job_id"}).AddRow(jobID))
+	mock.ExpectQuery(regexp.QuoteMeta(QueryCountAttemptsByTask)).
+		WithArgs(task1).
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(3))
+	mock.ExpectExec(regexp.QuoteMeta(QueryUpdateTaskStatus)).
+		WithArgs("Failed", task1).
+		WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectExec(regexp.QuoteMeta(QueryFailAttempt)).
+		WithArgs(attempt1).
+		WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectExec(regexp.QuoteMeta(QueryUpdateJobStatus)).
+		WithArgs(jobID, "Failed", sqlmock.AnyArg()).
+		WillReturnResult(sqlmock.NewResult(1, 1))
+
+	mock.ExpectQuery(regexp.QuoteMeta(QueryGetTaskJobID)).
+		WithArgs(task2).
+		WillReturnRows(sqlmock.NewRows([]string{"job_id"}).AddRow(jobID))
+	mock.ExpectQuery(regexp.QuoteMeta(QueryCountAttemptsByTask)).
+		WithArgs(task2).
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(3))
+	mock.ExpectExec(regexp.QuoteMeta(QueryUpdateTaskStatus)).
+		WithArgs("Failed", task2).
+		WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectExec(regexp.QuoteMeta(QueryFailAttempt)).
+		WithArgs(attempt2).
+		WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectExec(regexp.QuoteMeta(QueryUpdateJobStatus)).
+		WithArgs(jobID, "Failed", sqlmock.AnyArg()).
+		WillReturnResult(sqlmock.NewResult(1, 1))
+
+	mock.ExpectCommit()
+
+	recovered, err := scheduler.FailStaleTasks()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if recovered != 2 {
+		t.Fatalf("expected 2 recovered tasks, got %d", recovered)
+	}
+
+	select {
+	case <-rec.cancelCh:
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("expected one cancellation call")
+	}
+
+	select {
+	case extra := <-rec.cancelCh:
+		t.Fatalf("expected deduplicated cancellation, got extra call for %s", extra)
+	case <-time.After(150 * time.Millisecond):
+	}
+}
+
 func TestScheduler_GetTaskByID_WithAttempt(t *testing.T) {
 	db, mock, scheduler := setupMockDB(t)
 	defer db.Close()
@@ -1190,7 +1270,7 @@ func TestScheduler_CancelJob_Success(t *testing.T) {
 
 	mock.ExpectBegin()
 	mock.ExpectExec(regexp.QuoteMeta(QueryUpdateJobStatus)).
-		WithArgs(jobID, "Failed", sqlmock.AnyArg()).
+		WithArgs(jobID, "Cancelled", sqlmock.AnyArg()).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 	mock.ExpectExec("UPDATE TASKS SET status = 'Failed' WHERE job_id =").
 		WithArgs(jobID).
@@ -1201,8 +1281,6 @@ func TestScheduler_CancelJob_Success(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-
-	time.Sleep(50 * time.Millisecond)
 
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Errorf("unfulfilled expectations: %s", err)
@@ -1248,8 +1326,6 @@ func TestScheduler_CompleteTask_JobCompleted_TriggersCleanup(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-
-	time.Sleep(50 * time.Millisecond)
 
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Errorf("unfulfilled expectations: %s", err)
