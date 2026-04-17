@@ -22,6 +22,24 @@ func NewWorkerServer(scheduler *manager.Scheduler) *WorkerServer {
 	}
 }
 
+func findMapSplitForTask(task *manager.Task) (manager.TaskInputSplit, bool) {
+	if len(task.InputSplits) == 0 {
+		return manager.TaskInputSplit{}, false
+	}
+
+	for _, split := range task.InputSplits {
+		if split.ByteStart == task.ByteStart && split.ByteEnd == task.ByteEnd {
+			return split, true
+		}
+	}
+
+	if task.ByteStart == 0 && task.ByteEnd == 0 && len(task.InputSplits) == 1 {
+		return task.InputSplits[0], true
+	}
+
+	return manager.TaskInputSplit{}, false
+}
+
 func (s *WorkerServer) Register(ctx context.Context, req *pb.RegisterRequest) (*pb.TaskAssignment, error) {
 	if req.TaskId == "" {
 		return nil, status.Error(codes.InvalidArgument, "task_id is required")
@@ -59,14 +77,7 @@ func (s *WorkerServer) Register(ctx context.Context, req *pb.RegisterRequest) (*
 
 	if task.Type == manager.MapTask {
 		assignment.Type = pb.TaskType_MAP
-		if len(task.InputSplits) > 0 {
-			selectedSplit := task.InputSplits[0]
-			for _, split := range task.InputSplits {
-				if split.ByteStart == task.ByteStart && split.ByteEnd == task.ByteEnd {
-					selectedSplit = split
-					break
-				}
-			}
+		if selectedSplit, found := findMapSplitForTask(task); found {
 			assignment.ByteStart = selectedSplit.ByteStart
 			assignment.ByteEnd = selectedSplit.ByteEnd
 			assignment.SplitChecksum = selectedSplit.SplitChecksum
