@@ -18,7 +18,7 @@ func setupMockDB(t *testing.T) (*sql.DB, sqlmock.Sqlmock, *Scheduler) {
 		t.Fatalf("an error '%s' was not expected when opening a stub database connection", err)
 	}
 
-	scheduler, err := NewScheduler(db, 0, 1, &MockOrchestrator{}, "manager-0:50051")
+	scheduler, err := NewScheduler(db, 0, 1, &MockOrchestrator{}, "manager-0:50051", 30)
 	if err != nil {
 		t.Fatalf("unexpected error creating scheduler: %v", err)
 	}
@@ -57,7 +57,7 @@ func expectReduceTaskMetadataQueries(mock sqlmock.Sqlmock, taskID uuid.UUID, map
 }
 
 func TestNewScheduler_NilDB(t *testing.T) {
-	_, err := NewScheduler(nil, 0, 1, &MockOrchestrator{}, "manager-0:50051")
+	_, err := NewScheduler(nil, 0, 1, &MockOrchestrator{}, "manager-0:50051", 30)
 	if err == nil {
 		t.Fatalf("expected error when passing nil DB to NewScheduler")
 	}
@@ -70,7 +70,7 @@ func TestNewScheduler_NilOrchestrator(t *testing.T) {
 	}
 	defer db.Close()
 
-	_, err = NewScheduler(db, 0, 1, nil, "manager-0:50051")
+	_, err = NewScheduler(db, 0, 1, nil, "manager-0:50051", 30)
 	if err == nil {
 		t.Fatalf("expected error when passing nil orchestrator to NewScheduler")
 	}
@@ -146,7 +146,7 @@ func TestScheduler_GetNextTask_MapSuccess(t *testing.T) {
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
 	mock.ExpectExec(regexp.QuoteMeta(QueryInsertAttempt)).
-		WithArgs(sqlmock.AnyArg(), taskID, "worker-1", sqlmock.AnyArg()).
+		WithArgs(sqlmock.AnyArg(), taskID, "worker-1", sqlmock.AnyArg(), sqlmock.AnyArg()).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
 	mock.ExpectExec(regexp.QuoteMeta(QueryUpdateJobStatus)).
@@ -218,7 +218,7 @@ func TestScheduler_GetNextTask_NoMapIdle_ReduceSuccess(t *testing.T) {
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
 	mock.ExpectExec(regexp.QuoteMeta(QueryInsertAttempt)).
-		WithArgs(sqlmock.AnyArg(), taskID, "worker-1", sqlmock.AnyArg()).
+		WithArgs(sqlmock.AnyArg(), taskID, "worker-1", sqlmock.AnyArg(), sqlmock.AnyArg()).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
 	mock.ExpectExec(regexp.QuoteMeta(QueryUpdateJobStatus)).
@@ -976,7 +976,7 @@ func TestScheduler_ScheduleJob_PersistsDDSRecords(t *testing.T) {
 	}
 	defer db.Close()
 
-	scheduler, err := NewScheduler(db, 0, 4, &MockOrchestrator{}, "manager-0:50051")
+	scheduler, err := NewScheduler(db, 0, 4, &MockOrchestrator{}, "manager-0:50051", 30)
 	if err != nil {
 		t.Fatalf("unexpected error creating scheduler: %v", err)
 	}

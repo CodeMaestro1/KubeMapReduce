@@ -48,7 +48,7 @@ const QueryUpdateTaskInProgress = `UPDATE TASKS SET status = 'In-Progress', curr
 // The lease_ttl of 30 seconds matches the 3-heartbeat timeout window from Section 5.
 const QueryInsertAttempt = `
 	INSERT INTO TASK_ATTEMPTS (attempt_id, task_id, worker_id, lease_id, last_renewed_at, lease_ttl, start_time, status)
-	VALUES ($1, $2, $3, $4, NOW(), 30, NOW(), 'Running')`
+	VALUES ($1, $2, $3, $4, NOW(), $5, NOW(), 'Running')`
 
 // QueryGetJobConfigByTask loads immutable job configuration needed to build
 // a worker-facing task assignment.
