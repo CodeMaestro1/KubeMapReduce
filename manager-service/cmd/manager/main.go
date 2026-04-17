@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/signal"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -41,15 +42,8 @@ func main() {
 	}
 
 	// For StatefulSet replica routing
-	replicaIndex := 0
 	hostname, _ := os.Hostname()
-	// Usually StatefulSet pods are named like manager-0, manager-1
-	if len(hostname) > 0 {
-		lastChar := hostname[len(hostname)-1:]
-		if idx, err := strconv.Atoi(lastChar); err == nil {
-			replicaIndex = idx
-		}
-	}
+	replicaIndex := resolveReplicaIndex(hostname)
 
 	// 2. Initialize Scheduler
 	scheduler, err := manager.NewScheduler(db, replicaIndex)
@@ -105,9 +99,9 @@ func main() {
 	}()
 
 	// 5. Start gRPC Server
-	lis, err := net.Listen("tcp", cfg.GRPCPort)
+	lis, err := net.Listen("tcp", cfg.GRPCAddr)
 	if err != nil {
-		log.Fatalf("failed to listen on gRPC port %s: %v", cfg.GRPCPort, err)
+		log.Fatalf("failed to listen on gRPC address %s: %v", cfg.GRPCAddr, err)
 	}
 
 	grpcServer := grpc.NewServer()
@@ -116,7 +110,7 @@ func main() {
 	reflection.Register(grpcServer)
 
 	go func() {
-		log.Printf("gRPC server running on %s", cfg.GRPCPort)
+		log.Printf("gRPC server running on %s", cfg.GRPCAddr)
 		if err := grpcServer.Serve(lis); err != nil {
 			log.Fatalf("gRPC server failed: %v", err)
 		}
@@ -137,4 +131,30 @@ func main() {
 	httpSrv.Shutdown(httpCtx)
 
 	log.Println("manager service stopped")
+}
+
+func resolveReplicaIndex(hostname string) int {
+	ordinal := strings.TrimSpace(os.Getenv("STATEFULSET_ORDINAL"))
+	if ordinal != "" {
+		if idx, err := strconv.Atoi(ordinal); err == nil && idx >= 0 {
+			return idx
+		}
+	}
+	return parseReplicaIndexFromHostname(hostname)
+}
+
+func parseReplicaIndexFromHostname(hostname string) int {
+	hostname = strings.TrimSpace(hostname)
+	if hostname == "" {
+		return 0
+	}
+	lastDash := strings.LastIndex(hostname, "-")
+	if lastDash == -1 || lastDash == len(hostname)-1 {
+		return 0
+	}
+	idx, err := strconv.Atoi(hostname[lastDash+1:])
+	if err != nil || idx < 0 {
+		return 0
+	}
+	return idx
 }

@@ -73,6 +73,12 @@ func TestWorkerServer_Register_Success(t *testing.T) {
 	if resp.LeaseId != "lease123" {
 		t.Errorf("expected lease_id lease123, got %s", resp.LeaseId)
 	}
+	if resp.ByteStart != 0 || resp.ByteEnd != 128 {
+		t.Errorf("expected byte range [0,128], got [%d,%d]", resp.ByteStart, resp.ByteEnd)
+	}
+	if resp.SplitChecksum != "sha256-split-0" {
+		t.Errorf("expected split checksum sha256-split-0, got %s", resp.SplitChecksum)
+	}
 }
 
 func TestWorkerServer_Register_PermissionDenied(t *testing.T) {
@@ -188,5 +194,276 @@ func TestWorkerServer_Heartbeat_Expired(t *testing.T) {
 	}
 	if resp.Action != pb.HeartbeatResponse_TERMINATE {
 		t.Errorf("expected TERMINATE, got %v", resp.Action)
+	}
+}
+
+func TestWorkerServer_Register_ReduceUsesReplicaPartition(t *testing.T) {
+	db, mock, server := setupMockServer(t)
+	defer db.Close()
+
+	taskID := uuid.New().String()
+	jobID := uuid.New().String()
+	attemptID := uuid.New().String()
+
+	mock.ExpectQuery(regexp.QuoteMeta(manager.QueryGetTaskByID)).
+		WithArgs(taskID).
+		WillReturnRows(sqlmock.NewRows([]string{"task_id", "job_id", "task_type", "status", "current_attempt_id", "replica_index"}).
+			AddRow(taskID, jobID, "Reduce", "In-Progress", attemptID, 3))
+
+	mock.ExpectQuery(regexp.QuoteMeta(manager.QueryGetJobConfigByTask)).
+		WithArgs(taskID).
+		WillReturnRows(sqlmock.NewRows([]string{"mapper_uri", "reducer_uri", "combiner_uri", "r_tasks", "input_checksum"}).
+			AddRow("s3://code/mapper.py", "s3://code/reducer.py", "s3://code/combiner.py", 3, "sha256-input"))
+
+	mock.ExpectQuery(regexp.QuoteMeta(manager.QueryGetReduceTaskInputs)).
+		WithArgs(taskID).
+		WillReturnRows(sqlmock.NewRows([]string{"partition_index", "output_uri", "checksum"}).
+			AddRow(3, "s3://shuffle/part-3-0.jsonl", "sha256-output"))
+
+	mock.ExpectQuery(regexp.QuoteMeta(manager.QueryGetAttemptDetails)).
+		WithArgs(attemptID).
+		WillReturnRows(sqlmock.NewRows([]string{"worker_id", "lease_id", "start_time", "last_renewed_at"}).
+			AddRow("worker-2", "lease456", time.Now(), time.Now()))
+
+	resp, err := server.Register(context.Background(), &pb.RegisterRequest{
+		TaskId:    taskID,
+		AttemptId: attemptID,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if resp.PartitionId != 3 {
+		t.Errorf("expected partition_id 3, got %d", resp.PartitionId)
+	}
+	if resp.SplitChecksum != "" {
+		t.Errorf("expected empty split checksum for reduce assignment, got %q", resp.SplitChecksum)
+	}
+}
+
+func TestWorkerServer_TaskComplete_StaleAttemptReturnsPermissionDenied(t *testing.T) {
+	db, mock, server := setupMockServer(t)
+	defer db.Close()
+
+	taskID := uuid.New().String()
+	staleAttemptID := uuid.New().String()
+	currentAttemptID := uuid.New().String()
+
+	mock.ExpectBegin()
+	mock.ExpectQuery(regexp.QuoteMeta(manager.QuerySelectTaskForUpdate)).
+		WithArgs(taskID).
+		WillReturnRows(sqlmock.NewRows([]string{"status", "current_attempt_id"}).AddRow("In-Progress", currentAttemptID))
+	mock.ExpectRollback()
+
+	_, err := server.TaskComplete(context.Background(), &pb.TaskCompleteRequest{
+		TaskId:          taskID,
+		AttemptId:       staleAttemptID,
+		LeaseId:         "lease123",
+		OutputLocations: []string{"s3://outputs/reduce-0.jsonl"},
+		OutputChecksums: []string{"sha256-output"},
+	})
+	if err == nil {
+		t.Fatalf("expected error, got nil")
+	}
+	st, ok := status.FromError(err)
+	if !ok || st.Code() != codes.PermissionDenied {
+		t.Fatalf("expected PermissionDenied, got %v", err)
+	}
+}
+
+func TestWorkerServer_TaskComplete_ExpiredLeaseReturnsPermissionDenied(t *testing.T) {
+	db, mock, server := setupMockServer(t)
+	defer db.Close()
+
+	taskID := uuid.New().String()
+	attemptID := uuid.New().String()
+
+	mock.ExpectBegin()
+	mock.ExpectQuery(regexp.QuoteMeta(manager.QuerySelectTaskForUpdate)).
+		WithArgs(taskID).
+		WillReturnRows(sqlmock.NewRows([]string{"status", "current_attempt_id"}).AddRow("In-Progress", attemptID))
+	mock.ExpectQuery(regexp.QuoteMeta(manager.QueryCheckLeaseValid)).
+		WithArgs(attemptID, "lease123").
+		WillReturnRows(sqlmock.NewRows([]string{"lease_valid"}).AddRow(false))
+	mock.ExpectRollback()
+
+	_, err := server.TaskComplete(context.Background(), &pb.TaskCompleteRequest{
+		TaskId:          taskID,
+		AttemptId:       attemptID,
+		LeaseId:         "lease123",
+		OutputLocations: []string{"s3://outputs/reduce-0.jsonl"},
+		OutputChecksums: []string{"sha256-output"},
+	})
+	if err == nil {
+		t.Fatalf("expected error, got nil")
+	}
+	st, ok := status.FromError(err)
+	if !ok || st.Code() != codes.PermissionDenied {
+		t.Fatalf("expected PermissionDenied, got %v", err)
+	}
+}
+
+func TestWorkerServer_TaskComplete_OutputMismatchReturnsInvalidArgument(t *testing.T) {
+	_, _, server := setupMockServer(t)
+
+	_, err := server.TaskComplete(context.Background(), &pb.TaskCompleteRequest{
+		TaskId:          uuid.New().String(),
+		AttemptId:       uuid.New().String(),
+		LeaseId:         "lease123",
+		OutputLocations: []string{"s3://outputs/reduce-0.jsonl"},
+		OutputChecksums: nil,
+	})
+	if err == nil {
+		t.Fatalf("expected error, got nil")
+	}
+	st, ok := status.FromError(err)
+	if !ok || st.Code() != codes.InvalidArgument {
+		t.Fatalf("expected InvalidArgument, got %v", err)
+	}
+}
+
+func TestWorkerServer_TaskComplete_SuccessReturnsAck(t *testing.T) {
+	db, mock, server := setupMockServer(t)
+	defer db.Close()
+
+	taskID := uuid.New().String()
+	jobID := uuid.New().String()
+	attemptID := uuid.New().String()
+
+	mock.ExpectBegin()
+	mock.ExpectQuery(regexp.QuoteMeta(manager.QuerySelectTaskForUpdate)).
+		WithArgs(taskID).
+		WillReturnRows(sqlmock.NewRows([]string{"status", "current_attempt_id"}).AddRow("In-Progress", attemptID))
+	mock.ExpectQuery(regexp.QuoteMeta(manager.QueryCheckLeaseValid)).
+		WithArgs(attemptID, "lease123").
+		WillReturnRows(sqlmock.NewRows([]string{"lease_valid"}).AddRow(true))
+	mock.ExpectExec(regexp.QuoteMeta(manager.QueryCompleteTask)).
+		WithArgs(taskID).
+		WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectExec(regexp.QuoteMeta(manager.QuerySucceedAttempt)).
+		WithArgs(attemptID).
+		WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectExec(regexp.QuoteMeta(manager.QueryInsertOutput)).
+		WithArgs(taskID, 0, "s3://outputs/reduce-0.jsonl", "sha256-output").
+		WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectQuery(regexp.QuoteMeta(manager.QueryGetTaskJobID)).
+		WithArgs(taskID).
+		WillReturnRows(sqlmock.NewRows([]string{"job_id"}).AddRow(jobID))
+	mock.ExpectQuery(regexp.QuoteMeta(manager.QueryCountAllPendingTasks)).
+		WithArgs(jobID).
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(1))
+	mock.ExpectCommit()
+
+	resp, err := server.TaskComplete(context.Background(), &pb.TaskCompleteRequest{
+		TaskId:          taskID,
+		AttemptId:       attemptID,
+		LeaseId:         "lease123",
+		OutputLocations: []string{"s3://outputs/reduce-0.jsonl"},
+		OutputChecksums: []string{"sha256-output"},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !resp.Success {
+		t.Fatalf("expected success ack")
+	}
+}
+
+func TestWorkerServer_TaskFailed_StaleAttemptReturnsPermissionDenied(t *testing.T) {
+	db, mock, server := setupMockServer(t)
+	defer db.Close()
+
+	taskID := uuid.New().String()
+	staleAttemptID := uuid.New().String()
+	currentAttemptID := uuid.New().String()
+
+	mock.ExpectBegin()
+	mock.ExpectQuery(regexp.QuoteMeta(manager.QuerySelectTaskForUpdate)).
+		WithArgs(taskID).
+		WillReturnRows(sqlmock.NewRows([]string{"status", "current_attempt_id"}).AddRow("In-Progress", currentAttemptID))
+	mock.ExpectRollback()
+
+	_, err := server.TaskFailed(context.Background(), &pb.TaskFailedRequest{
+		TaskId:       taskID,
+		AttemptId:    staleAttemptID,
+		LeaseId:      "lease123",
+		ErrorMessage: "worker crashed",
+	})
+	if err == nil {
+		t.Fatalf("expected error, got nil")
+	}
+	st, ok := status.FromError(err)
+	if !ok || st.Code() != codes.PermissionDenied {
+		t.Fatalf("expected PermissionDenied, got %v", err)
+	}
+}
+
+func TestWorkerServer_TaskFailed_ExpiredLeaseReturnsPermissionDenied(t *testing.T) {
+	db, mock, server := setupMockServer(t)
+	defer db.Close()
+
+	taskID := uuid.New().String()
+	attemptID := uuid.New().String()
+
+	mock.ExpectBegin()
+	mock.ExpectQuery(regexp.QuoteMeta(manager.QuerySelectTaskForUpdate)).
+		WithArgs(taskID).
+		WillReturnRows(sqlmock.NewRows([]string{"status", "current_attempt_id"}).AddRow("In-Progress", attemptID))
+	mock.ExpectQuery(regexp.QuoteMeta(manager.QueryCheckLeaseValid)).
+		WithArgs(attemptID, "lease123").
+		WillReturnRows(sqlmock.NewRows([]string{"lease_valid"}).AddRow(false))
+	mock.ExpectRollback()
+
+	_, err := server.TaskFailed(context.Background(), &pb.TaskFailedRequest{
+		TaskId:       taskID,
+		AttemptId:    attemptID,
+		LeaseId:      "lease123",
+		ErrorMessage: "worker crashed",
+	})
+	if err == nil {
+		t.Fatalf("expected error, got nil")
+	}
+	st, ok := status.FromError(err)
+	if !ok || st.Code() != codes.PermissionDenied {
+		t.Fatalf("expected PermissionDenied, got %v", err)
+	}
+}
+
+func TestWorkerServer_TaskFailed_SuccessReturnsAck(t *testing.T) {
+	db, mock, server := setupMockServer(t)
+	defer db.Close()
+
+	taskID := uuid.New().String()
+	attemptID := uuid.New().String()
+
+	mock.ExpectBegin()
+	mock.ExpectQuery(regexp.QuoteMeta(manager.QuerySelectTaskForUpdate)).
+		WithArgs(taskID).
+		WillReturnRows(sqlmock.NewRows([]string{"status", "current_attempt_id"}).AddRow("In-Progress", attemptID))
+	mock.ExpectQuery(regexp.QuoteMeta(manager.QueryCheckLeaseValid)).
+		WithArgs(attemptID, "lease123").
+		WillReturnRows(sqlmock.NewRows([]string{"lease_valid"}).AddRow(true))
+	mock.ExpectQuery(regexp.QuoteMeta(manager.QueryCountAttemptsByTask)).
+		WithArgs(taskID).
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(1))
+	mock.ExpectExec(regexp.QuoteMeta(manager.QueryUpdateTaskStatus)).
+		WithArgs("Idle", taskID).
+		WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectExec(regexp.QuoteMeta(manager.QueryFailAttempt)).
+		WithArgs(attemptID).
+		WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectCommit()
+
+	resp, err := server.TaskFailed(context.Background(), &pb.TaskFailedRequest{
+		TaskId:       taskID,
+		AttemptId:    attemptID,
+		LeaseId:      "lease123",
+		ErrorMessage: "worker crashed",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !resp.Success {
+		t.Fatalf("expected success ack")
 	}
 }
