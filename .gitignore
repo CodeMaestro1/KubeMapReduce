@@ -49,6 +49,9 @@ replay_pid*
 # Environment variables
 .env
 
+# Python virtual environment
+.venv/
+
 # Go workspace file
 go.work
 

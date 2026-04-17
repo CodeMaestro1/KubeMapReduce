@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -17,8 +16,6 @@ import (
 
 const (
 	defaultAdminHTTPTimeout = 10 * time.Second
-	defaultRetryAttempts    = 3
-	defaultRetryBaseDelay   = 200 * time.Millisecond
 	adminTokenRefreshSkew   = 30 * time.Second
 	defaultTokenTTL         = 60 * time.Second
 )
@@ -36,6 +33,8 @@ type KeycloakAdminClient struct {
 	retryBaseDelay time.Duration
 
 	tokenMu              sync.Mutex
+	tokenCond            *sync.Cond
+	tokenRefreshInFlight bool
 	cachedAdminToken     string
 	cachedAdminTokenTill time.Time
 }
@@ -64,48 +63,8 @@ type roleMapping struct {
 	Name string `json:"name"`
 }
 
-type ServiceUnavailableError struct {
-	Operation string
-	Err       error
-}
-
-func (e *ServiceUnavailableError) Error() string {
-	if e == nil {
-		return "authentication service unavailable"
-	}
-
-	if e.Operation == "" {
-		if e.Err == nil {
-			return "authentication service unavailable"
-		}
-		return fmt.Sprintf("authentication service unavailable: %v", e.Err)
-	}
-
-	if e.Err == nil {
-		return fmt.Sprintf("authentication service unavailable while %s", e.Operation)
-	}
-
-	return fmt.Sprintf("authentication service unavailable while %s: %v", e.Operation, e.Err)
-}
-
-func (e *ServiceUnavailableError) Unwrap() error {
-	if e == nil {
-		return nil
-	}
-	return e.Err
-}
-
-func IsServiceUnavailable(err error) bool {
-	var unavailableErr *ServiceUnavailableError
-	return errors.As(err, &unavailableErr)
-}
-
-func NewServiceUnavailableError(operation string, err error) error {
-	return &ServiceUnavailableError{Operation: operation, Err: err}
-}
-
 func NewKeycloakAdminClient(baseURL string, targetRealm string, adminUser string, adminPass string) *KeycloakAdminClient {
-	return &KeycloakAdminClient{
+	client := &KeycloakAdminClient{
 		baseURL:     strings.TrimRight(baseURL, "/"),
 		targetRealm: targetRealm,
 		adminRealm:  "master",
@@ -117,6 +76,8 @@ func NewKeycloakAdminClient(baseURL string, targetRealm string, adminUser string
 		retryAttempts:  defaultRetryAttempts,
 		retryBaseDelay: defaultRetryBaseDelay,
 	}
+	client.tokenCond = sync.NewCond(&client.tokenMu)
+	return client
 }
 
 func (c *KeycloakAdminClient) CreateUser(ctx context.Context, req CreateUserRequest) error {
@@ -202,12 +163,22 @@ func (c *KeycloakAdminClient) getAdminAccessToken(ctx context.Context) (string, 
 	}
 
 	c.tokenMu.Lock()
-	defer c.tokenMu.Unlock()
+	for {
+		now := time.Now()
+		if c.cachedAdminToken != "" && now.Add(adminTokenRefreshSkew).Before(c.cachedAdminTokenTill) {
+			token := c.cachedAdminToken
+			c.tokenMu.Unlock()
+			return token, nil
+		}
 
-	now := time.Now()
-	if c.cachedAdminToken != "" && now.Add(adminTokenRefreshSkew).Before(c.cachedAdminTokenTill) {
-		return c.cachedAdminToken, nil
+		if !c.tokenRefreshInFlight {
+			c.tokenRefreshInFlight = true
+			break
+		}
+
+		c.tokenCond.Wait()
 	}
+	c.tokenMu.Unlock()
 
 	form := url.Values{}
 	form.Set("grant_type", "password")
@@ -218,20 +189,36 @@ func (c *KeycloakAdminClient) getAdminAccessToken(ctx context.Context) (string, 
 	tokenURL := fmt.Sprintf("%s/realms/%s/protocol/openid-connect/token", c.baseURL, c.adminRealm)
 	httpResp, err := c.doRequest(ctx, http.MethodPost, tokenURL, "", "application/x-www-form-urlencoded", []byte(form.Encode()))
 	if err != nil {
+		c.tokenMu.Lock()
+		c.tokenRefreshInFlight = false
+		c.tokenCond.Broadcast()
+		c.tokenMu.Unlock()
 		return "", err
 	}
 	defer httpResp.Body.Close()
 
 	if err := ensureStatus(httpResp, http.StatusOK, "get admin token"); err != nil {
+		c.tokenMu.Lock()
+		c.tokenRefreshInFlight = false
+		c.tokenCond.Broadcast()
+		c.tokenMu.Unlock()
 		return "", err
 	}
 
 	var tokenResponse keycloakTokenResponse
 	if err := json.NewDecoder(httpResp.Body).Decode(&tokenResponse); err != nil {
+		c.tokenMu.Lock()
+		c.tokenRefreshInFlight = false
+		c.tokenCond.Broadcast()
+		c.tokenMu.Unlock()
 		return "", err
 	}
 
 	if tokenResponse.AccessToken == "" {
+		c.tokenMu.Lock()
+		c.tokenRefreshInFlight = false
+		c.tokenCond.Broadcast()
+		c.tokenMu.Unlock()
 		return "", fmt.Errorf("no admin access token in response")
 	}
 
@@ -240,8 +227,12 @@ func (c *KeycloakAdminClient) getAdminAccessToken(ctx context.Context) (string, 
 		ttl = time.Duration(tokenResponse.ExpiresIn) * time.Second
 	}
 
+	c.tokenMu.Lock()
 	c.cachedAdminToken = tokenResponse.AccessToken
 	c.cachedAdminTokenTill = time.Now().Add(ttl)
+	c.tokenRefreshInFlight = false
+	c.tokenCond.Broadcast()
+	c.tokenMu.Unlock()
 
 	return tokenResponse.AccessToken, nil
 }
@@ -433,76 +424,4 @@ func (c *KeycloakAdminClient) backoffDelay(attempt int) time.Duration {
 	}
 
 	return delay
-}
-
-func isRetryableStatus(status int) bool {
-	switch status {
-	case http.StatusTooManyRequests, http.StatusInternalServerError, http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout:
-		return true
-	default:
-		return false
-	}
-}
-
-func isRetryableError(err error) bool {
-	var netErr net.Error
-	if errors.As(err, &netErr) {
-		return true
-	}
-
-	var opErr *net.OpError
-	if errors.As(err, &opErr) {
-		return true
-	}
-
-	var urlErr *url.Error
-	if errors.As(err, &urlErr) {
-		var nestedNetErr net.Error
-		return errors.As(urlErr.Err, &nestedNetErr)
-	}
-
-	return false
-}
-
-func sleepWithContext(ctx context.Context, delay time.Duration) error {
-	timer := time.NewTimer(delay)
-	defer timer.Stop()
-
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	case <-timer.C:
-		return nil
-	}
-}
-
-func ensureStatus(resp *http.Response, expectedStatus int, operation string) error {
-	if resp.StatusCode == expectedStatus {
-		return nil
-	}
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return fmt.Errorf("failed to %s: status %d (failed to read response body: %v)", operation, resp.StatusCode, err)
-	}
-
-	return fmt.Errorf("failed to %s: status %d: %s", operation, resp.StatusCode, string(body))
-}
-
-func extractUserIDFromLocation(location string) (string, error) {
-	if location == "" {
-		return "", fmt.Errorf("missing Location header for created user")
-	}
-
-	parts := strings.Split(strings.TrimRight(location, "/"), "/")
-	if len(parts) == 0 {
-		return "", fmt.Errorf("invalid Location header")
-	}
-
-	userID := parts[len(parts)-1]
-	if userID == "" {
-		return "", fmt.Errorf("invalid user id in Location header")
-	}
-
-	return userID, nil
 }

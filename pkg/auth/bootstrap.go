@@ -593,11 +593,3 @@ func (b *keycloakBootstrapper) logf(format string, args ...any) {
 
 	_, _ = fmt.Fprintf(b.output, format+"\n", args...)
 }
-
-func ensureCallStatus(status int, body []byte, expectedStatus int, operation string) error {
-	if status == expectedStatus {
-		return nil
-	}
-
-	return fmt.Errorf("failed to %s: status %d: %s", operation, status, string(body))
-}

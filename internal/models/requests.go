@@ -1,5 +1,7 @@
 package models
 
+import "time"
+
 type FunctionSpec struct {
 	Language   string `json:"language"`
 	Artifact   string `json:"artifact"`
@@ -8,15 +10,26 @@ type FunctionSpec struct {
 }
 
 type JobSubmissionRequest struct {
-	Filename string       `json:"filename"`
-	Mapper   FunctionSpec `json:"mapper"`
-	Reducer  FunctionSpec `json:"reducer"`
+	Filename string        `json:"filename"`
+	Mapper   FunctionSpec  `json:"mapper"`
+	Reducer  FunctionSpec  `json:"reducer"`
+	Combiner *FunctionSpec `json:"combiner,omitempty"`
+	Reducers int           `json:"reducers,omitempty"`
 }
 
 type JobSubmissionResponse struct {
 	JobID   string `json:"jobId"`
 	Status  string `json:"status"`
 	Message string `json:"message"`
+}
+
+type JobStatusResponse struct {
+	JobID     string    `json:"jobId"`
+	Status    string    `json:"status"`
+	Message   string    `json:"message"`
+	Filename  string    `json:"filename"`
+	Reducers  int       `json:"reducers,omitempty"`
+	CreatedAt time.Time `json:"createdAt"`
 }
 
 type CreateUserRequest struct {
@@ -32,4 +45,14 @@ type WorkerConfigRequest struct {
 	MaxConcurrentPods int    `json:"maxConcurrentPods"`
 	CPULimit          string `json:"cpuLimit"`
 	MemoryLimit       string `json:"memoryLimit"`
+}
+
+type NodeConfigRequest struct {
+	MaxPods     int    `json:"maxPods"`
+	CPULimit    string `json:"cpuLimit"`
+	MemoryLimit string `json:"memoryLimit"`
+}
+
+type DeleteUserRequest struct {
+	Username string `json:"username"`
 }
