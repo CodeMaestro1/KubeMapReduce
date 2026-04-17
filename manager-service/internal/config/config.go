@@ -8,17 +8,24 @@ import (
 )
 
 type Config struct {
-	KeycloakBaseURL string
-	Realm           string
-	JWKSURL         string
-	Issuer          string
-	Audience        string
-	ServerAddr      string
-	AdminUsername   string
-	AdminPassword   string
-	DatabaseDSN     string
-	GRPCAddr        string
-	TotalReplicas   int
+	KeycloakBaseURL     string
+	Realm               string
+	JWKSURL             string
+	Issuer              string
+	Audience            string
+	ServerAddr          string
+	AdminUsername       string
+	AdminPassword       string
+	DatabaseDSN         string
+	GRPCAddr            string
+	TotalReplicas       int
+	HeartbeatInterval   int
+	MaxMissedHeartbeats int
+	LeaseTTL            int
+	MinioEndpoint       string
+	MinioAccessKey      string
+	MinioSecretKey      string
+	MinioUseSSL         bool
 }
 
 func Load() (*Config, error) {
@@ -33,19 +40,49 @@ func Load() (*Config, error) {
 		return nil, err
 	}
 
-	return &Config{
-		KeycloakBaseURL: keycloakBaseURL,
-		Realm:           realm,
-		JWKSURL:         getEnv("KEYCLOAK_JWKS_URL", keycloakBaseURL+"/realms/"+realm+"/protocol/openid-connect/certs"),
-		Issuer:          getEnv("KEYCLOAK_ISSUER", keycloakBaseURL+"/realms/"+realm),
-		Audience:        audience,
-		ServerAddr:      getEnv("SERVER_ADDR", ":8081"),
-		AdminUsername:   adminUsername,
-		AdminPassword:   adminPassword,
-		DatabaseDSN:     getEnv("DATABASE_DSN", "postgres://user:pass@localhost:5432/mapreduce?sslmode=disable"),
-		GRPCAddr:        getEnv("GRPC_ADDR", getEnv("GRPC_PORT", ":50051")),
-		TotalReplicas:   totalReplicas,
-	}, nil
+	hbInterval, err := getEnvInt("HEARTBEAT_INTERVAL_SEC", 10)
+	if err != nil {
+		return nil, err
+	}
+
+	maxMissed, err := getEnvInt("MAX_MISSED_HEARTBEATS", 3)
+	if err != nil {
+		return nil, err
+	}
+
+	cfg := &Config{
+		KeycloakBaseURL:     keycloakBaseURL,
+		Realm:               realm,
+		JWKSURL:             getEnv("KEYCLOAK_JWKS_URL", keycloakBaseURL+"/realms/"+realm+"/protocol/openid-connect/certs"),
+		Issuer:              getEnv("KEYCLOAK_ISSUER", keycloakBaseURL+"/realms/"+realm),
+		Audience:            audience,
+		ServerAddr:          getEnv("SERVER_ADDR", ":8081"),
+		AdminUsername:       adminUsername,
+		AdminPassword:       adminPassword,
+		DatabaseDSN:         getEnv("DATABASE_DSN", "postgres://user:pass@localhost:5432/mapreduce?sslmode=disable"),
+		GRPCAddr:            getEnv("GRPC_ADDR", getEnv("GRPC_PORT", ":50051")),
+		TotalReplicas:       totalReplicas,
+		HeartbeatInterval:   hbInterval,
+		MaxMissedHeartbeats: maxMissed,
+		MinioEndpoint:       getEnv("MINIO_ENDPOINT", "minio.default.svc.cluster.local:9000"),
+		MinioAccessKey:      getEnv("MINIO_ACCESS_KEY", "minioadmin"),
+		MinioSecretKey:      getEnv("MINIO_SECRET_KEY", "minioadmin"),
+		MinioUseSSL:         getEnvBool("MINIO_USE_SSL", false),
+	}
+	cfg.LeaseTTL = cfg.HeartbeatInterval * cfg.MaxMissedHeartbeats
+	return cfg, nil
+}
+
+func getEnvBool(key string, fallback bool) bool {
+	value := strings.TrimSpace(os.Getenv(key))
+	if value == "" {
+		return fallback
+	}
+	v, err := strconv.ParseBool(value)
+	if err != nil {
+		return fallback
+	}
+	return v
 }
 
 func getEnvInt(key string, fallback int) (int, error) {

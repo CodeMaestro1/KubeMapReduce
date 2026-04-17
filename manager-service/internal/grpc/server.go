@@ -1,9 +1,14 @@
 package grpc
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
+	"log"
 
+	"github.com/minio/minio-go/v7"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
@@ -13,12 +18,14 @@ import (
 
 type WorkerServer struct {
 	pb.UnimplementedWorkerServiceServer
-	scheduler *manager.Scheduler
+	scheduler   *manager.Scheduler
+	minioClient *minio.Client
 }
 
-func NewWorkerServer(scheduler *manager.Scheduler) *WorkerServer {
+func NewWorkerServer(scheduler *manager.Scheduler, minioClient *minio.Client) *WorkerServer {
 	return &WorkerServer{
-		scheduler: scheduler,
+		scheduler:   scheduler,
+		minioClient: minioClient,
 	}
 }
 
@@ -93,9 +100,36 @@ func (s *WorkerServer) Register(ctx context.Context, req *pb.RegisterRequest) (*
 		}
 	}
 
-	// TODO: Issue #56 "Missing manifest fallback (is_manifest) for large reduce metadata payloads"
-	// For now we don't implement the manifest, but we leave the boolean field
-	assignment.IsManifest = false
+	if len(assignment.DataLocations) > 1000 && s.minioClient != nil {
+		manifestBytes, err := json.Marshal(assignment.DataLocations)
+		if err != nil {
+			log.Printf("Failed to marshal manifest for task %s: %v", task.ID, err)
+		} else {
+			bucketName := "mapreduce-manifests"
+			objectName := fmt.Sprintf("%s-manifest.json", task.ID)
+
+			// Best-effort bucket creation
+			exists, _ := s.minioClient.BucketExists(ctx, bucketName)
+			if !exists {
+				_ = s.minioClient.MakeBucket(ctx, bucketName, minio.MakeBucketOptions{})
+			}
+
+			_, err = s.minioClient.PutObject(ctx, bucketName, objectName, bytes.NewReader(manifestBytes), int64(len(manifestBytes)), minio.PutObjectOptions{
+				ContentType: "application/json",
+			})
+
+			if err != nil {
+				log.Printf("Failed to upload manifest for task %s: %v", task.ID, err)
+				assignment.IsManifest = false
+			} else {
+				assignment.IsManifest = true
+				manifestURL := fmt.Sprintf("s3://%s/%s", bucketName, objectName)
+				assignment.DataLocations = []string{manifestURL}
+			}
+		}
+	} else {
+		assignment.IsManifest = false
+	}
 
 	return assignment, nil
 }

@@ -15,6 +15,8 @@ import (
 	"time"
 
 	_ "github.com/lib/pq"
+	"github.com/minio/minio-go/v7"
+	"github.com/minio/minio-go/v7/pkg/credentials"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/reflection"
 	"k8s.io/client-go/kubernetes"
@@ -75,9 +77,13 @@ func main() {
 		port = "50051"
 	}
 	managerAddr := resolveManagerAddr(hostname, headlessService, namespace, port)
-	scheduler, err := manager.NewScheduler(db, replicaIndex, cfg.TotalReplicas, orchestrator, managerAddr)
+	scheduler, err := manager.NewScheduler(db, replicaIndex, cfg.TotalReplicas, orchestrator, managerAddr, cfg.LeaseTTL)
 	if err != nil {
 		log.Fatalf("failed to create scheduler: %v", err)
+	}
+
+	if err := scheduler.Recover(context.Background()); err != nil {
+		log.Fatalf("failed to recover scheduler tasks: %v", err)
 	}
 
 	// 3. Start Reaper loop
@@ -133,8 +139,19 @@ func main() {
 		log.Fatalf("failed to listen on gRPC address %s: %v", cfg.GRPCAddr, err)
 	}
 
+	var minioClient *minio.Client
+	if cfg.MinioEndpoint != "" {
+		minioClient, err = minio.New(cfg.MinioEndpoint, &minio.Options{
+			Creds:  credentials.NewStaticV4(cfg.MinioAccessKey, cfg.MinioSecretKey, ""),
+			Secure: cfg.MinioUseSSL,
+		})
+		if err != nil {
+			log.Printf("failed to initialize minio client: %v", err)
+		}
+	}
+
 	grpcServer := grpc.NewServer()
-	workerServer := mgrpc.NewWorkerServer(scheduler)
+	workerServer := mgrpc.NewWorkerServer(scheduler, minioClient)
 	pb.RegisterWorkerServiceServer(grpcServer, workerServer)
 	reflection.Register(grpcServer)
 
