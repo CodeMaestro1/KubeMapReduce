@@ -578,6 +578,9 @@ func TestWorkerServer_TaskFailed_SuccessReturnsAck(t *testing.T) {
 	mock.ExpectExec(regexp.QuoteMeta(manager.QueryFailAttempt)).
 		WithArgs(attemptID).
 		WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectQuery(regexp.QuoteMeta(manager.QueryGetTaskJobID)).
+		WithArgs(taskID).
+		WillReturnRows(sqlmock.NewRows([]string{"job_id"}).AddRow("job123"))
 	mock.ExpectExec(regexp.QuoteMeta(manager.QueryUpdateTaskInProgress)).
 		WithArgs(sqlmock.AnyArg(), taskID).
 		WillReturnResult(sqlmock.NewResult(1, 1))

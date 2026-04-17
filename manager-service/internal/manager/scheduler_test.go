@@ -52,13 +52,17 @@ type recordingOrchestrator struct {
 	err   error
 }
 
-func (r *recordingOrchestrator) SpawnWorker(ctx context.Context, taskID string, attemptID string, managerAddr string) error {
+func (r *recordingOrchestrator) SpawnWorker(ctx context.Context, taskID string, jobID string, attemptID string, managerAddr string) error {
 	r.mu.Lock()
 	r.calls = append(r.calls, spawnCall{taskID: taskID, attemptID: attemptID, managerAddr: managerAddr})
 	r.mu.Unlock()
 	if r.err != nil {
 		return r.err
 	}
+	return nil
+}
+
+func (r *recordingOrchestrator) CancelJob(ctx context.Context, jobID string) error {
 	return nil
 }
 
@@ -527,6 +531,10 @@ func TestScheduler_FailTask_RetryableSuccess(t *testing.T) {
 		WithArgs(attemptID).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
+	mock.ExpectQuery(regexp.QuoteMeta(QueryGetTaskJobID)).
+		WithArgs(taskID).
+		WillReturnRows(sqlmock.NewRows([]string{"job_id"}).AddRow("job123"))
+
 	mock.ExpectExec(regexp.QuoteMeta(QueryUpdateTaskInProgress)).
 		WithArgs(sqlmock.AnyArg(), taskID).
 		WillReturnResult(sqlmock.NewResult(1, 1))
@@ -671,8 +679,8 @@ func TestScheduler_Recover_SpawnsRecoverableAttempts(t *testing.T) {
 	attemptID := uuid.New().String()
 	mock.ExpectQuery(regexp.QuoteMeta(QuerySelectRecoverableAttempts)).
 		WithArgs(0).
-		WillReturnRows(sqlmock.NewRows([]string{"task_id", "current_attempt_id"}).
-			AddRow(taskID, attemptID))
+		WillReturnRows(sqlmock.NewRows([]string{"task_id", "current_attempt_id", "job_id"}).
+			AddRow(taskID, attemptID, "job-123"))
 
 	if err := scheduler.Recover(context.Background()); err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -696,7 +704,7 @@ func TestScheduler_Recover_NoRecoverableAttempts_NoSpawn(t *testing.T) {
 
 	mock.ExpectQuery(regexp.QuoteMeta(QuerySelectRecoverableAttempts)).
 		WithArgs(0).
-		WillReturnRows(sqlmock.NewRows([]string{"task_id", "current_attempt_id"}))
+		WillReturnRows(sqlmock.NewRows([]string{"task_id", "current_attempt_id", "job_id"}))
 
 	if err := scheduler.Recover(context.Background()); err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -734,6 +742,10 @@ func TestScheduler_FailStaleTasks_Success(t *testing.T) {
 	mock.ExpectBegin()
 	mock.ExpectQuery(regexp.QuoteMeta(QuerySelectStaleTasks)).
 		WillReturnRows(sqlmock.NewRows([]string{"task_id", "attempt_id"}).AddRow(taskID, attemptID))
+
+	mock.ExpectQuery(regexp.QuoteMeta(QueryGetTaskJobID)).
+		WithArgs(taskID).
+		WillReturnRows(sqlmock.NewRows([]string{"job_id"}).AddRow("job123"))
 
 	mock.ExpectQuery(regexp.QuoteMeta(QueryCountAttemptsByTask)).
 		WithArgs(taskID).
@@ -778,6 +790,10 @@ func TestScheduler_FailStaleTasks_MarksJobFailedAtMaxAttempts(t *testing.T) {
 	mock.ExpectQuery(regexp.QuoteMeta(QuerySelectStaleTasks)).
 		WillReturnRows(sqlmock.NewRows([]string{"task_id", "attempt_id"}).AddRow(taskID, attemptID))
 
+	mock.ExpectQuery(regexp.QuoteMeta(QueryGetTaskJobID)).
+		WithArgs(taskID).
+		WillReturnRows(sqlmock.NewRows([]string{"job_id"}).AddRow(jobID))
+
 	mock.ExpectQuery(regexp.QuoteMeta(QueryCountAttemptsByTask)).
 		WithArgs(taskID).
 		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(3))
@@ -789,10 +805,6 @@ func TestScheduler_FailStaleTasks_MarksJobFailedAtMaxAttempts(t *testing.T) {
 	mock.ExpectExec(regexp.QuoteMeta(QueryFailAttempt)).
 		WithArgs(attemptID).
 		WillReturnResult(sqlmock.NewResult(1, 1))
-
-	mock.ExpectQuery(regexp.QuoteMeta(QueryGetTaskJobID)).
-		WithArgs(taskID).
-		WillReturnRows(sqlmock.NewRows([]string{"job_id"}).AddRow(jobID))
 
 	mock.ExpectExec(regexp.QuoteMeta(QueryUpdateJobStatus)).
 		WithArgs(jobID, "Failed", sqlmock.AnyArg()).
@@ -1167,5 +1179,79 @@ func TestScheduler_UpsertSystemConfig(t *testing.T) {
 		MemoryLimit:       "1Gi",
 	}); err != nil {
 		t.Fatalf("expected upsert success, got %v", err)
+	}
+}
+
+func TestScheduler_CancelJob_Success(t *testing.T) {
+	db, mock, scheduler := setupMockDB(t)
+	defer db.Close()
+
+	jobID := uuid.New().String()
+
+	mock.ExpectBegin()
+	mock.ExpectExec(regexp.QuoteMeta(QueryUpdateJobStatus)).
+		WithArgs(jobID, "Failed", sqlmock.AnyArg()).
+		WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectExec("UPDATE TASKS SET status = 'Failed' WHERE job_id =").
+		WithArgs(jobID).
+		WillReturnResult(sqlmock.NewResult(1, 3))
+	mock.ExpectCommit()
+
+	err := scheduler.CancelJob(jobID)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	time.Sleep(50 * time.Millisecond)
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unfulfilled expectations: %s", err)
+	}
+}
+
+func TestScheduler_CompleteTask_JobCompleted_TriggersCleanup(t *testing.T) {
+	db, mock, scheduler := setupMockDB(t)
+	defer db.Close()
+
+	taskID := uuid.New().String()
+	attemptID := uuid.New().String()
+	leaseID := "lease-456"
+	jobID := uuid.New().String()
+
+	mock.ExpectBegin()
+	mock.ExpectQuery(regexp.QuoteMeta(QuerySelectTaskForUpdate)).
+		WithArgs(taskID).
+		WillReturnRows(sqlmock.NewRows([]string{"status", "current_attempt_id"}).AddRow("In-Progress", attemptID))
+	expectLeaseValidation(mock, attemptID, leaseID, true)
+	mock.ExpectExec(regexp.QuoteMeta(QueryCompleteTask)).
+		WithArgs(taskID).
+		WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectExec(regexp.QuoteMeta(QuerySucceedAttempt)).
+		WithArgs(attemptID).
+		WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectExec(regexp.QuoteMeta(QueryInsertOutput)).
+		WithArgs(taskID, 0, "s3://output/file.txt", "sha256-output").
+		WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectQuery(regexp.QuoteMeta(QueryGetTaskJobID)).
+		WithArgs(taskID).
+		WillReturnRows(sqlmock.NewRows([]string{"job_id"}).AddRow(jobID))
+	mock.ExpectQuery(regexp.QuoteMeta(QueryCountAllPendingTasks)).
+		WithArgs(jobID).
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
+	mock.ExpectExec(regexp.QuoteMeta(QueryUpdateJobStatus)).
+		WithArgs(jobID, "Completed", sqlmock.AnyArg()).
+		WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectCommit()
+
+	err := scheduler.CompleteTask(taskID, attemptID, leaseID,
+		[]string{"s3://output/file.txt"}, []string{"sha256-output"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	time.Sleep(50 * time.Millisecond)
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unfulfilled expectations: %s", err)
 	}
 }

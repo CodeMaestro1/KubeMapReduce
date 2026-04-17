@@ -15,7 +15,8 @@ import (
 )
 
 type WorkerOrchestrator interface {
-	SpawnWorker(ctx context.Context, taskID string, attemptID string, managerAddr string) error
+	SpawnWorker(ctx context.Context, taskID string, jobID string, attemptID string, managerAddr string) error
+	CancelJob(ctx context.Context, jobID string) error
 }
 
 type KubeOrchestrator struct {
@@ -38,8 +39,9 @@ func NewKubeOrchestrator(clientset kubernetes.Interface, namespace, workerImage 
 	}
 }
 
-func (k *KubeOrchestrator) SpawnWorker(ctx context.Context, taskID string, attemptID string, managerAddr string) error {
+func (k *KubeOrchestrator) SpawnWorker(ctx context.Context, taskID string, jobID string, attemptID string, managerAddr string) error {
 	sanitizedTaskID := sanitizeForDNSLabel(taskID)
+	sanitizedJobID := sanitizeForDNSLabel(jobID)
 	jobName := buildWorkerJobName(sanitizedTaskID, attemptID)
 	backoffLimit := int32(0)
 
@@ -55,6 +57,7 @@ func (k *KubeOrchestrator) SpawnWorker(ctx context.Context, taskID string, attem
 					Labels: map[string]string{
 						"app":     "kubemapreduce-worker",
 						"task_id": sanitizedTaskID,
+						"job_id":  sanitizedJobID,
 					},
 				},
 				Spec: corev1.PodSpec{
@@ -91,12 +94,29 @@ func (k *KubeOrchestrator) SpawnWorker(ctx context.Context, taskID string, attem
 	if !apierrors.IsAlreadyExists(err) {
 		return err
 	}
-	return nil
+	if delErr := k.clientset.BatchV1().Jobs(k.namespace).Delete(ctx, jobName, metav1.DeleteOptions{}); delErr != nil && !apierrors.IsNotFound(delErr) {
+		return delErr
+	}
+	_, err = k.clientset.BatchV1().Jobs(k.namespace).Create(ctx, job, metav1.CreateOptions{})
+	return err
+}
+
+func (k *KubeOrchestrator) CancelJob(ctx context.Context, jobID string) error {
+	sanitizedJobID := sanitizeForDNSLabel(jobID)
+	policy := metav1.DeletePropagationBackground
+	return k.clientset.BatchV1().Jobs(k.namespace).DeleteCollection(ctx,
+		metav1.DeleteOptions{PropagationPolicy: &policy},
+		metav1.ListOptions{LabelSelector: fmt.Sprintf("job_id=%s", sanitizedJobID)},
+	)
 }
 
 type MockOrchestrator struct{}
 
-func (m *MockOrchestrator) SpawnWorker(ctx context.Context, taskID string, attemptID string, managerAddr string) error {
+func (m *MockOrchestrator) SpawnWorker(ctx context.Context, taskID string, jobID string, attemptID string, managerAddr string) error {
+	return nil
+}
+
+func (m *MockOrchestrator) CancelJob(ctx context.Context, jobID string) error {
 	return nil
 }
 
