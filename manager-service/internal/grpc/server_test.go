@@ -3,6 +3,8 @@ package grpc
 import (
 	"context"
 	"database/sql"
+	"errors"
+	"fmt"
 	"regexp"
 	"testing"
 	"time"
@@ -28,6 +30,23 @@ func setupMockServer(t *testing.T) (*sql.DB, sqlmock.Sqlmock, *WorkerServer) {
 	}
 
 	return db, mock, NewWorkerServer(scheduler, nil)
+}
+
+type fakeManifestUploader struct {
+	uri     string
+	err     error
+	payload []byte
+}
+
+func (f *fakeManifestUploader) UploadManifest(ctx context.Context, bucketName, objectName string, payload []byte) (string, error) {
+	f.payload = append([]byte(nil), payload...)
+	if f.err != nil {
+		return "", f.err
+	}
+	if f.uri != "" {
+		return f.uri, nil
+	}
+	return fmt.Sprintf("s3://%s/%s", bucketName, objectName), nil
 }
 
 func TestWorkerServer_Register_Success(t *testing.T) {
@@ -241,6 +260,113 @@ func TestWorkerServer_Register_ReduceUsesReplicaPartition(t *testing.T) {
 	}
 }
 
+func TestWorkerServer_Register_ManifestFallback(t *testing.T) {
+	db, mock, baseServer := setupMockServer(t)
+	defer db.Close()
+
+	origThreshold := maxTaskAssignmentSizeBytes
+	maxTaskAssignmentSizeBytes = 500
+	defer func() { maxTaskAssignmentSizeBytes = origThreshold }()
+
+	taskID := uuid.New().String()
+	jobID := uuid.New().String()
+	attemptID := uuid.New().String()
+
+	mock.ExpectQuery(regexp.QuoteMeta(manager.QueryGetTaskByID)).
+		WithArgs(taskID).
+		WillReturnRows(sqlmock.NewRows([]string{"task_id", "job_id", "task_type", "status", "current_attempt_id", "replica_index"}).
+			AddRow(taskID, jobID, "Map", "In-Progress", attemptID, 0))
+
+	mock.ExpectQuery(regexp.QuoteMeta(manager.QueryGetJobConfigByTask)).
+		WithArgs(taskID).
+		WillReturnRows(sqlmock.NewRows([]string{"mapper_uri", "reducer_uri", "combiner_uri", "r_tasks", "input_checksum"}).
+			AddRow("s3://code/mapper.py", "s3://code/reducer.py", "s3://code/combiner.py", 3, "sha256-input"))
+
+	inputRows := sqlmock.NewRows([]string{"input_uri", "byte_start", "byte_end", "split_checksum"})
+	for i := 0; i < 40; i++ {
+		inputRows.AddRow(fmt.Sprintf("s3://inputs/split-%d.jsonl", i), int64(i*128), int64((i+1)*128), fmt.Sprintf("sha256-split-%d", i))
+	}
+	mock.ExpectQuery(regexp.QuoteMeta(manager.QueryGetTaskInputs)).
+		WithArgs(taskID).
+		WillReturnRows(inputRows)
+
+	mock.ExpectQuery(regexp.QuoteMeta(manager.QueryGetAttemptDetails)).
+		WithArgs(attemptID).
+		WillReturnRows(sqlmock.NewRows([]string{"worker_id", "lease_id", "start_time", "last_renewed_at"}).
+			AddRow("worker-1", "lease123", time.Now(), time.Now()))
+
+	uploader := &fakeManifestUploader{uri: "s3://mapreduce-manifests/test-manifest.json"}
+	server := newWorkerServerWithManifestUploader(baseServer.scheduler, nil, uploader)
+	resp, err := server.Register(context.Background(), &pb.RegisterRequest{
+		TaskId:    taskID,
+		AttemptId: attemptID,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !resp.IsManifest {
+		t.Fatalf("expected manifest mode")
+	}
+	if len(resp.DataLocations) != 1 || resp.DataLocations[0] != uploader.uri {
+		t.Fatalf("expected manifest URI %q, got %+v", uploader.uri, resp.DataLocations)
+	}
+	if len(uploader.payload) == 0 {
+		t.Fatalf("expected manifest payload to be uploaded")
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unfulfilled expectations: %v", err)
+	}
+}
+
+func TestWorkerServer_Register_ManifestUploadFailureReturnsError(t *testing.T) {
+	db, mock, baseServer := setupMockServer(t)
+	defer db.Close()
+
+	origThreshold := maxTaskAssignmentSizeBytes
+	maxTaskAssignmentSizeBytes = 500
+	defer func() { maxTaskAssignmentSizeBytes = origThreshold }()
+
+	taskID := uuid.New().String()
+	jobID := uuid.New().String()
+	attemptID := uuid.New().String()
+
+	mock.ExpectQuery(regexp.QuoteMeta(manager.QueryGetTaskByID)).
+		WithArgs(taskID).
+		WillReturnRows(sqlmock.NewRows([]string{"task_id", "job_id", "task_type", "status", "current_attempt_id", "replica_index"}).
+			AddRow(taskID, jobID, "Map", "In-Progress", attemptID, 0))
+	mock.ExpectQuery(regexp.QuoteMeta(manager.QueryGetJobConfigByTask)).
+		WithArgs(taskID).
+		WillReturnRows(sqlmock.NewRows([]string{"mapper_uri", "reducer_uri", "combiner_uri", "r_tasks", "input_checksum"}).
+			AddRow("s3://code/mapper.py", "s3://code/reducer.py", "s3://code/combiner.py", 3, "sha256-input"))
+	mock.ExpectQuery(regexp.QuoteMeta(manager.QueryGetTaskInputs)).
+		WithArgs(taskID).
+		WillReturnRows(func() *sqlmock.Rows {
+			rows := sqlmock.NewRows([]string{"input_uri", "byte_start", "byte_end", "split_checksum"})
+			for i := 0; i < 15; i++ {
+				rows.AddRow(fmt.Sprintf("s3://inputs/split-%d.jsonl", i), int64(i*128), int64((i+1)*128), fmt.Sprintf("sha256-split-%d", i))
+			}
+			return rows
+		}())
+	mock.ExpectQuery(regexp.QuoteMeta(manager.QueryGetAttemptDetails)).
+		WithArgs(attemptID).
+		WillReturnRows(sqlmock.NewRows([]string{"worker_id", "lease_id", "start_time", "last_renewed_at"}).
+			AddRow("worker-1", "lease123", time.Now(), time.Now()))
+
+	uploader := &fakeManifestUploader{err: errors.New("upload failed")}
+	server := newWorkerServerWithManifestUploader(baseServer.scheduler, nil, uploader)
+	_, err := server.Register(context.Background(), &pb.RegisterRequest{
+		TaskId:    taskID,
+		AttemptId: attemptID,
+	})
+	if err == nil {
+		t.Fatalf("expected error, got nil")
+	}
+	st, ok := status.FromError(err)
+	if !ok || st.Code() != codes.Unavailable {
+		t.Fatalf("expected Unavailable, got %v", err)
+	}
+}
+
 func TestWorkerServer_TaskComplete_StaleAttemptReturnsPermissionDenied(t *testing.T) {
 	db, mock, server := setupMockServer(t)
 	defer db.Close()
@@ -451,6 +577,12 @@ func TestWorkerServer_TaskFailed_SuccessReturnsAck(t *testing.T) {
 		WillReturnResult(sqlmock.NewResult(1, 1))
 	mock.ExpectExec(regexp.QuoteMeta(manager.QueryFailAttempt)).
 		WithArgs(attemptID).
+		WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectExec(regexp.QuoteMeta(manager.QueryUpdateTaskInProgress)).
+		WithArgs(sqlmock.AnyArg(), taskID).
+		WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectExec(regexp.QuoteMeta(manager.QueryInsertAttempt)).
+		WithArgs(sqlmock.AnyArg(), taskID, "system-recovery", sqlmock.AnyArg(), sqlmock.AnyArg()).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 	mock.ExpectCommit()
 
