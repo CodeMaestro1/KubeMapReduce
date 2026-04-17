@@ -194,6 +194,32 @@ func TestDoAuthRequestWithContext_SetsHeaders(t *testing.T) {
 	resp.Body.Close()
 }
 
+func TestDoAuthRequestWithContext_RejectsMissingToken(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	_, err := doAuthRequestWithContext(ctx, http.MethodGet, "http://example.test/jobs", "   ", nil)
+	if err == nil {
+		t.Fatal("expected error for missing token")
+	}
+	if !strings.Contains(err.Error(), "missing access token") {
+		t.Fatalf("expected missing token error, got: %v", err)
+	}
+}
+
+func TestDoAuthRequestWithContext_RejectsNonHTTPSchemes(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	_, err := doAuthRequestWithContext(ctx, http.MethodGet, "ftp://example.test/jobs", "token", nil)
+	if err == nil {
+		t.Fatal("expected error for unsupported URL scheme")
+	}
+	if !strings.Contains(err.Error(), "unsupported URL scheme") {
+		t.Fatalf("expected unsupported scheme error, got: %v", err)
+	}
+}
+
 func TestCliRequestContext_HasBoundedDeadline(t *testing.T) {
 	ctx, cancel := cliRequestContext()
 	defer cancel()

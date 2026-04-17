@@ -8,6 +8,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -31,6 +32,7 @@ func keycloakRealm() string    { return getEnv("KEYCLOAK_REALM", "mapreduce") }
 func keycloakClientID() string { return getEnv("KEYCLOAK_AUDIENCE", "mapreduce-api") }
 
 const cliRequestTimeout = 30 * time.Second
+const maxCLIResponseBodyBytes int64 = 4 << 20
 
 var cliHTTPClient = &http.Client{Timeout: cliRequestTimeout}
 var loadStoredTokens = auth.LoadTokens
@@ -114,6 +116,24 @@ func doAuthRequest(method, reqURL, token string, body []byte) (*http.Response, e
 }
 
 func doAuthRequestWithContext(ctx context.Context, method, reqURL, token string, body []byte) (*http.Response, error) {
+	trimmedToken := strings.TrimSpace(token)
+	if trimmedToken == "" {
+		// Guard against leaking malformed Authorization headers when credentials are missing/corrupt.
+		return nil, fmt.Errorf("missing access token")
+	}
+
+	parsedURL, err := url.Parse(reqURL)
+	if err != nil {
+		return nil, fmt.Errorf("invalid request URL: %w", err)
+	}
+	if parsedURL.Scheme != "http" && parsedURL.Scheme != "https" {
+		// Restrict outbound authenticated requests to HTTP(S) only to avoid credential misuse.
+		return nil, fmt.Errorf("unsupported URL scheme %q", parsedURL.Scheme)
+	}
+	if strings.TrimSpace(parsedURL.Host) == "" {
+		return nil, fmt.Errorf("invalid request URL: missing host")
+	}
+
 	var reader io.Reader
 	if body != nil {
 		reader = bytes.NewReader(body)
@@ -124,7 +144,7 @@ func doAuthRequestWithContext(ctx context.Context, method, reqURL, token string,
 		return nil, err
 	}
 
-	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Authorization", "Bearer "+trimmedToken)
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
@@ -140,7 +160,10 @@ func doAuthRequestExpect(method, reqURL, token string, body []byte, expectedStat
 
 	if resp.StatusCode != expectedStatus {
 		defer resp.Body.Close()
-		respBody, _ := io.ReadAll(resp.Body)
+		respBody, readErr := readResponseBody(resp.Body)
+		if readErr != nil {
+			log.Fatalf("%s (HTTP %d): failed to read response body: %v", failPrefix, resp.StatusCode, readErr)
+		}
 		log.Fatalf("%s (HTTP %d): %s", failPrefix, resp.StatusCode, string(respBody))
 	}
 
@@ -148,7 +171,10 @@ func doAuthRequestExpect(method, reqURL, token string, body []byte, expectedStat
 }
 
 func printResponse(resp *http.Response) {
-	body, _ := io.ReadAll(resp.Body)
+	body, err := readResponseBody(resp.Body)
+	if err != nil {
+		log.Fatalf("failed to read response body: %v", err)
+	}
 
 	var buf bytes.Buffer
 	if json.Indent(&buf, body, "", "  ") == nil {
@@ -156,4 +182,16 @@ func printResponse(resp *http.Response) {
 	} else {
 		fmt.Print(string(body))
 	}
+}
+
+func readResponseBody(body io.Reader) ([]byte, error) {
+	// Cap body reads so large/malicious responses cannot exhaust CLI memory.
+	payload, err := io.ReadAll(io.LimitReader(body, maxCLIResponseBodyBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(payload)) > maxCLIResponseBodyBytes {
+		return nil, fmt.Errorf("response body exceeds %d bytes", maxCLIResponseBodyBytes)
+	}
+	return payload, nil
 }

@@ -3,7 +3,6 @@ package main
 import (
 	"flag"
 	"fmt"
-	"io"
 	"log"
 	"net/http"
 	"os"
@@ -99,7 +98,10 @@ func cmdHealth() {
 	}
 	defer resp.Body.Close()
 
-	body, _ := io.ReadAll(resp.Body)
+	body, err := readResponseBody(resp.Body)
+	if err != nil {
+		log.Fatalf("health check failed while reading response body: %v", err)
+	}
 	if resp.StatusCode != http.StatusOK {
 		log.Fatalf("health check failed (HTTP %s): %s", resp.Status, strings.TrimSpace(string(body)))
 	}

@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
-	"io"
 	"log"
 	"net/http"
 	"net/url"
@@ -13,6 +12,11 @@ import (
 
 	"golang.org/x/term"
 )
+
+var adminConfigureNodesDoAuthRequest = doAuthRequest
+var adminConfigureNodesExit = os.Exit
+var adminGetValidToken = getValidToken
+var adminRequireAdminRole = requireAdminRole
 
 // ── admin helpers ──────────────────────────────────────────
 
@@ -72,12 +76,16 @@ func cmdAdminCreateUser(args []string) {
 		log.Fatal("password is required: use --password or --prompt-password")
 	}
 
-	payload, _ := json.Marshal(map[string]string{
+	payload, err := json.Marshal(map[string]string{
 		"username": strings.TrimSpace(*username),
 		"email":    strings.TrimSpace(*email),
 		"password": userPw,
 		"role":     normalizedRole,
 	})
+	if err != nil {
+		// Fail fast on serialization errors so we never send a malformed admin payload.
+		log.Fatalf("failed to build create-user request: %v", err)
+	}
 
 	resp := doAuthRequestExpect(
 		http.MethodPost,
@@ -124,8 +132,15 @@ func cmdAdminDeleteUser(args []string) {
 // ── admin configure-nodes ─────────────────────────────────
 
 func cmdAdminConfigureNodes(args []string) {
-	token, serverURL := getValidToken()
-	requireAdminRole(token)
+	if err := runAdminConfigureNodes(args, adminConfigureNodesDoAuthRequest); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		adminConfigureNodesExit(1)
+	}
+}
+
+func runAdminConfigureNodes(args []string, requestFn func(string, string, string, []byte) (*http.Response, error)) error {
+	token, serverURL := adminGetValidToken()
+	adminRequireAdminRole(token)
 	fs := flag.NewFlagSet("admin configure-nodes", flag.ExitOnError)
 	maxPods := fs.Int("max-pods", 0, "Maximum pods per node (required, > 0)")
 	cpuLimit := fs.String("cpu-limit", "", "CPU limit per pod, e.g. 500m (required)")
@@ -133,41 +148,49 @@ func cmdAdminConfigureNodes(args []string) {
 	_ = fs.Parse(args)
 
 	if *maxPods < 1 {
-		log.Fatal("--max-pods is required and must be > 0")
+		return fmt.Errorf("--max-pods is required and must be > 0")
 	}
 	if strings.TrimSpace(*cpuLimit) == "" {
-		log.Fatal("--cpu-limit is required")
+		return fmt.Errorf("--cpu-limit is required")
 	}
 	if strings.TrimSpace(*memoryLimit) == "" {
-		log.Fatal("--memory-limit is required")
+		return fmt.Errorf("--memory-limit is required")
 	}
 
-	payload, _ := json.Marshal(map[string]interface{}{
+	payload, err := json.Marshal(map[string]interface{}{
 		"maxPods":     *maxPods,
 		"cpuLimit":    strings.TrimSpace(*cpuLimit),
 		"memoryLimit": strings.TrimSpace(*memoryLimit),
 	})
+	if err != nil {
+		// Defensive check: surface payload-construction failures instead of sending bad data.
+		return fmt.Errorf("failed to build configure-nodes request: %w", err)
+	}
 
-	resp, err := doAuthRequest(
+	resp, err := requestFn(
 		http.MethodPut,
 		serverURL+"/admin/nodes/config",
 		token,
 		payload,
 	)
 	if err != nil {
-		log.Fatalf("request failed: %v", err)
+		return fmt.Errorf("request failed: %w", err)
 	}
 
 	if resp.StatusCode != http.StatusAccepted {
 		defer resp.Body.Close()
-		respBody, _ := io.ReadAll(resp.Body)
+		respBody, readErr := readResponseBody(resp.Body)
+		if readErr != nil {
+			return fmt.Errorf("failed to read configure-nodes error response: %w", readErr)
+		}
 		if statusErr := configureNodesStatusError(resp.StatusCode, string(respBody)); statusErr != nil {
-			log.Fatal(statusErr)
+			return statusErr
 		}
 	}
 	defer resp.Body.Close()
 
 	printResponse(resp)
+	return nil
 }
 
 func configureNodesStatusError(statusCode int, responseBody string) error {
@@ -205,10 +228,14 @@ func cmdAdminWorkerConfig(args []string) {
 		log.Fatal("--replicas and --max-jobs are required and must be > 0")
 	}
 
-	payload, _ := json.Marshal(map[string]int{
+	payload, err := json.Marshal(map[string]int{
 		"workerReplicas": *replicas,
 		"maxJobsPerNode": *maxJobs,
 	})
+	if err != nil {
+		// Defensive check: avoid issuing requests with partially built JSON bodies.
+		log.Fatalf("failed to build worker-config request: %v", err)
+	}
 
 	resp := doAuthRequestExpect(
 		http.MethodPut,

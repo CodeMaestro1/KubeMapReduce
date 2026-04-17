@@ -34,6 +34,9 @@ type cliJobPayload struct {
 var jobsSubmitGetValidToken = getValidToken
 var jobsSubmitDoAuthRequestExpect = doAuthRequestExpect
 var jobsSubmitExit = os.Exit
+var jobsListGetValidToken = getValidToken
+var jobsListDoAuthRequestExpect = doAuthRequestExpect
+var jobsListExit = os.Exit
 
 func validateReducersCount(reducers int) error {
 	if reducers < 1 {
@@ -137,8 +140,8 @@ func cmdJobsSubmit(args []string) {
 // ── jobs list ──────────────────────────────────────────────
 
 func cmdJobsList() {
-	token, serverURL := getValidToken()
-	resp := doAuthRequestExpect(
+	token, serverURL := jobsListGetValidToken()
+	resp := jobsListDoAuthRequestExpect(
 		http.MethodGet,
 		serverURL+"/jobs",
 		token,
@@ -148,7 +151,7 @@ func cmdJobsList() {
 	)
 	defer resp.Body.Close()
 
-	body, err := io.ReadAll(resp.Body)
+	body, err := readResponseBody(resp.Body)
 	if err != nil {
 		log.Fatalf("failed to read response: %v", err)
 	}
@@ -160,7 +163,13 @@ func cmdJobsList() {
 		CreatedAt time.Time `json:"createdAt"`
 	}
 	if err := json.Unmarshal(body, &jobs); err != nil {
-		fmt.Print(string(body))
+		fmt.Fprintln(os.Stderr, "kubemapreduce: jobs list returned an unexpected response shape")
+		fmt.Fprintf(os.Stderr, "kubemapreduce: failed to decode jobs list response: %v\n", err)
+		if len(body) > 0 {
+			fmt.Fprintln(os.Stderr, "kubemapreduce: raw response:")
+			fmt.Fprintln(os.Stderr, string(body))
+		}
+		jobsListExit(1)
 		return
 	}
 
