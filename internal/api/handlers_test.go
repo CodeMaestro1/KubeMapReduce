@@ -622,7 +622,7 @@ func TestHandleJobsSubmit_EvictsOldestWhenMaxCapacityExceeded(t *testing.T) {
 		t.Fatalf("expected %d, got %d", http.StatusOK, listRec.Code)
 	}
 
-	var jobs []models.JobStatus
+	var jobs []models.JobStatusResponse
 	if err := json.Unmarshal(listRec.Body.Bytes(), &jobs); err != nil {
 		t.Fatalf("decode jobs list: %v", err)
 	}

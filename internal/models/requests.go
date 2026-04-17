@@ -23,7 +23,7 @@ type JobSubmissionResponse struct {
 	Message string `json:"message"`
 }
 
-type JobStatus struct {
+type JobStatusResponse struct {
 	JobID     string    `json:"jobId"`
 	Status    string    `json:"status"`
 	Message   string    `json:"message"`
@@ -39,22 +39,10 @@ type CreateUserRequest struct {
 	Role     string `json:"role"`
 }
 
-// WorkerConfigRequest mirrors the admin configure-nodes CLI command
-// and maps directly to the SYSTEM_CONFIG table in the DDS schema.
+// WorkerConfigRequest mirrors the admin worker-config CLI command.
 type WorkerConfigRequest struct {
-	MaxConcurrentPods int    `json:"maxConcurrentPods"`
-	CPULimit          string `json:"cpuLimit"`
-	MemoryLimit       string `json:"memoryLimit"`
-}
-
-type NodeConfigRequest struct {
-	MaxPods     int    `json:"maxPods"`
-	CPULimit    string `json:"cpuLimit"`
-	MemoryLimit string `json:"memoryLimit"`
-}
-
-type DeleteUserRequest struct {
-	Username string `json:"username"`
+	WorkerReplicas int `json:"workerReplicas"`
+	MaxJobsPerNode int `json:"maxJobsPerNode"`
 }
 
 type NodeConfigRequest struct {

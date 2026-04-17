@@ -161,11 +161,11 @@ func TestJob_IsTerminal(t *testing.T) {
 	}
 }
 
-func TestWorkerConfigRequest_Serialization(t *testing.T) {
-	req := WorkerConfigRequest{
-		MaxConcurrentPods: 20,
-		CPULimit:          "500m",
-		MemoryLimit:       "1Gi",
+func TestNodeConfigRequest_Serialization(t *testing.T) {
+	req := NodeConfigRequest{
+		MaxPods:     20,
+		CPULimit:    "500m",
+		MemoryLimit: "1Gi",
 	}
 
 	data, err := json.Marshal(req)
@@ -173,13 +173,13 @@ func TestWorkerConfigRequest_Serialization(t *testing.T) {
 		t.Fatalf("Failed to marshal WorkerConfigRequest: %v", err)
 	}
 
-	var unmarshaled WorkerConfigRequest
+	var unmarshaled NodeConfigRequest
 	if err := json.Unmarshal(data, &unmarshaled); err != nil {
-		t.Fatalf("Failed to unmarshal WorkerConfigRequest: %v", err)
+		t.Fatalf("Failed to unmarshal NodeConfigRequest: %v", err)
 	}
 
-	if unmarshaled.MaxConcurrentPods != 20 {
-		t.Errorf("Expected MaxConcurrentPods 20, got %d", unmarshaled.MaxConcurrentPods)
+	if unmarshaled.MaxPods != 20 {
+		t.Errorf("Expected MaxPods 20, got %d", unmarshaled.MaxPods)
 	}
 	if unmarshaled.CPULimit != "500m" {
 		t.Errorf("Expected CPULimit '500m', got %q", unmarshaled.CPULimit)
@@ -194,7 +194,7 @@ func TestWorkerConfigRequest_Serialization(t *testing.T) {
 		t.Fatalf("Failed to unmarshal into map: %v", err)
 	}
 
-	expectedKeys := []string{"maxConcurrentPods", "cpuLimit", "memoryLimit"}
+	expectedKeys := []string{"maxPods", "cpuLimit", "memoryLimit"}
 	for _, key := range expectedKeys {
 		if _, ok := jsonMap[key]; !ok {
 			t.Errorf("Expected JSON key %q to be present", key)
