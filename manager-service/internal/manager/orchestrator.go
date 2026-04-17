@@ -2,7 +2,7 @@ package manager
 
 import (
 	"context"
-	"crypto/sha1"
+	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
 	"strings"
@@ -87,11 +87,7 @@ func (k *KubeOrchestrator) SpawnWorker(ctx context.Context, taskID string, manag
 	if !apierrors.IsAlreadyExists(err) {
 		return err
 	}
-	if delErr := k.clientset.BatchV1().Jobs(k.namespace).Delete(ctx, jobName, metav1.DeleteOptions{}); delErr != nil && !apierrors.IsNotFound(delErr) {
-		return delErr
-	}
-	_, err = k.clientset.BatchV1().Jobs(k.namespace).Create(ctx, job, metav1.CreateOptions{})
-	return err
+	return nil
 }
 
 type MockOrchestrator struct{}
@@ -135,11 +131,14 @@ func buildWorkerJobName(sanitizedTaskID string) string {
 		return prefix + sanitizedTaskID
 	}
 
-	sum := sha1.Sum([]byte(sanitizedTaskID))
-	hash := hex.EncodeToString(sum[:])[:8]
+	sum := sha256.Sum256([]byte(sanitizedTaskID))
+	hash := hex.EncodeToString(sum[:])[:12]
 	maxTaskPart := maxDNSLength - len(prefix) - len("-") - len(hash)
 	if maxTaskPart < 1 {
 		maxTaskPart = 1
+	}
+	if maxTaskPart > len(sanitizedTaskID) {
+		maxTaskPart = len(sanitizedTaskID)
 	}
 	return fmt.Sprintf("%s%s-%s", prefix, sanitizedTaskID[:maxTaskPart], hash)
 }

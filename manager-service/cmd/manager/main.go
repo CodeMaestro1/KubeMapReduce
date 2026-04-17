@@ -193,5 +193,11 @@ func resolveManagerAddr(hostname, headlessService, namespace, port string) strin
 	if explicit := strings.TrimSpace(os.Getenv("MANAGER_ADDR")); explicit != "" {
 		return explicit
 	}
-	return net.JoinHostPort(hostname+"."+headlessService+"."+namespace+".svc.cluster.local", port)
+	podName := strings.TrimSpace(hostname)
+	// Pod hostnames in StatefulSets are expected to be short names (e.g. manager-0).
+	// If the value is empty or already FQDN-like, fall back to a stable default.
+	if podName == "" || strings.Contains(podName, ".") {
+		podName = "manager-0"
+	}
+	return net.JoinHostPort(podName+"."+headlessService+"."+namespace+".svc.cluster.local", port)
 }
