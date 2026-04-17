@@ -2,6 +2,7 @@ package config
 
 import (
 	"os"
+	"strconv"
 	"strings"
 )
 
@@ -16,6 +17,7 @@ type Config struct {
 	AdminPassword   string
 	DatabaseDSN     string
 	GRPCAddr        string
+	TotalReplicas   int
 }
 
 func Load() (*Config, error) {
@@ -36,7 +38,19 @@ func Load() (*Config, error) {
 		AdminPassword:   adminPassword,
 		DatabaseDSN:     getEnv("DATABASE_DSN", "postgres://user:pass@localhost:5432/mapreduce?sslmode=disable"),
 		GRPCAddr:        getEnv("GRPC_ADDR", getEnv("GRPC_PORT", ":50051")),
+		TotalReplicas:   getEnvInt("STATEFULSET_REPLICAS", 1),
 	}, nil
+}
+
+func getEnvInt(key string, fallback int) int {
+	value := strings.TrimSpace(os.Getenv(key))
+	if value == "" {
+		return fallback
+	}
+	if v, err := strconv.Atoi(value); err == nil {
+		return v
+	}
+	return fallback
 }
 
 func getEnv(key string, fallback string) string {
