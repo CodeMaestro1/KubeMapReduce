@@ -12,10 +12,10 @@ import (
 	"sync"
 	"time"
 
-	"kubemapreduce/internal/models"
-	"kubemapreduce/internal/validation"
-	"kubemapreduce/pkg/auth"
-	"kubemapreduce/pkg/httputil"
+	"kubemapreduce/auth-service/pkg/auth"
+	"kubemapreduce/manager-service/internal/models"
+	"kubemapreduce/manager-service/internal/validation"
+	"kubemapreduce/manager-service/pkg/httputil"
 )
 
 // Handlers holds HTTP handler state for the API server.

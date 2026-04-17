@@ -11,9 +11,9 @@ import (
 	"syscall"
 	"time"
 
-	"kubemapreduce/internal/api"
-	"kubemapreduce/internal/config"
-	"kubemapreduce/pkg/auth"
+	"kubemapreduce/auth-service/pkg/auth"
+	"kubemapreduce/manager-service/internal/api"
+	"kubemapreduce/manager-service/internal/config"
 )
 
 func main() {

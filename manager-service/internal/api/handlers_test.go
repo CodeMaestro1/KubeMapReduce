@@ -3,8 +3,8 @@ package api
 import (
 	"context"
 	"encoding/json"
-	"kubemapreduce/internal/models"
-	"kubemapreduce/pkg/auth"
+	"kubemapreduce/auth-service/pkg/auth"
+	"kubemapreduce/manager-service/internal/models"
 	"net/http"
 	"net/http/httptest"
 	"strings"

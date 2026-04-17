@@ -7,7 +7,7 @@ import (
 	"log"
 	"strings"
 
-	"kubemapreduce/pkg/auth"
+	"kubemapreduce/auth-service/pkg/auth"
 )
 
 // ── whoami ─────────────────────────────────────────────────

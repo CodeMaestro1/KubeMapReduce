@@ -16,24 +16,18 @@ This is a **microservice-based, distributed MapReduce computing platform** deplo
 
 ```
 kubemapreduce/
-├── cmd/
-│   ├── ui/             # UI Service entrypoint
-│   ├── manager/        # Manager Service entrypoint
-│   ├── worker/         # Worker Service entrypoint
-│   └── cli/            # CLI client entrypoint
-├── internal/
-│   ├── ui/             # UI service handlers, middleware, presigned URL logic
-│   ├── manager/        # Orchestration, scheduling, K8s API client, reaper
-│   ├── worker/         # Task execution, gRPC client, user code runner
-│   ├── dds/            # PostgreSQL DDS access layer (queries, schema)
-│   ├── auth/           # JWT validation, Keycloak client helpers
-│   ├── storage/        # MinIO S3 client wrappers
-│   └── proto/          # Generated Protobuf/gRPC stubs
-├── proto/
-│   └── mapreduce.proto # Source of truth for all gRPC contracts
-├── deployments/        # Kubernetes manifests (StatefulSet, Deployment, etc.)
-├── migrations/         # PostgreSQL schema migrations (ordered SQL files)
-└── Dockerfile.*        # Per-service Dockerfiles
+├── cli-service/
+│   └── cmd/cli/                     # UI service entrypoint and CLI logic
+├── manager-service/
+│   ├── cmd/api/                     # Manager/API service entrypoint
+│   ├── internal/{api,config,manager,models,validation}
+│   └── pkg/httputil/                # Manager shared HTTP helpers
+├── auth-service/
+│   ├── cmd/setup/                   # Keycloak bootstrap/setup entrypoint
+│   └── pkg/auth/                    # Auth/token/JWT/Keycloak helpers
+├── k8s/                             # Kubernetes manifests
+├── infra/                           # Infra/config/deploy assets
+└── .github/workflows/               # CI/CD workflows
 ```
 
 ---
@@ -42,10 +36,9 @@ kubemapreduce/
 
 **Build all services:**
 ```bash
-go build -o bin/ui ./cmd/ui
-go build -o bin/manager ./cmd/manager
-go build -o bin/worker ./cmd/worker
-go build -o bin/cli ./cmd/cli
+go build -o bin/cli ./cli-service/cmd/cli
+go build -o bin/api ./manager-service/cmd/api
+go build -o bin/setup ./auth-service/cmd/setup
 ```
 
 **Run all tests with coverage:**
@@ -55,9 +48,9 @@ go test -v -race -coverprofile=coverage.out ./...
 
 **Run tests for a specific service:**
 ```bash
-go test -v ./internal/ui
-go test -v ./internal/manager
-go test -v ./internal/worker
+go test -v ./cli-service/...
+go test -v ./manager-service/...
+go test -v ./auth-service/...
 ```
 
 **Run a single test by pattern:**

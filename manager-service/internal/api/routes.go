@@ -3,7 +3,7 @@ package api
 import (
 	"net/http"
 
-	"kubemapreduce/pkg/auth"
+	"kubemapreduce/auth-service/pkg/auth"
 )
 
 func RegisterRoutes(mux *http.ServeMux, h *Handlers, validator *auth.JWTValidator) {

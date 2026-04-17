@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"kubemapreduce/pkg/auth"
+	"kubemapreduce/auth-service/pkg/auth"
 )
 
 func TestResolveServerURL_StoredValueWins(t *testing.T) {

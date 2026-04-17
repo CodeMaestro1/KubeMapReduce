@@ -4,7 +4,7 @@ import (
 	"errors"
 	"testing"
 
-	"kubemapreduce/internal/models"
+	"kubemapreduce/manager-service/internal/models"
 )
 
 func TestValidateJobSubmission(t *testing.T) {

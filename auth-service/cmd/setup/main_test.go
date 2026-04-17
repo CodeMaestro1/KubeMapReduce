@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"kubemapreduce/pkg/auth"
+	"kubemapreduce/auth-service/pkg/auth"
 )
 
 // TestBootstrapPhaseTimeout verifies the bootstrap phase has its own

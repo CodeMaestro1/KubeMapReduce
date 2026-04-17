@@ -12,14 +12,14 @@ Go API with Keycloak authentication, role-based authorization, and a dedicated C
 1. Start Keycloak:
 
    ```bash
-   cd docker
+   cd infra/docker
    docker-compose up -d
    ```
 
 2. Run setup (bootstraps realm + creates first admin user):
 
    ```bash
-   go run ./cmd/setup \
+   go run ./auth-service/cmd/setup \
      --admin-username admin \
      --admin-password admin \
      --username platform-admin \
@@ -30,18 +30,32 @@ Go API with Keycloak authentication, role-based authorization, and a dedicated C
 
    Omit `--username` to only bootstrap the realm without creating a user.
 
-3. Run API (project root):
+3. Run Manager API:
 
    ```bash
-   go run ./cmd/api
+   go run ./manager-service/cmd/api
    ```
 
 4. Use the CLI to authenticate and interact with the API:
 
    ```bash
-   go run ./cmd/cli login
-   go run ./cmd/cli jobs submit job.json
+   go run ./cli-service/cmd/cli login
+   go run ./cli-service/cmd/cli jobs submit job.json
    ```
+
+## Repository Layout
+
+This repository now follows a polyrepo-ready microservice layout:
+
+```text
+cli-service/      # UI service (CLI entrypoint + CLI logic)
+manager-service/  # manager API, scheduler, task/state orchestration
+auth-service/     # authentication/bootstrap logic and auth libraries
+k8s/              # Kubernetes manifests
+infra/            # infra/deploy assets (docker-compose, env files, etc.)
+```
+
+Service code is isolated under the service folders so each service can be extracted into its own repository later.
 
 ## URLs
 
@@ -93,7 +107,7 @@ Commands:
 ### Login
 
 ```bash
-go run ./cmd/cli login
+go run ./cli-service/cmd/cli login
 # Username: alice
 # Password: ********
 # Login successful!
@@ -109,7 +123,7 @@ You can also pass `--username alice` to skip the username prompt.
 > File transfer will be added in a future release.
 
 ```bash
-go run ./cmd/cli jobs submit job.json
+go run ./cli-service/cmd/cli jobs submit job.json
 ```
 
 ### Admin Commands
@@ -119,13 +133,13 @@ API server, which proxies to Keycloak:
 
 ```bash
 # Create a user (prompts for the new user's password)
-go run ./cmd/cli admin create-user --username bob --email bob@example.com --prompt-password --role USER
+go run ./cli-service/cmd/cli admin create-user --username bob --email bob@example.com --prompt-password --role USER
 
 # Delete a user
-go run ./cmd/cli admin delete-user --username bob
+go run ./cli-service/cmd/cli admin delete-user --username bob
 
 # Update worker configuration
-go run ./cmd/cli admin worker-config --replicas 4 --max-jobs 8
+go run ./cli-service/cmd/cli admin worker-config --replicas 4 --max-jobs 8
 ```
 
 All three commands check the local token for the `ADMIN` role before making
@@ -135,7 +149,7 @@ server-side as well.
 ### Who Am I
 
 ```bash
-go run ./cmd/cli whoami
+go run ./cli-service/cmd/cli whoami
 # Username: platform-admin
 # Email:    platform-admin@example.com
 # Subject:  a1b2c3d4-...
@@ -147,7 +161,7 @@ go run ./cmd/cli whoami
 Dump the full raw JWT claims (useful for debugging):
 
 ```bash
-go run ./cmd/cli token inspect
+go run ./cli-service/cmd/cli token inspect
 ```
 
 ## Initial Setup
@@ -156,7 +170,7 @@ The `setup` command bootstraps the Keycloak realm (client, roles, audience mappe
 and optionally creates the first user — all in one step:
 
 ```bash
-go run ./cmd/setup \
+go run ./auth-service/cmd/setup \
   --admin-username admin \
   --admin-password admin \
   --username platform-admin \

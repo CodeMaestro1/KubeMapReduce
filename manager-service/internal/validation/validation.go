@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"kubemapreduce/internal/models"
+	"kubemapreduce/manager-service/internal/models"
 )
 
 const (

@@ -13,7 +13,7 @@ import (
 	"strings"
 	"time"
 
-	"kubemapreduce/pkg/auth"
+	"kubemapreduce/auth-service/pkg/auth"
 )
 
 // ── environment helpers ────────────────────────────────────

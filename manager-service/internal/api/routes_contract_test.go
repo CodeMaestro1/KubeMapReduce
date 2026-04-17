@@ -1,0 +1,41 @@
+package api
+
+import (
+	"net/http"
+	"net/http/httptest"
+	"testing"
+
+	"kubemapreduce/auth-service/pkg/auth"
+)
+
+// Keep API admin routes aligned with CLI expectations to prevent integration drift.
+func TestCLIAdminRoutes_MatchAPIRoutes(t *testing.T) {
+	mux := http.NewServeMux()
+	h := NewHandlers(nil)
+	v := new(auth.JWTValidator)
+	RegisterRoutes(mux, h, v)
+
+	cliAdminPaths := []struct {
+		method string
+		path   string
+		cmd    string
+	}{
+		{http.MethodPut, "/admin/workers/config", "admin worker-config"},
+		{http.MethodPut, "/admin/nodes/config", "admin configure-nodes"},
+		{http.MethodPost, "/admin/users", "admin create-user"},
+		{http.MethodDelete, "/admin/users/testuser", "admin delete-user"},
+	}
+
+	for _, tc := range cliAdminPaths {
+		t.Run(tc.cmd, func(t *testing.T) {
+			req := httptest.NewRequest(tc.method, tc.path, nil)
+			rec := httptest.NewRecorder()
+			mux.ServeHTTP(rec, req)
+
+			if rec.Code == http.StatusNotFound {
+				t.Fatalf("route drift: CLI %q targets %s %s but API returns 404",
+					tc.cmd, tc.method, tc.path)
+			}
+		})
+	}
+}
