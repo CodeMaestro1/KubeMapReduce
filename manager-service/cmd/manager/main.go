@@ -139,6 +139,7 @@ func resolveReplicaIndex(hostname string) int {
 		if idx, err := strconv.Atoi(ordinal); err == nil && idx >= 0 {
 			return idx
 		}
+		log.Printf("[WARN] invalid STATEFULSET_ORDINAL=%q, falling back to hostname parsing", ordinal)
 	}
 	return parseReplicaIndexFromHostname(hostname)
 }
@@ -149,7 +150,7 @@ func parseReplicaIndexFromHostname(hostname string) int {
 		return 0
 	}
 	lastDash := strings.LastIndex(hostname, "-")
-	if lastDash == -1 || lastDash == len(hostname)-1 {
+	if lastDash == -1 {
 		return 0
 	}
 	idx, err := strconv.Atoi(hostname[lastDash+1:])
