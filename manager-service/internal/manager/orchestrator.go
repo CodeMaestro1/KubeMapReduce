@@ -15,7 +15,7 @@ import (
 )
 
 type WorkerOrchestrator interface {
-	SpawnWorker(ctx context.Context, taskID string, managerAddr string) error
+	SpawnWorker(ctx context.Context, taskID string, attemptID string, managerAddr string) error
 }
 
 type KubeOrchestrator struct {
@@ -38,9 +38,9 @@ func NewKubeOrchestrator(clientset kubernetes.Interface, namespace, workerImage 
 	}
 }
 
-func (k *KubeOrchestrator) SpawnWorker(ctx context.Context, taskID string, managerAddr string) error {
+func (k *KubeOrchestrator) SpawnWorker(ctx context.Context, taskID string, attemptID string, managerAddr string) error {
 	sanitizedTaskID := sanitizeForDNSLabel(taskID)
-	jobName := buildWorkerJobName(sanitizedTaskID)
+	jobName := buildWorkerJobName(sanitizedTaskID, attemptID)
 	backoffLimit := int32(0)
 
 	job := &batchv1.Job{
@@ -72,6 +72,10 @@ func (k *KubeOrchestrator) SpawnWorker(ctx context.Context, taskID string, manag
 									Name:  "MANAGER_ADDR",
 									Value: managerAddr,
 								},
+								{
+									Name:  "ATTEMPT_ID",
+									Value: attemptID,
+								},
 							},
 						},
 					},
@@ -92,7 +96,7 @@ func (k *KubeOrchestrator) SpawnWorker(ctx context.Context, taskID string, manag
 
 type MockOrchestrator struct{}
 
-func (m *MockOrchestrator) SpawnWorker(ctx context.Context, taskID string, managerAddr string) error {
+func (m *MockOrchestrator) SpawnWorker(ctx context.Context, taskID string, attemptID string, managerAddr string) error {
 	return nil
 }
 
@@ -121,24 +125,29 @@ func sanitizeForDNSLabel(value string) string {
 	return sanitized
 }
 
-func buildWorkerJobName(sanitizedTaskID string) string {
+func buildWorkerJobName(sanitizedTaskID string, attemptID string) string {
 	const (
 		prefix       = "worker-"
 		maxDNSLength = 63
 	)
+	attemptPart := sanitizeForDNSLabel(attemptID)
+	if attemptPart == "" {
+		attemptPart = "attempt"
+	}
+	nameBase := sanitizedTaskID + "-" + attemptPart
 
-	if len(prefix)+len(sanitizedTaskID) <= maxDNSLength {
-		return prefix + sanitizedTaskID
+	if len(prefix)+len(nameBase) <= maxDNSLength {
+		return prefix + nameBase
 	}
 
-	sum := sha256.Sum256([]byte(sanitizedTaskID))
+	sum := sha256.Sum256([]byte(nameBase))
 	hash := hex.EncodeToString(sum[:])[:12]
 	maxTaskPart := maxDNSLength - len(prefix) - len("-") - len(hash)
 	if maxTaskPart < 1 {
 		maxTaskPart = 1
 	}
-	if maxTaskPart > len(sanitizedTaskID) {
-		maxTaskPart = len(sanitizedTaskID)
+	if maxTaskPart > len(nameBase) {
+		maxTaskPart = len(nameBase)
 	}
-	return fmt.Sprintf("%s%s-%s", prefix, sanitizedTaskID[:maxTaskPart], hash)
+	return fmt.Sprintf("%s%s-%s", prefix, nameBase[:maxTaskPart], hash)
 }

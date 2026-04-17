@@ -46,6 +46,9 @@ func TestLoad_Defaults(t *testing.T) {
 	if cfg.AdminPassword != "admin" {
 		t.Errorf("AdminPassword = %q, want %q", cfg.AdminPassword, "admin")
 	}
+	if cfg.MinioEndpoint != "" || cfg.MinioAccessKey != "" || cfg.MinioSecretKey != "" {
+		t.Errorf("expected MinIO defaults to be disabled/empty, got endpoint=%q access=%q secret=%q", cfg.MinioEndpoint, cfg.MinioAccessKey, cfg.MinioSecretKey)
+	}
 
 	expectedJWKS := "http://localhost:8080/realms/mapreduce/protocol/openid-connect/certs"
 	if cfg.JWKSURL != expectedJWKS {
@@ -68,6 +71,9 @@ func TestLoad_CustomEnvVars(t *testing.T) {
 	t.Setenv("GRPC_ADDR", "0.0.0.0:50052")
 	t.Setenv("KEYCLOAK_ADMIN_USERNAME", "u")
 	t.Setenv("KEYCLOAK_ADMIN_PASSWORD", "p")
+	t.Setenv("MINIO_ENDPOINT", "minio.default.svc.cluster.local:9000")
+	t.Setenv("MINIO_ACCESS_KEY", "access")
+	t.Setenv("MINIO_SECRET_KEY", "secret")
 
 	cfg, err := Load()
 	if err != nil {
@@ -100,6 +106,15 @@ func TestLoad_CustomEnvVars(t *testing.T) {
 	}
 	if cfg.AdminPassword != "p" {
 		t.Errorf("AdminPassword = %q, want %q", cfg.AdminPassword, "p")
+	}
+	if cfg.MinioEndpoint != "minio.default.svc.cluster.local:9000" {
+		t.Errorf("MinioEndpoint = %q, want %q", cfg.MinioEndpoint, "minio.default.svc.cluster.local:9000")
+	}
+	if cfg.MinioAccessKey != "access" {
+		t.Errorf("MinioAccessKey = %q, want %q", cfg.MinioAccessKey, "access")
+	}
+	if cfg.MinioSecretKey != "secret" {
+		t.Errorf("MinioSecretKey = %q, want %q", cfg.MinioSecretKey, "secret")
 	}
 }
 

@@ -8,7 +8,7 @@ import (
 func TestBuildWorkerJobName_DNSLabelBounded(t *testing.T) {
 	taskID := strings.Repeat("A", 100) + "{}"
 	sanitized := sanitizeForDNSLabel(taskID)
-	jobName := buildWorkerJobName(sanitized)
+	jobName := buildWorkerJobName(sanitized, strings.Repeat("b", 40))
 
 	if len(jobName) > 63 {
 		t.Fatalf("expected job name length <= 63, got %d", len(jobName))
