@@ -13,11 +13,13 @@ import (
 )
 
 func newTestHandlers() *Handlers {
-	return NewHandlers(nil)
+	store := NewMemoryJobStore(24*time.Hour, 10000, nil)
+	return NewHandlers(nil, store)
 }
 
 func newTestHandlersWithRetention(now func() time.Time, ttl time.Duration, max int) *Handlers {
-	return newHandlersWithOptions(nil, ttl, max, now)
+	store := NewMemoryJobStore(ttl, max, now)
+	return newHandlersWithOptions(nil, store, now)
 }
 
 func TestHandleHealth(t *testing.T) {
@@ -246,7 +248,8 @@ func newTestHandlersWithKeycloak(t *testing.T) (*Handlers, *httptest.Server) {
 	t.Helper()
 	kc := fakeKeycloak(t)
 	adminClient := auth.NewKeycloakAdminClient(kc.URL, "test", "admin", "admin")
-	return NewHandlers(adminClient), kc
+	store := NewMemoryJobStore(24*time.Hour, 10000, nil)
+	return NewHandlers(adminClient, store), kc
 }
 
 // ── Admin Create User tests ─────────────────────────────────
@@ -433,7 +436,8 @@ func TestHandleAdminCreateUser_KeycloakDown_Returns503(t *testing.T) {
 	srv.Close()
 
 	adminClient := auth.NewKeycloakAdminClient(srv.URL, "test", "admin", "admin")
-	h := NewHandlers(adminClient)
+	store := NewMemoryJobStore(24*time.Hour, 10000, nil)
+	h := NewHandlers(adminClient, store)
 
 	body := `{"username":"alice","email":"alice@example.com","password":"secret","role":"USER"}`
 	req := httptest.NewRequest(http.MethodPost, "/admin/users", strings.NewReader(body))
@@ -460,7 +464,8 @@ func TestHandleAdminCreateUser_KeycloakTimeout_Returns503(t *testing.T) {
 	}()
 
 	adminClient := auth.NewKeycloakAdminClient(srv.URL, "test", "admin", "admin")
-	h := NewHandlers(adminClient)
+	store := NewMemoryJobStore(24*time.Hour, 10000, nil)
+	h := NewHandlers(adminClient, store)
 
 	body := `{"username":"alice","email":"alice@example.com","password":"secret","role":"USER"}`
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
@@ -482,7 +487,8 @@ func TestHandleAdminDeleteUser_KeycloakDown_Returns503(t *testing.T) {
 	srv.Close()
 
 	adminClient := auth.NewKeycloakAdminClient(srv.URL, "test", "admin", "admin")
-	h := NewHandlers(adminClient)
+	store := NewMemoryJobStore(24*time.Hour, 10000, nil)
+	h := NewHandlers(adminClient, store)
 
 	req := httptest.NewRequest(http.MethodDelete, "/admin/users/alice", nil)
 	req.SetPathValue("username", "alice")

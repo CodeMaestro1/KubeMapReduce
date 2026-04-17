@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"log"
 	"net/http"
@@ -10,6 +11,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	_ "github.com/lib/pq"
 
 	"kubemapreduce/auth-service/pkg/auth"
 	"kubemapreduce/manager-service/internal/api"
@@ -44,7 +47,18 @@ func main() {
 		log.Printf("admin credentials not configured; /admin/* endpoints will return %d", http.StatusServiceUnavailable)
 	}
 
-	handlers := api.NewHandlers(adminClient)
+	db, err := sql.Open("postgres", cfg.DatabaseDSN)
+	if err != nil {
+		log.Fatalf("failed to open database: %v", err)
+	}
+	defer db.Close()
+
+	if err := db.Ping(); err != nil {
+		log.Fatalf("failed to ping database: %v", err)
+	}
+
+	store := api.NewPostgresJobStore(db)
+	handlers := api.NewHandlers(adminClient, store)
 
 	mux := http.NewServeMux()
 	api.RegisterRoutes(mux, handlers, validator)
