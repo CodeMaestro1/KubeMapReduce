@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"kubemapreduce/auth-service/pkg/auth"
 )
@@ -11,7 +12,8 @@ import (
 // Keep API admin routes aligned with CLI expectations to prevent integration drift.
 func TestCLIAdminRoutes_MatchAPIRoutes(t *testing.T) {
 	mux := http.NewServeMux()
-	h := NewHandlers(nil)
+	store := NewMemoryJobStore(24*time.Hour, 10000, nil)
+	h := NewHandlers(nil, store)
 	v := new(auth.JWTValidator)
 	RegisterRoutes(mux, h, v)
 
