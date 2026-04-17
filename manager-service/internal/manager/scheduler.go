@@ -65,37 +65,59 @@ func NewScheduler(db *sql.DB, replicaIndex int, totalReplicas int, orchestrator 
 	}, nil
 }
 
-// Recover finds all 'Idle' tasks assigned to this replica_index and spawns workers for them.
+// Recover reconciles active attempts assigned to this replica and re-spawns workers.
 // It should be called on startup to resume orchestration after a crash.
 func (s *Scheduler) Recover(ctx context.Context) error {
-	rows, err := s.db.QueryContext(ctx, "SELECT task_id FROM TASKS WHERE status = 'Idle' AND replica_index = $1", s.replicaIndex)
+	rows, err := s.db.QueryContext(ctx, QuerySelectRecoverableAttempts, s.replicaIndex)
 	if err != nil {
-		return fmt.Errorf("failed to query idle tasks during recovery: %w", err)
+		return fmt.Errorf("failed to query recoverable attempts: %w", err)
 	}
 	defer rows.Close()
 
-	var tasksToSpawn []string
+	type recoverableAttempt struct {
+		taskID    string
+		attemptID string
+	}
+	var attemptsToSpawn []recoverableAttempt
 	for rows.Next() {
-		var taskID string
-		if err := rows.Scan(&taskID); err != nil {
-			return fmt.Errorf("failed to scan task_id during recovery: %w", err)
+		var rec recoverableAttempt
+		if err := rows.Scan(&rec.taskID, &rec.attemptID); err != nil {
+			return fmt.Errorf("failed to scan recoverable attempt during recovery: %w", err)
 		}
-		tasksToSpawn = append(tasksToSpawn, taskID)
+		attemptsToSpawn = append(attemptsToSpawn, rec)
 	}
 	if err := rows.Err(); err != nil {
 		return fmt.Errorf("row error during recovery: %w", err)
 	}
 
-	go func() {
-		spawnCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-		defer cancel()
-		for _, taskID := range tasksToSpawn {
-			if err := s.orchestrator.SpawnWorker(spawnCtx, taskID, s.managerAddr); err != nil {
-				log.Printf("Failed to spawn worker for recovered task %s: %v", taskID, err)
-			}
+	spawnCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+	defer cancel()
+	for _, rec := range attemptsToSpawn {
+		if err := s.orchestrator.SpawnWorker(spawnCtx, rec.taskID, rec.attemptID, s.managerAddr); err != nil {
+			log.Printf("Failed to spawn worker for recovered task %s (attempt %s): %v", rec.taskID, rec.attemptID, err)
 		}
-	}()
+	}
 	return nil
+}
+
+func (s *Scheduler) prepareRetryAttemptTx(ctx context.Context, tx *sql.Tx, taskID string) (string, error) {
+	attemptID := uuid.New()
+	leaseID := uuid.New()
+	_, err := tx.ExecContext(ctx, QueryUpdateTaskInProgress, attemptID, taskID)
+	if err != nil {
+		return "", err
+	}
+	_, err = tx.ExecContext(ctx, QueryInsertAttempt,
+		attemptID,
+		taskID,
+		"system-recovery",
+		leaseID,
+		s.leaseTTL,
+	)
+	if err != nil {
+		return "", err
+	}
+	return attemptID.String(), nil
 }
 
 func (s *Scheduler) GetNextTask(jobID string, workerID string) (*Task, error) {
@@ -629,12 +651,18 @@ func (s *Scheduler) FailTask(taskID string, attemptID string, leaseID string, re
 		return err
 	}
 
+	var retryAttemptID string
 	if newState == "Failed" {
 		var jobID string
 		if err := tx.QueryRowContext(ctx, QueryGetTaskJobID, taskID).Scan(&jobID); err != nil {
 			return err
 		}
 		if err := s.updateJobStatusTx(ctx, tx, jobID, "Failed"); err != nil {
+			return err
+		}
+	} else {
+		retryAttemptID, err = s.prepareRetryAttemptTx(ctx, tx, taskID)
+		if err != nil {
 			return err
 		}
 	}
@@ -644,13 +672,11 @@ func (s *Scheduler) FailTask(taskID string, attemptID string, leaseID string, re
 	}
 
 	if newState == "Idle" {
-		go func() {
-			spawnCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-			defer cancel()
-			if err := s.orchestrator.SpawnWorker(spawnCtx, taskID, s.managerAddr); err != nil {
-				log.Printf("Failed to respawn worker for failed task %s: %v", taskID, err)
-			}
-		}()
+		spawnCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		defer cancel()
+		if err := s.orchestrator.SpawnWorker(spawnCtx, taskID, retryAttemptID, s.managerAddr); err != nil {
+			log.Printf("Failed to respawn worker for failed task %s (attempt %s): %v", taskID, retryAttemptID, err)
+		}
 	}
 
 	return nil
@@ -687,7 +713,11 @@ func (s *Scheduler) FailStaleTasks() (int, error) {
 	}
 
 	recoveredCount := 0
-	var respawnTasks []string
+	type retrySpawn struct {
+		taskID    string
+		attemptID string
+	}
+	var respawnTasks []retrySpawn
 	for _, rec := range stales {
 		var attemptCount int
 		err = tx.QueryRowContext(ctx, QueryCountAttemptsByTask, rec.taskID).Scan(&attemptCount)
@@ -718,7 +748,11 @@ func (s *Scheduler) FailStaleTasks() (int, error) {
 				return 0, fmt.Errorf("marking job %s failed: %w", jobID, err)
 			}
 		} else if newState == "Idle" {
-			respawnTasks = append(respawnTasks, rec.taskID)
+			retryAttemptID, err := s.prepareRetryAttemptTx(ctx, tx, rec.taskID)
+			if err != nil {
+				return 0, fmt.Errorf("creating retry attempt for task %s: %w", rec.taskID, err)
+			}
+			respawnTasks = append(respawnTasks, retrySpawn{taskID: rec.taskID, attemptID: retryAttemptID})
 		}
 		recoveredCount++
 	}
@@ -728,15 +762,13 @@ func (s *Scheduler) FailStaleTasks() (int, error) {
 		return 0, err
 	}
 
-	go func() {
-		spawnCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-		defer cancel()
-		for _, taskID := range respawnTasks {
-			if err := s.orchestrator.SpawnWorker(spawnCtx, taskID, s.managerAddr); err != nil {
-				log.Printf("Failed to respawn worker for stale task %s: %v", taskID, err)
-			}
+	spawnCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	for _, rec := range respawnTasks {
+		if err := s.orchestrator.SpawnWorker(spawnCtx, rec.taskID, rec.attemptID, s.managerAddr); err != nil {
+			log.Printf("Failed to respawn worker for stale task %s (attempt %s): %v", rec.taskID, rec.attemptID, err)
 		}
-	}()
+	}
 
 	return recoveredCount, nil
 }

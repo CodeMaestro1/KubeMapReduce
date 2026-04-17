@@ -11,6 +11,7 @@ import (
 	"github.com/minio/minio-go/v7"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/proto"
 
 	"kubemapreduce/manager-service/internal/manager"
 	pb "kubemapreduce/proto"
@@ -20,12 +21,57 @@ type WorkerServer struct {
 	pb.UnimplementedWorkerServiceServer
 	scheduler   *manager.Scheduler
 	minioClient *minio.Client
+	uploader    manifestUploader
+}
+
+const manifestBucketName = "mapreduce-manifests"
+
+var maxTaskAssignmentSizeBytes = 2 * 1024 * 1024
+
+type manifestUploader interface {
+	UploadManifest(ctx context.Context, bucketName, objectName string, payload []byte) (string, error)
+}
+
+type minioManifestUploader struct {
+	client *minio.Client
+}
+
+func (m *minioManifestUploader) UploadManifest(ctx context.Context, bucketName, objectName string, payload []byte) (string, error) {
+	exists, err := m.client.BucketExists(ctx, bucketName)
+	if err != nil {
+		return "", err
+	}
+	if !exists {
+		if err := m.client.MakeBucket(ctx, bucketName, minio.MakeBucketOptions{}); err != nil {
+			exists, checkErr := m.client.BucketExists(ctx, bucketName)
+			if checkErr != nil || !exists {
+				return "", err
+			}
+		}
+	}
+
+	_, err = m.client.PutObject(ctx, bucketName, objectName, bytes.NewReader(payload), int64(len(payload)), minio.PutObjectOptions{
+		ContentType: "application/json",
+	})
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("s3://%s/%s", bucketName, objectName), nil
 }
 
 func NewWorkerServer(scheduler *manager.Scheduler, minioClient *minio.Client) *WorkerServer {
+	var uploader manifestUploader
+	if minioClient != nil {
+		uploader = &minioManifestUploader{client: minioClient}
+	}
+	return newWorkerServerWithManifestUploader(scheduler, minioClient, uploader)
+}
+
+func newWorkerServerWithManifestUploader(scheduler *manager.Scheduler, minioClient *minio.Client, uploader manifestUploader) *WorkerServer {
 	return &WorkerServer{
 		scheduler:   scheduler,
 		minioClient: minioClient,
+		uploader:    uploader,
 	}
 }
 
@@ -100,35 +146,32 @@ func (s *WorkerServer) Register(ctx context.Context, req *pb.RegisterRequest) (*
 		}
 	}
 
-	if len(assignment.DataLocations) > 1000 && s.minioClient != nil {
-		manifestBytes, err := json.Marshal(assignment.DataLocations)
+	if proto.Size(assignment) > maxTaskAssignmentSizeBytes {
+		if s.uploader == nil {
+			return nil, status.Errorf(codes.ResourceExhausted, "task assignment for task %s exceeds grpc payload limit", task.ID)
+		}
+		manifestBytes, err := json.Marshal(map[string][]string{
+			"data_locations": assignment.DataLocations,
+		})
 		if err != nil {
 			log.Printf("Failed to marshal manifest for task %s: %v", task.ID, err)
-		} else {
-			bucketName := "mapreduce-manifests"
-			objectName := fmt.Sprintf("%s-manifest.json", task.ID)
-
-			// Best-effort bucket creation
-			exists, _ := s.minioClient.BucketExists(ctx, bucketName)
-			if !exists {
-				_ = s.minioClient.MakeBucket(ctx, bucketName, minio.MakeBucketOptions{})
-			}
-
-			_, err = s.minioClient.PutObject(ctx, bucketName, objectName, bytes.NewReader(manifestBytes), int64(len(manifestBytes)), minio.PutObjectOptions{
-				ContentType: "application/json",
-			})
-
-			if err != nil {
-				log.Printf("Failed to upload manifest for task %s: %v", task.ID, err)
-				assignment.IsManifest = false
-			} else {
-				assignment.IsManifest = true
-				manifestURL := fmt.Sprintf("s3://%s/%s", bucketName, objectName)
-				assignment.DataLocations = []string{manifestURL}
-			}
+			return nil, status.Errorf(codes.Internal, "failed to marshal manifest: %v", err)
 		}
+
+		objectName := fmt.Sprintf("%s/%s-manifest.json", task.JobID, task.ActiveAttemptID)
+		manifestURL, err := s.uploader.UploadManifest(ctx, manifestBucketName, objectName, manifestBytes)
+		if err != nil {
+			log.Printf("Failed to upload manifest for task %s: %v", task.ID, err)
+			return nil, status.Errorf(codes.Unavailable, "failed to upload manifest: %v", err)
+		}
+		assignment.IsManifest = true
+		assignment.DataLocations = []string{manifestURL}
 	} else {
 		assignment.IsManifest = false
+	}
+
+	if proto.Size(assignment) > maxTaskAssignmentSizeBytes {
+		return nil, status.Errorf(codes.ResourceExhausted, "task assignment for task %s exceeds grpc payload limit", task.ID)
 	}
 
 	return assignment, nil

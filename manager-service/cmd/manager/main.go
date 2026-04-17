@@ -140,7 +140,7 @@ func main() {
 	}
 
 	var minioClient *minio.Client
-	if cfg.MinioEndpoint != "" {
+	if cfg.MinioEndpoint != "" && cfg.MinioAccessKey != "" && cfg.MinioSecretKey != "" {
 		minioClient, err = minio.New(cfg.MinioEndpoint, &minio.Options{
 			Creds:  credentials.NewStaticV4(cfg.MinioAccessKey, cfg.MinioSecretKey, ""),
 			Secure: cfg.MinioUseSSL,
@@ -148,6 +148,8 @@ func main() {
 		if err != nil {
 			log.Printf("failed to initialize minio client: %v", err)
 		}
+	} else if cfg.MinioEndpoint != "" {
+		log.Printf("minio endpoint configured without credentials; manifest fallback disabled")
 	}
 
 	grpcServer := grpc.NewServer()
