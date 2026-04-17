@@ -134,7 +134,7 @@ const QuerySelectStaleTasks = `
 // QuerySelectRecoverableAttempts returns active attempts that belong to this manager replica.
 // Recovery uses these rows to re-spawn workers with the existing attempt_id fence token.
 const QuerySelectRecoverableAttempts = `
-	SELECT task_id, current_attempt_id
+	SELECT task_id, current_attempt_id, job_id
 	FROM TASKS
 	WHERE status = 'In-Progress' AND replica_index = $1 AND current_attempt_id IS NOT NULL`
 
