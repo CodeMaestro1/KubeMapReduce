@@ -131,9 +131,6 @@ func buildWorkerJobName(sanitizedTaskID string, attemptID string) string {
 		maxDNSLength = 63
 	)
 	attemptPart := sanitizeForDNSLabel(attemptID)
-	if attemptPart == "" {
-		attemptPart = "attempt"
-	}
 	nameBase := sanitizedTaskID + "-" + attemptPart
 
 	if len(prefix)+len(nameBase) <= maxDNSLength {

@@ -24,6 +24,8 @@ type WorkerServer struct {
 	uploader    manifestUploader
 }
 
+// manifestBucketName stores serialized data_locations manifests for oversized assignments.
+// These objects are short-lived retry metadata and should be managed via bucket lifecycle policy.
 const manifestBucketName = "mapreduce-manifests"
 
 var maxTaskAssignmentSizeBytes = 2 * 1024 * 1024
@@ -148,7 +150,7 @@ func (s *WorkerServer) Register(ctx context.Context, req *pb.RegisterRequest) (*
 
 	if proto.Size(assignment) > maxTaskAssignmentSizeBytes {
 		if s.uploader == nil {
-			return nil, status.Errorf(codes.ResourceExhausted, "task assignment for task %s exceeds grpc payload limit", task.ID)
+			return nil, status.Errorf(codes.ResourceExhausted, "task assignment for task %s exceeds manifest threshold", task.ID)
 		}
 		manifestBytes, err := json.Marshal(map[string][]string{
 			"data_locations": assignment.DataLocations,
@@ -171,7 +173,10 @@ func (s *WorkerServer) Register(ctx context.Context, req *pb.RegisterRequest) (*
 	}
 
 	if proto.Size(assignment) > maxTaskAssignmentSizeBytes {
-		return nil, status.Errorf(codes.ResourceExhausted, "task assignment for task %s exceeds grpc payload limit", task.ID)
+		// Defensive guard: after manifest replacement this should normally be below threshold,
+		// but keep the check for unexpectedly large metadata fields.
+		log.Printf("TaskAssignment for task %s still exceeds manifest threshold after manifest fallback", task.ID)
+		return nil, status.Errorf(codes.ResourceExhausted, "task assignment for task %s exceeds manifest threshold", task.ID)
 	}
 
 	return assignment, nil
