@@ -17,6 +17,8 @@ import (
 	_ "github.com/lib/pq"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/reflection"
+	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/rest"
 
 	"kubemapreduce/manager-service/internal/config"
 	mgrpc "kubemapreduce/manager-service/internal/grpc"
@@ -45,8 +47,27 @@ func main() {
 	hostname, _ := os.Hostname()
 	replicaIndex := resolveReplicaIndex(hostname)
 
-	// 2. Initialize Scheduler
-	scheduler, err := manager.NewScheduler(db, replicaIndex)
+	// 2. Initialize Kubernetes Orchestrator
+	k8sConfig, err := rest.InClusterConfig()
+	var orchestrator manager.WorkerOrchestrator
+	if err != nil {
+		log.Printf("failed to get in-cluster k8s config (running locally?): %v. Using mock orchestrator.", err)
+		orchestrator = &manager.MockOrchestrator{}
+	} else {
+		clientset, err := kubernetes.NewForConfig(k8sConfig)
+		if err != nil {
+			log.Fatalf("failed to create k8s clientset: %v", err)
+		}
+		orchestrator = manager.NewKubeOrchestrator(clientset, "default", "kubemapreduce-worker:latest")
+	}
+
+	// 3. Initialize Scheduler
+	_, port, err := net.SplitHostPort(cfg.GRPCAddr)
+	if err != nil {
+		port = "50051"
+	}
+	managerAddr := net.JoinHostPort(hostname, port) // Or specifically from an environment variable if preferred
+	scheduler, err := manager.NewScheduler(db, replicaIndex, cfg.TotalReplicas, orchestrator, managerAddr)
 	if err != nil {
 		log.Fatalf("failed to create scheduler: %v", err)
 	}
