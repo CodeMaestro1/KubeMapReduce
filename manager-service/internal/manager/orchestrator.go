@@ -44,21 +44,23 @@ func (k *KubeOrchestrator) SpawnWorker(ctx context.Context, taskID string, jobID
 	sanitizedJobID := sanitizeForDNSLabel(jobID)
 	jobName := buildWorkerJobName(sanitizedTaskID, attemptID)
 	backoffLimit := int32(0)
+	labels := map[string]string{
+		"app":     "kubemapreduce-worker",
+		"task_id": sanitizedTaskID,
+		"job_id":  sanitizedJobID,
+	}
 
 	job := &batchv1.Job{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      jobName,
 			Namespace: k.namespace,
+			Labels:    labels,
 		},
 		Spec: batchv1.JobSpec{
 			BackoffLimit: &backoffLimit,
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{
-					Labels: map[string]string{
-						"app":     "kubemapreduce-worker",
-						"task_id": sanitizedTaskID,
-						"job_id":  sanitizedJobID,
-					},
+					Labels: labels,
 				},
 				Spec: corev1.PodSpec{
 					RestartPolicy: corev1.RestartPolicyNever,
@@ -94,11 +96,7 @@ func (k *KubeOrchestrator) SpawnWorker(ctx context.Context, taskID string, jobID
 	if !apierrors.IsAlreadyExists(err) {
 		return err
 	}
-	if delErr := k.clientset.BatchV1().Jobs(k.namespace).Delete(ctx, jobName, metav1.DeleteOptions{}); delErr != nil && !apierrors.IsNotFound(delErr) {
-		return delErr
-	}
-	_, err = k.clientset.BatchV1().Jobs(k.namespace).Create(ctx, job, metav1.CreateOptions{})
-	return err
+	return nil
 }
 
 func (k *KubeOrchestrator) CancelJob(ctx context.Context, jobID string) error {
