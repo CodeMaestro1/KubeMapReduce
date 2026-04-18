@@ -580,7 +580,7 @@ func (s *Scheduler) CompleteTask(taskID string, attemptID string, leaseID string
 			cancelCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 			defer cancel()
 			if err := s.orchestrator.CancelJob(cancelCtx, jobID); err != nil {
-				log.Printf("Failed to cleanup K8s jobs for completed job %s: %v", jobID, err)
+				log.Printf("Failed to cleanup K8s worker jobs for completed job %s: %v", jobID, err)
 			}
 		}()
 	}
@@ -650,7 +650,7 @@ func (s *Scheduler) CancelJob(jobID string) error {
 		cancelCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 		defer cancel()
 		if err := s.orchestrator.CancelJob(cancelCtx, jobID); err != nil {
-			log.Printf("Failed to cancel K8s jobs for job %s: %v", jobID, err)
+			log.Printf("Failed to cancel K8s worker jobs for job %s: %v", jobID, err)
 		}
 	}()
 
@@ -733,7 +733,7 @@ func (s *Scheduler) FailTask(taskID string, attemptID string, leaseID string, re
 			cancelCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 			defer cancel()
 			if err := s.orchestrator.CancelJob(cancelCtx, jobID); err != nil {
-				log.Printf("Failed to cancel K8s jobs for failed job %s: %v", jobID, err)
+				log.Printf("Failed to cancel K8s worker jobs for failed job %s: %v", jobID, err)
 			}
 		}()
 	} else if newState == "Idle" {
@@ -831,15 +831,13 @@ func (s *Scheduler) FailStaleTasks() (int, error) {
 		return 0, err
 	}
 
-	go func() {
-		cancelCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-		defer cancel()
-		for jobID := range failedJobs {
-			if err := s.orchestrator.CancelJob(cancelCtx, jobID); err != nil {
-				log.Printf("Failed to cancel K8s jobs for failed job %s: %v", jobID, err)
-			}
+	cancelCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	for jobID := range failedJobs {
+		if err := s.orchestrator.CancelJob(cancelCtx, jobID); err != nil {
+			log.Printf("Failed to cancel K8s worker jobs for failed job %s: %v", jobID, err)
 		}
-	}()
+	}
 
 	spawnCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
