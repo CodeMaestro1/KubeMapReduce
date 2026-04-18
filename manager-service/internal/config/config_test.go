@@ -12,6 +12,7 @@ func TestLoad_Defaults(t *testing.T) {
 		"KEYCLOAK_JWKS_URL", "KEYCLOAK_ISSUER", "SERVER_ADDR",
 		"KEYCLOAK_ADMIN_USERNAME", "KEYCLOAK_ADMIN_PASSWORD",
 		"GRPC_ADDR", "GRPC_PORT", "MANAGER_INTERNAL_API_KEY",
+		"MANAGER_WORKER_RPC_TOKEN", "GRPC_TLS_CERT_FILE", "GRPC_TLS_KEY_FILE", "ENABLE_GRPC_REFLECTION",
 	}
 	for _, key := range envVars {
 		t.Setenv(key, "")
@@ -52,6 +53,15 @@ func TestLoad_Defaults(t *testing.T) {
 	if cfg.InternalAPIKey != "" {
 		t.Errorf("expected InternalAPIKey default to be empty")
 	}
+	if cfg.WorkerRPCToken != "" {
+		t.Errorf("expected WorkerRPCToken default to be empty")
+	}
+	if cfg.GRPCTLSCertFile != "" || cfg.GRPCTLSKeyFile != "" {
+		t.Errorf("expected gRPC TLS file defaults to be empty")
+	}
+	if cfg.EnableGRPCReflection {
+		t.Errorf("expected gRPC reflection to be disabled by default")
+	}
 
 	expectedJWKS := "http://localhost:8080/realms/mapreduce/protocol/openid-connect/certs"
 	if cfg.JWKSURL != expectedJWKS {
@@ -78,6 +88,10 @@ func TestLoad_CustomEnvVars(t *testing.T) {
 	t.Setenv("MINIO_ACCESS_KEY", "access")
 	t.Setenv("MINIO_SECRET_KEY", "secret")
 	t.Setenv("MANAGER_INTERNAL_API_KEY", "internal-secret")
+	t.Setenv("MANAGER_WORKER_RPC_TOKEN", "worker-secret")
+	t.Setenv("GRPC_TLS_CERT_FILE", "/certs/tls.crt")
+	t.Setenv("GRPC_TLS_KEY_FILE", "/certs/tls.key")
+	t.Setenv("ENABLE_GRPC_REFLECTION", "true")
 
 	cfg, err := Load()
 	if err != nil {
@@ -122,6 +136,18 @@ func TestLoad_CustomEnvVars(t *testing.T) {
 	}
 	if cfg.InternalAPIKey != "internal-secret" {
 		t.Errorf("InternalAPIKey = %q, want %q", cfg.InternalAPIKey, "internal-secret")
+	}
+	if cfg.WorkerRPCToken != "worker-secret" {
+		t.Errorf("WorkerRPCToken = %q, want %q", cfg.WorkerRPCToken, "worker-secret")
+	}
+	if cfg.GRPCTLSCertFile != "/certs/tls.crt" {
+		t.Errorf("GRPCTLSCertFile = %q, want %q", cfg.GRPCTLSCertFile, "/certs/tls.crt")
+	}
+	if cfg.GRPCTLSKeyFile != "/certs/tls.key" {
+		t.Errorf("GRPCTLSKeyFile = %q, want %q", cfg.GRPCTLSKeyFile, "/certs/tls.key")
+	}
+	if !cfg.EnableGRPCReflection {
+		t.Errorf("expected EnableGRPCReflection=true")
 	}
 }
 

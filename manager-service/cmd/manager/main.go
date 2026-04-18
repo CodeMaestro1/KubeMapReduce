@@ -18,7 +18,11 @@ import (
 	"github.com/minio/minio-go/v7"
 	"github.com/minio/minio-go/v7/pkg/credentials"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	grpccredentials "google.golang.org/grpc/credentials"
+	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/reflection"
+	"google.golang.org/grpc/status"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 
@@ -171,10 +175,27 @@ func main() {
 		log.Printf("minio endpoint configured without credentials; manifest fallback disabled")
 	}
 
-	grpcServer := grpc.NewServer()
+	grpcOpts := []grpc.ServerOption{
+		grpc.UnaryInterceptor(workerAuthUnaryInterceptor(cfg.WorkerRPCToken)),
+	}
+	useTLS := strings.TrimSpace(cfg.GRPCTLSCertFile) != "" || strings.TrimSpace(cfg.GRPCTLSKeyFile) != ""
+	if useTLS {
+		if strings.TrimSpace(cfg.GRPCTLSCertFile) == "" || strings.TrimSpace(cfg.GRPCTLSKeyFile) == "" {
+			log.Fatalf("both GRPC_TLS_CERT_FILE and GRPC_TLS_KEY_FILE must be set to enable gRPC TLS")
+		}
+		grpcCreds, err := grpccredentials.NewServerTLSFromFile(cfg.GRPCTLSCertFile, cfg.GRPCTLSKeyFile)
+		if err != nil {
+			log.Fatalf("failed to load gRPC TLS credentials: %v", err)
+		}
+		grpcOpts = append(grpcOpts, grpc.Creds(grpcCreds))
+	}
+
+	grpcServer := grpc.NewServer(grpcOpts...)
 	workerServer := mgrpc.NewWorkerServer(scheduler, minioClient)
 	pb.RegisterWorkerServiceServer(grpcServer, workerServer)
-	reflection.Register(grpcServer)
+	if cfg.EnableGRPCReflection {
+		reflection.Register(grpcServer)
+	}
 
 	go func() {
 		log.Printf("gRPC server running on %s", cfg.GRPCAddr)
@@ -255,4 +276,35 @@ func isLoopbackRemoteAddr(remoteAddr string) bool {
 	}
 	ip := net.ParseIP(host)
 	return ip != nil && ip.IsLoopback()
+}
+
+func workerAuthUnaryInterceptor(expectedToken string) grpc.UnaryServerInterceptor {
+	expectedToken = strings.TrimSpace(expectedToken)
+	return func(
+		ctx context.Context,
+		req any,
+		info *grpc.UnaryServerInfo,
+		handler grpc.UnaryHandler,
+	) (any, error) {
+		if expectedToken != "" && !isAuthorizedWorkerRPC(ctx, expectedToken) {
+			return nil, status.Error(codes.Unauthenticated, "missing or invalid worker rpc token")
+		}
+		return handler(ctx, req)
+	}
+}
+
+func isAuthorizedWorkerRPC(ctx context.Context, expectedToken string) bool {
+	expectedToken = strings.TrimSpace(expectedToken)
+	if expectedToken == "" {
+		return true
+	}
+	md, ok := metadata.FromIncomingContext(ctx)
+	if !ok {
+		return false
+	}
+	values := md.Get("x-worker-token")
+	if len(values) == 0 {
+		return false
+	}
+	return values[0] == expectedToken
 }
