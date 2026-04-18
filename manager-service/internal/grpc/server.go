@@ -112,7 +112,8 @@ func (s *WorkerServer) Register(ctx context.Context, req *pb.RegisterRequest) (*
 	}
 
 	if task.GetAttemptID() != req.AttemptId {
-		return nil, status.Errorf(codes.PermissionDenied, "attempt_id mismatch: got %s, expected %s", req.AttemptId, task.GetAttemptID())
+		log.Printf("Register rejected for task %s due to attempt mismatch", req.TaskId)
+		return nil, status.Error(codes.PermissionDenied, "attempt rejected")
 	}
 
 	assignment := &pb.TaskAssignment{

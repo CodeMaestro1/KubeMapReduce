@@ -9,7 +9,7 @@ package manager
 
 // QueryGetMaxConcurrentPods reads the cluster-wide pod limit from SYSTEM_CONFIG.
 // Used by GetNextTask for Resource Quota Enforcement (Section 4.3 of the Design Document).
-const QueryGetMaxConcurrentPods = `SELECT max_concurrent_pods FROM SYSTEM_CONFIG WHERE config_id = 1 FOR UPDATE`
+const QueryGetMaxConcurrentPods = `SELECT max_concurrent_pods FROM SYSTEM_CONFIG WHERE config_id = 1`
 
 // QueryCountRunningAttempts counts globally active worker attempts.
 // Compared against max_concurrent_pods to enforce cluster-wide scheduling limits.

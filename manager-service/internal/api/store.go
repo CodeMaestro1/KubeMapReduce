@@ -25,7 +25,7 @@ type JobRecord struct {
 type JobStore interface {
 	CreateJob(ctx context.Context, rec JobRecord) error
 	GetJob(ctx context.Context, jobID string) (*JobRecord, error)
-	ListJobs(ctx context.Context) ([]JobRecord, error)
+	ListJobs(ctx context.Context, limit, offset int) ([]JobRecord, error)
 }
 
 // ── PostgreSQL implementation ───────────────────────────────
@@ -43,7 +43,8 @@ const (
 		SELECT j.job_id, j.status, COALESCE(jc.input_uri, ''), COALESCE(jc.r_tasks, 0), j.created_at
 		FROM JOBS j
 		LEFT JOIN JOB_CONFIGS jc ON j.job_id = jc.job_id
-		ORDER BY j.created_at DESC`
+		ORDER BY j.created_at DESC
+		LIMIT $1 OFFSET $2`
 
 	queryGetAPIJob = `
 		SELECT j.job_id, j.status, COALESCE(jc.input_uri, ''), COALESCE(jc.r_tasks, 0), j.created_at
@@ -110,8 +111,8 @@ func (s *PostgresJobStore) GetJob(ctx context.Context, jobID string) (*JobRecord
 }
 
 // ListJobs returns all jobs ordered by creation time descending.
-func (s *PostgresJobStore) ListJobs(ctx context.Context) ([]JobRecord, error) {
-	rows, err := s.db.QueryContext(ctx, queryListAPIJobs)
+func (s *PostgresJobStore) ListJobs(ctx context.Context, limit, offset int) ([]JobRecord, error) {
+	rows, err := s.db.QueryContext(ctx, queryListAPIJobs, limit, offset)
 	if err != nil {
 		return nil, err
 	}
@@ -187,7 +188,7 @@ func (m *MemoryJobStore) GetJob(_ context.Context, jobID string) (*JobRecord, er
 }
 
 // ListJobs returns all non-expired jobs ordered by creation time descending.
-func (m *MemoryJobStore) ListJobs(_ context.Context) ([]JobRecord, error) {
+func (m *MemoryJobStore) ListJobs(_ context.Context, limit, offset int) ([]JobRecord, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.cleanup()
@@ -199,7 +200,14 @@ func (m *MemoryJobStore) ListJobs(_ context.Context) ([]JobRecord, error) {
 	sort.Slice(list, func(i, j int) bool {
 		return list[i].CreatedAt.After(list[j].CreatedAt)
 	})
-	return list, nil
+	if offset >= len(list) {
+		return []JobRecord{}, nil
+	}
+	end := offset + limit
+	if end > len(list) {
+		end = len(list)
+	}
+	return list[offset:end], nil
 }
 
 func (m *MemoryJobStore) cleanup() {

@@ -149,7 +149,7 @@ func TestPostgresJobStore_ListJobs_ReturnsAllJobs(t *testing.T) {
 		AddRow(id1, "Pending", "a.csv", 1, t1)
 	mock.ExpectQuery("SELECT j.job_id").WillReturnRows(rows)
 
-	jobs, err := store.ListJobs(context.Background())
+	jobs, err := store.ListJobs(context.Background(), 100, 0)
 	if err != nil {
 		t.Fatalf("ListJobs failed: %v", err)
 	}
@@ -172,7 +172,7 @@ func TestPostgresJobStore_ListJobs_ReturnsEmptySlice(t *testing.T) {
 	rows := sqlmock.NewRows([]string{"job_id", "status", "input_uri", "r_tasks", "created_at"})
 	mock.ExpectQuery("SELECT j.job_id").WillReturnRows(rows)
 
-	jobs, err := store.ListJobs(context.Background())
+	jobs, err := store.ListJobs(context.Background(), 100, 0)
 	if err != nil {
 		t.Fatalf("ListJobs failed: %v", err)
 	}
@@ -278,7 +278,7 @@ func TestMemoryJobStore_ListReturnsNewestFirst(t *testing.T) {
 	now = now.Add(time.Second)
 	store.CreateJob(context.Background(), JobRecord{JobID: "b", Filename: "b.csv", CreatedAt: now})
 
-	list, _ := store.ListJobs(context.Background())
+	list, _ := store.ListJobs(context.Background(), 100, 0)
 	if len(list) != 2 || list[0].Filename != "b.csv" {
 		t.Fatalf("expected newest first, got %+v", list)
 	}

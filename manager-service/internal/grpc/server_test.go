@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"strings"
 	"testing"
 	"time"
 
@@ -141,6 +142,9 @@ func TestWorkerServer_Register_PermissionDenied(t *testing.T) {
 	st, ok := status.FromError(err)
 	if !ok || st.Code() != codes.PermissionDenied {
 		t.Errorf("expected PermissionDenied, got %v", err)
+	}
+	if strings.Contains(st.Message(), attemptID) {
+		t.Fatalf("permission denied message must not leak expected attempt_id")
 	}
 }
 
