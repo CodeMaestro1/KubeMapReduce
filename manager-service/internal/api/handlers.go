@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"net/http"
 	"sort"
@@ -101,8 +100,7 @@ func (h *Handlers) HandleJobsSubmit(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var request models.JobSubmissionRequest
-	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
-		http.Error(w, "invalid job payload", http.StatusBadRequest)
+	if err := httputil.DecodeJSONBody(w, r, &request, 0); err != nil {
 		return
 	}
 
@@ -227,8 +225,7 @@ func (h *Handlers) HandleConfigureNodes(w http.ResponseWriter, r *http.Request) 
 	}
 
 	var req models.NodeConfigRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "invalid node config payload", http.StatusBadRequest)
+	if err := httputil.DecodeJSONBody(w, r, &req, 0); err != nil {
 		return
 	}
 
@@ -263,8 +260,7 @@ func (h *Handlers) HandleWorkerConfig(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var request models.WorkerConfigRequest
-	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
-		http.Error(w, "invalid worker config payload", http.StatusBadRequest)
+	if err := httputil.DecodeJSONBody(w, r, &request, 0); err != nil {
 		return
 	}
 
@@ -367,8 +363,7 @@ func (h *Handlers) HandleAdminCreateUser(w http.ResponseWriter, r *http.Request)
 	}
 
 	var req models.CreateUserRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "invalid request payload", http.StatusBadRequest)
+	if err := httputil.DecodeJSONBody(w, r, &req, 0); err != nil {
 		return
 	}
 
