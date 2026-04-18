@@ -1,0 +1,23 @@
+[#2] Recovery respawn timeout does not scale with backlog
+Source: Best practice (Per-operation timeout budgeting)
+Fix: Replaced a single shared 2-minute recovery context with per-attempt spawn timeouts in `Scheduler.Recover`, so one slow spawn cannot consume the full budget and starve later recovered attempts.
+
+[#3] Partial recovery spawn failures can terminate startup
+Source: Best practice (Graceful degradation at startup)
+Fix: Updated `Scheduler.Recover` to log and continue on spawn failures while still returning hard DB/query errors, preventing transient orchestration errors from aborting manager startup.
+
+[#4] Kubernetes cleanup failures were only logged and then dropped
+Source: Best practice (Eventual consistency reconciler pattern)
+Fix: Added a scheduler cleanup retry queue plus `StartCleanupReconciler` background loop, and routed completion/failure/cancel cleanup calls through retry-aware cancellation logic.
+
+[#5] Internal job-cancel endpoint lacked authentication
+Source: Best practice (Defense in depth for internal control planes)
+Fix: Added internal endpoint authorization for `DELETE /internal/jobs/{job_id}` using `X-Internal-Token` when `MANAGER_INTERNAL_API_KEY` is configured, with loopback-only fallback when unset.
+
+[#6] `replica_index` coupling caused reduce scheduling starvation risk
+Source: copilot-instructions.md
+Fix: Adjusted idle-task selection so manager affinity is enforced for Map tasks while Reduce tasks are still schedulable regardless of partition index, and broadened recoverable-attempt lookup to job ownership derived from map-task affinity.
+
+[#7] Stale-task reaper lock query missed `SKIP LOCKED`
+Source: copilot-instructions.md
+Fix: Updated stale-task selection SQL to `FOR UPDATE ... SKIP LOCKED` so concurrent reapers avoid lock contention and continue reclaiming expired attempts in parallel.

@@ -115,6 +115,7 @@ type Task struct {
 	InputSplits     []TaskInputSplit
 	ShuffleInputs   []TaskOutputRef
 	ReplicaIndex    int // Manager StatefulSet replica binding (DDS TASKS.replica_index)
+	ReducePartition int // Logical reduce partition identifier.
 	TotalReducers   int // Number of reduce partitions (R) — map workers need this for hash(k) % R
 	startTime       time.Time
 	ActiveAttemptID string
