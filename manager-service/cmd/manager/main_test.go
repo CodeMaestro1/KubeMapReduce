@@ -6,6 +6,8 @@ import (
 	"testing"
 
 	"google.golang.org/grpc/metadata"
+
+	"kubemapreduce/manager-service/internal/config"
 )
 
 func TestParseReplicaIndexFromHostname(t *testing.T) {
@@ -83,5 +85,57 @@ func TestIsAuthorizedWorkerRPC_MissingOrWrongToken(t *testing.T) {
 	wrongTokenCtx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("x-worker-token", "wrong"))
 	if isAuthorizedWorkerRPC(wrongTokenCtx, "abc123") {
 		t.Fatalf("expected wrong worker rpc token to be rejected")
+	}
+}
+
+func TestValidateWorkerRPCSecurityConfig(t *testing.T) {
+	tests := []struct {
+		name    string
+		cfg     *config.Config
+		wantErr bool
+	}{
+		{
+			name: "token only is allowed",
+			cfg: &config.Config{
+				WorkerRPCToken: "token",
+			},
+			wantErr: false,
+		},
+		{
+			name: "tls only is allowed when cert and key set",
+			cfg: &config.Config{
+				GRPCTLSCertFile: "tls.crt",
+				GRPCTLSKeyFile:  "tls.key",
+			},
+			wantErr: false,
+		},
+		{
+			name:    "insecure mode requires explicit opt in",
+			cfg:     &config.Config{},
+			wantErr: true,
+		},
+		{
+			name: "insecure mode explicit opt in passes",
+			cfg: &config.Config{
+				AllowInsecureWorkerRPC: true,
+			},
+			wantErr: false,
+		},
+		{
+			name: "partial tls config fails",
+			cfg: &config.Config{
+				GRPCTLSCertFile: "tls.crt",
+			},
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateWorkerRPCSecurityConfig(tt.cfg)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("validateWorkerRPCSecurityConfig() error = %v, wantErr %v", err, tt.wantErr)
+			}
+		})
 	}
 }

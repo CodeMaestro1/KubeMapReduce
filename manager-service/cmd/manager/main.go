@@ -178,6 +178,11 @@ func main() {
 	grpcOpts := []grpc.ServerOption{
 		grpc.UnaryInterceptor(workerAuthUnaryInterceptor(cfg.WorkerRPCToken)),
 	}
+	if err := validateWorkerRPCSecurityConfig(cfg); err != nil {
+		log.Fatalf("insecure worker RPC configuration: %v", err)
+	}
+	emitWorkerRPCSecurityWarnings(cfg)
+
 	useTLS := strings.TrimSpace(cfg.GRPCTLSCertFile) != "" || strings.TrimSpace(cfg.GRPCTLSKeyFile) != ""
 	if useTLS {
 		if strings.TrimSpace(cfg.GRPCTLSCertFile) == "" || strings.TrimSpace(cfg.GRPCTLSKeyFile) == "" {
@@ -307,4 +312,36 @@ func isAuthorizedWorkerRPC(ctx context.Context, expectedToken string) bool {
 		return false
 	}
 	return values[0] == expectedToken
+}
+
+func validateWorkerRPCSecurityConfig(cfg *config.Config) error {
+	if cfg == nil {
+		return errors.New("config is nil")
+	}
+	hasWorkerToken := strings.TrimSpace(cfg.WorkerRPCToken) != ""
+	hasCert := strings.TrimSpace(cfg.GRPCTLSCertFile) != ""
+	hasKey := strings.TrimSpace(cfg.GRPCTLSKeyFile) != ""
+	useTLS := hasCert || hasKey
+
+	if !hasWorkerToken && !useTLS && !cfg.AllowInsecureWorkerRPC {
+		return errors.New("set MANAGER_WORKER_RPC_TOKEN and/or GRPC_TLS_CERT_FILE+GRPC_TLS_KEY_FILE (or explicitly set ALLOW_INSECURE_WORKER_RPC=true for local development only)")
+	}
+	if useTLS && (!hasCert || !hasKey) {
+		return errors.New("both GRPC_TLS_CERT_FILE and GRPC_TLS_KEY_FILE must be set to enable gRPC TLS")
+	}
+	return nil
+}
+
+func emitWorkerRPCSecurityWarnings(cfg *config.Config) {
+	hasWorkerToken := strings.TrimSpace(cfg.WorkerRPCToken) != ""
+	useTLS := strings.TrimSpace(cfg.GRPCTLSCertFile) != "" || strings.TrimSpace(cfg.GRPCTLSKeyFile) != ""
+	if !hasWorkerToken && useTLS {
+		log.Printf("[WARN] worker RPC token is not configured; relying on transport-level TLS controls only")
+	}
+	if hasWorkerToken && !useTLS {
+		log.Printf("[WARN] gRPC TLS is not configured; worker token is enforced over plaintext transport")
+	}
+	if cfg.AllowInsecureWorkerRPC && !hasWorkerToken && !useTLS {
+		log.Printf("[WARN] ALLOW_INSECURE_WORKER_RPC=true: worker RPC is running without token auth and without TLS")
+	}
 }
