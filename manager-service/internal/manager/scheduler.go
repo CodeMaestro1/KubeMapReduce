@@ -646,6 +646,10 @@ func (s *Scheduler) CancelJob(jobID string) error {
 	if err != nil {
 		return err
 	}
+	_, err = tx.ExecContext(ctx, QueryFailRunningAttemptsByJob, jobID)
+	if err != nil {
+		return err
+	}
 
 	if err := tx.Commit(); err != nil {
 		return err
@@ -838,12 +842,12 @@ func (s *Scheduler) FailStaleTasks() (int, error) {
 		s.tryCancelJob(cancelCtx, jobID, "failed")
 	}
 
-	spawnCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-	defer cancel()
 	for _, rec := range respawnTasks {
+		spawnCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		if err := s.orchestrator.SpawnWorker(spawnCtx, rec.taskID, rec.jobID, rec.attemptID, s.managerAddr); err != nil {
 			log.Printf("Failed to respawn worker for stale task %s (attempt %s): %v", rec.taskID, rec.attemptID, err)
 		}
+		cancel()
 	}
 
 	return recoveredCount, nil

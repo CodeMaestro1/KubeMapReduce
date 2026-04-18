@@ -9,7 +9,7 @@ package manager
 
 // QueryGetMaxConcurrentPods reads the cluster-wide pod limit from SYSTEM_CONFIG.
 // Used by GetNextTask for Resource Quota Enforcement (Section 4.3 of the Design Document).
-const QueryGetMaxConcurrentPods = `SELECT max_concurrent_pods FROM SYSTEM_CONFIG LIMIT 1`
+const QueryGetMaxConcurrentPods = `SELECT max_concurrent_pods FROM SYSTEM_CONFIG WHERE config_id = 1 FOR UPDATE`
 
 // QueryCountRunningAttempts counts globally active worker attempts.
 // Compared against max_concurrent_pods to enforce cluster-wide scheduling limits.
@@ -123,6 +123,16 @@ const QueryUpdateTaskStatus = `UPDATE TASKS SET status = $1, current_attempt_id 
 
 // QueryFailAttempt marks an attempt as Failed with an end timestamp.
 const QueryFailAttempt = `UPDATE TASK_ATTEMPTS SET status = 'Failed', end_time = NOW() WHERE attempt_id = $1`
+
+// QueryFailRunningAttemptsByJob marks all still-running attempts for a job as failed.
+// Used by CancelJob so quota accounting does not retain orphan "Running" attempts.
+const QueryFailRunningAttemptsByJob = `
+	UPDATE TASK_ATTEMPTS a
+	SET status = 'Failed', end_time = NOW()
+	FROM TASKS t
+	WHERE a.task_id = t.task_id
+	  AND t.job_id = $1
+	  AND a.status = 'Running'`
 
 // QuerySelectStaleTasks finds in-progress tasks whose lease has expired.
 // The Manager's Active Reaper uses this to reclaim zombie workers (Section 5.1).
