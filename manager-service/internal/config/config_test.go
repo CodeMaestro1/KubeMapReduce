@@ -12,7 +12,7 @@ func TestLoad_Defaults(t *testing.T) {
 		"KEYCLOAK_JWKS_URL", "KEYCLOAK_ISSUER", "SERVER_ADDR",
 		"KEYCLOAK_ADMIN_USERNAME", "KEYCLOAK_ADMIN_PASSWORD",
 		"GRPC_ADDR", "GRPC_PORT", "MANAGER_INTERNAL_API_KEY",
-		"MANAGER_WORKER_RPC_TOKEN", "GRPC_TLS_CERT_FILE", "GRPC_TLS_KEY_FILE", "ENABLE_GRPC_REFLECTION",
+		"MANAGER_WORKER_RPC_TOKEN", "GRPC_TLS_CERT_FILE", "GRPC_TLS_KEY_FILE", "ENABLE_GRPC_REFLECTION", "ALLOW_INSECURE_WORKER_RPC",
 	}
 	for _, key := range envVars {
 		t.Setenv(key, "")
@@ -62,6 +62,9 @@ func TestLoad_Defaults(t *testing.T) {
 	if cfg.EnableGRPCReflection {
 		t.Errorf("expected gRPC reflection to be disabled by default")
 	}
+	if cfg.AllowInsecureWorkerRPC {
+		t.Errorf("expected insecure worker RPC mode disabled by default")
+	}
 
 	expectedJWKS := "http://localhost:8080/realms/mapreduce/protocol/openid-connect/certs"
 	if cfg.JWKSURL != expectedJWKS {
@@ -92,6 +95,7 @@ func TestLoad_CustomEnvVars(t *testing.T) {
 	t.Setenv("GRPC_TLS_CERT_FILE", "/certs/tls.crt")
 	t.Setenv("GRPC_TLS_KEY_FILE", "/certs/tls.key")
 	t.Setenv("ENABLE_GRPC_REFLECTION", "true")
+	t.Setenv("ALLOW_INSECURE_WORKER_RPC", "true")
 
 	cfg, err := Load()
 	if err != nil {
@@ -148,6 +152,9 @@ func TestLoad_CustomEnvVars(t *testing.T) {
 	}
 	if !cfg.EnableGRPCReflection {
 		t.Errorf("expected EnableGRPCReflection=true")
+	}
+	if !cfg.AllowInsecureWorkerRPC {
+		t.Errorf("expected AllowInsecureWorkerRPC=true")
 	}
 }
 

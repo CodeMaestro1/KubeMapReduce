@@ -163,6 +163,42 @@ func TestHandleJobsSubmit_DefaultsReducersToOneWhenZeroProvided(t *testing.T) {
 	}
 }
 
+func TestHandleJobsList_AppliesPagination(t *testing.T) {
+	h := newTestHandlers()
+	now := time.Now().UTC()
+	_ = h.store.CreateJob(context.Background(), JobRecord{JobID: "job-a", Status: "Pending", Filename: "a.csv", Reducers: 1, CreatedAt: now})
+	_ = h.store.CreateJob(context.Background(), JobRecord{JobID: "job-b", Status: "Pending", Filename: "b.csv", Reducers: 1, CreatedAt: now.Add(time.Second)})
+	_ = h.store.CreateJob(context.Background(), JobRecord{JobID: "job-c", Status: "Pending", Filename: "c.csv", Reducers: 1, CreatedAt: now.Add(2 * time.Second)})
+
+	req := httptest.NewRequest(http.MethodGet, "/jobs?limit=1&offset=1", nil)
+	rec := httptest.NewRecorder()
+	h.HandleJobsList(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d", http.StatusOK, rec.Code)
+	}
+	var jobs []map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &jobs); err != nil {
+		t.Fatalf("failed to decode jobs list: %v", err)
+	}
+	if len(jobs) != 1 {
+		t.Fatalf("expected 1 job, got %d", len(jobs))
+	}
+	if jobs[0]["filename"] != "b.csv" {
+		t.Fatalf("expected second newest job (b.csv), got %#v", jobs[0]["filename"])
+	}
+}
+
+func TestHandleJobsList_RejectsInvalidPagination(t *testing.T) {
+	h := newTestHandlers()
+	req := httptest.NewRequest(http.MethodGet, "/jobs?limit=0", nil)
+	rec := httptest.NewRecorder()
+	h.HandleJobsList(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected status %d, got %d", http.StatusBadRequest, rec.Code)
+	}
+}
+
 func TestHandleWorkerConfig_RejectsInvalidValues(t *testing.T) {
 	h := newTestHandlers()
 

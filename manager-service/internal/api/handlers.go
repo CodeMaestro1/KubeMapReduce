@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -25,7 +26,11 @@ type Handlers struct {
 	now         func() time.Time
 }
 
-const defaultReducers = 1
+const (
+	defaultReducers  = 1
+	defaultListLimit = 100
+	maxListLimit     = 500
+)
 
 // NewHandlers creates production-ready Handlers backed by the given JobStore.
 func NewHandlers(adminClient *auth.KeycloakAdminClient, store JobStore) *Handlers {
@@ -131,7 +136,13 @@ func (h *Handlers) HandleJobsList(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	records, err := h.store.ListJobs(r.Context())
+	limit, offset, err := parsePagination(r)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	records, err := h.store.ListJobs(r.Context(), limit, offset)
 	if err != nil {
 		http.Error(w, "failed to list jobs", http.StatusInternalServerError)
 		return
@@ -152,6 +163,30 @@ func (h *Handlers) HandleJobsList(w http.ResponseWriter, r *http.Request) {
 	if err := httputil.WriteJSON(w, http.StatusOK, list); err != nil {
 		return
 	}
+}
+
+func parsePagination(r *http.Request) (int, int, error) {
+	limit := defaultListLimit
+	if rawLimit := strings.TrimSpace(r.URL.Query().Get("limit")); rawLimit != "" {
+		parsedLimit, err := strconv.Atoi(rawLimit)
+		if err != nil || parsedLimit <= 0 {
+			return 0, 0, errors.New("limit must be a positive integer")
+		}
+		if parsedLimit > maxListLimit {
+			parsedLimit = maxListLimit
+		}
+		limit = parsedLimit
+	}
+
+	offset := 0
+	if rawOffset := strings.TrimSpace(r.URL.Query().Get("offset")); rawOffset != "" {
+		parsedOffset, err := strconv.Atoi(rawOffset)
+		if err != nil || parsedOffset < 0 {
+			return 0, 0, errors.New("offset must be a non-negative integer")
+		}
+		offset = parsedOffset
+	}
+	return limit, offset, nil
 }
 
 func (h *Handlers) HandleJobsGet(w http.ResponseWriter, r *http.Request) {
