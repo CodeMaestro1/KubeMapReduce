@@ -1,359 +1,375 @@
 # Graph Report - .  (2026-04-19)
 
 ## Corpus Check
-- Corpus is ~46,209 words - fits in a single context window. You may not need a graph.
+- Corpus is ~49,094 words - fits in a single context window. You may not need a graph.
 
 ## Summary
-- 678 nodes · 898 edges · 56 communities detected
-- Extraction: 100% EXTRACTED · 0% INFERRED · 0% AMBIGUOUS · INFERRED: 4 edges (avg confidence: 0.84)
+- 717 nodes · 945 edges · 59 communities detected
+- Extraction: 99% EXTRACTED · 1% INFERRED · 0% AMBIGUOUS · INFERRED: 5 edges (avg confidence: 0.86)
 - Token cost: 0 input · 0 output
 
 ## Community Hubs (Navigation)
-- [[_COMMUNITY_Descriptor String|Descriptor String]]
-- [[_COMMUNITY_Testscheduler Completetask|Testscheduler Completetask]]
-- [[_COMMUNITY_Testhandleadmincreateuser Testhandlejobssubmit|Testhandleadmincreateuser Testhandlejobssubmit]]
-- [[_COMMUNITY_Scheduler Allmaptaskscompleted|Scheduler Allmaptaskscompleted]]
-- [[_COMMUNITY_String Jobrecord|String Jobrecord]]
-- [[_COMMUNITY_Bootstrap Bootstrapconfig|Bootstrap Bootstrapconfig]]
-- [[_COMMUNITY_Workerservice Handler|Workerservice Handler]]
-- [[_COMMUNITY_Taskassignment Getattemptid|Taskassignment Getattemptid]]
-- [[_COMMUNITY_Roundtripfunc Roundtrip|Roundtripfunc Roundtrip]]
-- [[_COMMUNITY_Testworkerserver Register|Testworkerserver Register]]
-- [[_COMMUNITY_Handlers Cleanupjobsstore|Handlers Cleanupjobsstore]]
-- [[_COMMUNITY_Createuserrequest Keycloakadminclient|Createuserrequest Keycloakadminclient]]
-- [[_COMMUNITY_Http Apiurl|Http Apiurl]]
-- [[_COMMUNITY_Getenv Isauthorizedinternalcancel|Getenv Isauthorizedinternalcancel]]
-- [[_COMMUNITY_Dds Attemptstatus|Dds Attemptstatus]]
-- [[_COMMUNITY_Testdoauthrequestwithcontext Testgetvalidtoken|Testdoauthrequestwithcontext Testgetvalidtoken]]
-- [[_COMMUNITY_Manifestuploader Miniomanifestuploader|Manifestuploader Miniomanifestuploader]]
-- [[_COMMUNITY_Reconciler Requirement|Reconciler Requirement]]
-- [[_COMMUNITY_Testmiddleware Jwt|Testmiddleware Jwt]]
-- [[_COMMUNITY_Testrequesttokens Testrefreshtokens|Testrequesttokens Testrefreshtokens]]
-- [[_COMMUNITY_Testgetroles Testrequireroles|Testgetroles Testrequireroles]]
-- [[_COMMUNITY_Clijobfuncspec Clijobpayload|Clijobfuncspec Clijobpayload]]
-- [[_COMMUNITY_Canceljob Spawnworker|Canceljob Spawnworker]]
-- [[_COMMUNITY_Testload Customenvvars|Testload Customenvvars]]
-- [[_COMMUNITY_String Testnewtasktracker|String Testnewtasktracker]]
-- [[_COMMUNITY_Validation Badrequesterror|Validation Badrequesterror]]
-- [[_COMMUNITY_Testcmdjobssubmit Testsafejobresultfilename|Testcmdjobssubmit Testsafejobresultfilename]]
-- [[_COMMUNITY_Serialization Testtaskattempt|Serialization Testtaskattempt]]
-- [[_COMMUNITY_Requests Createuserrequest|Requests Createuserrequest]]
-- [[_COMMUNITY_Json Testjobsubmissionrequest|Json Testjobsubmissionrequest]]
-- [[_COMMUNITY_Testwritejson Failingwriteresponsewriter|Testwritejson Failingwriteresponsewriter]]
-- [[_COMMUNITY_Cmdadminconfigurenodes Cmdadmincreateuser|Cmdadminconfigurenodes Cmdadmincreateuser]]
-- [[_COMMUNITY_Whoami Cmdtokeninspect|Whoami Cmdtokeninspect]]
-- [[_COMMUNITY_Testisauthorizedinternalcancel Testisauthorizedworkerrpc|Testisauthorizedinternalcancel Testisauthorizedworkerrpc]]
-- [[_COMMUNITY_Http Helpers|Http Helpers]]
-- [[_COMMUNITY_Testgetadminaccesstoken Keycloak|Testgetadminaccesstoken Keycloak]]
-- [[_COMMUNITY_Errors Serviceunavailableerror|Errors Serviceunavailableerror]]
-- [[_COMMUNITY_Oauthtokenresponse Oauth|Oauthtokenresponse Oauth]]
-- [[_COMMUNITY_Roles Containsrole|Roles Containsrole]]
-- [[_COMMUNITY_Getenv Getenvbool|Getenv Getenvbool]]
-- [[_COMMUNITY_Validation Testbadrequesthelpers|Validation Testbadrequesthelpers]]
-- [[_COMMUNITY_Contextkey Jwtvalidator|Contextkey Jwtvalidator]]
-- [[_COMMUNITY_Testbootstrapphasetimeout Testphasesuseindependentcontexts|Testbootstrapphasetimeout Testphasesuseindependentcontexts]]
-- [[_COMMUNITY_Testconfigurenodesstatuserror Acceptedisnil|Testconfigurenodesstatuserror Acceptedisnil]]
-- [[_COMMUNITY_Login Cmdhealth|Login Cmdhealth]]
-- [[_COMMUNITY_Caseinsensitive Testhasrealmrole|Caseinsensitive Testhasrealmrole]]
-- [[_COMMUNITY_Testkubeorchestrator Spawnworker|Testkubeorchestrator Spawnworker]]
-- [[_COMMUNITY_Response Writeerror|Response Writeerror]]
-- [[_COMMUNITY_Routes Registerroutes|Routes Registerroutes]]
-- [[_COMMUNITY_Routes Contract|Routes Contract]]
-- [[_COMMUNITY_Routing Computereplicaindex|Routing Computereplicaindex]]
-- [[_COMMUNITY_Routing Testcomputereplicaindex|Routing Testcomputereplicaindex]]
-- [[_COMMUNITY_Graceful Degradation|Graceful Degradation]]
-- [[_COMMUNITY_Timeout Per|Timeout Per]]
-- [[_COMMUNITY_Delete Body|Delete Body]]
-- [[_COMMUNITY_Queries|Queries]]
+- [[_COMMUNITY_mapreduce.pb.go|mapreduce.pb.go]]
+- [[_COMMUNITY_scheduler test.go|scheduler test.go]]
+- [[_COMMUNITY_handlers test.go|handlers test.go]]
+- [[_COMMUNITY_Scheduler|Scheduler]]
+- [[_COMMUNITY_task tracker.go|task tracker.go]]
+- [[_COMMUNITY_keycloakBootstrapper|keycloakBootstrapper]]
+- [[_COMMUNITY_mapreduce grpc.pb.go|mapreduce grpc.pb.go]]
+- [[_COMMUNITY_TaskAssignment|TaskAssignment]]
+- [[_COMMUNITY_bootstrap test.go|bootstrap test.go]]
+- [[_COMMUNITY_server test.go|server test.go]]
+- [[_COMMUNITY_KubeMapReduce Platform|KubeMapReduce Platform]]
+- [[_COMMUNITY_Handlers|Handlers]]
+- [[_COMMUNITY_main()|main()]]
+- [[_COMMUNITY_KeycloakAdminClient|KeycloakAdminClient]]
+- [[_COMMUNITY_MemoryJobStore|MemoryJobStore]]
+- [[_COMMUNITY_http.go|http.go]]
+- [[_COMMUNITY_dds.go|dds.go]]
+- [[_COMMUNITY_http test.go|http test.go]]
+- [[_COMMUNITY_server.go|server.go]]
+- [[_COMMUNITY_jwt test.go|jwt test.go]]
+- [[_COMMUNITY_oauth test.go|oauth test.go]]
+- [[_COMMUNITY_roles test.go|roles test.go]]
+- [[_COMMUNITY_jobs.go|jobs.go]]
+- [[_COMMUNITY_orchestrator.go|orchestrator.go]]
+- [[_COMMUNITY_store test.go|store test.go]]
+- [[_COMMUNITY_config test.go|config test.go]]
+- [[_COMMUNITY_task tracker test.go|task tracker test.go]]
+- [[_COMMUNITY_validation.go|validation.go]]
+- [[_COMMUNITY_jobs test.go|jobs test.go]]
+- [[_COMMUNITY_main test.go|main test.go]]
+- [[_COMMUNITY_dds test.go|dds test.go]]
+- [[_COMMUNITY_requests.go|requests.go]]
+- [[_COMMUNITY_requests test.go|requests test.go]]
+- [[_COMMUNITY_response test.go|response test.go]]
+- [[_COMMUNITY_admin.go|admin.go]]
+- [[_COMMUNITY_whoami.go|whoami.go]]
+- [[_COMMUNITY_http helpers.go|http helpers.go]]
+- [[_COMMUNITY_keycloak admin test.go|keycloak admin test.go]]
+- [[_COMMUNITY_errors.go|errors.go]]
+- [[_COMMUNITY_oauth.go|oauth.go]]
+- [[_COMMUNITY_roles.go|roles.go]]
+- [[_COMMUNITY_config.go|config.go]]
+- [[_COMMUNITY_validation test.go|validation test.go]]
+- [[_COMMUNITY_jwt.go|jwt.go]]
+- [[_COMMUNITY_main test.go|main test.go]]
+- [[_COMMUNITY_admin test.go|admin test.go]]
+- [[_COMMUNITY_login.go|login.go]]
+- [[_COMMUNITY_whoami test.go|whoami test.go]]
+- [[_COMMUNITY_orchestrator test.go|orchestrator test.go]]
+- [[_COMMUNITY_response.go|response.go]]
+- [[_COMMUNITY_DELETE Username in Path Design|DELETE Username in Path Design]]
+- [[_COMMUNITY_routes.go|routes.go]]
+- [[_COMMUNITY_routes contract test.go|routes contract test.go]]
+- [[_COMMUNITY_routing.go|routing.go]]
+- [[_COMMUNITY_routing test.go|routing test.go]]
+- [[_COMMUNITY_DELETE Body Compatibility Rationale|DELETE Body Compatibility Rationale]]
+- [[_COMMUNITY_Per operation Timeout Budgeting Rationale|Per operation Timeout Budgeting Rationale]]
+- [[_COMMUNITY_Defense in Depth for Internal|Defense in Depth for Internal]]
+- [[_COMMUNITY_queries.go|queries.go]]
 
 ## God Nodes (most connected - your core abstractions)
 1. `setupMockDB()` - 38 edges
-2. `newTestHandlers()` - 29 edges
+2. `newTestHandlers()` - 31 edges
 3. `Scheduler` - 25 edges
 4. `TaskAssignment` - 21 edges
 5. `setupMockServer()` - 15 edges
 6. `keycloakBootstrapper` - 13 edges
 7. `expectLeaseValidation()` - 13 edges
-8. `Handlers` - 12 edges
-9. `newTestHandlersWithKeycloak()` - 11 edges
-10. `TaskCompleteRequest` - 11 edges
+8. `main()` - 12 edges
+9. `Handlers` - 11 edges
+10. `newTestHandlersWithKeycloak()` - 11 edges
 
 ## Surprising Connections (you probably didn't know these)
 - `Keycloak Authentication and RBAC` --semantically_similar_to--> `Keycloak as Identity Manager Candidate`  [INFERRED] [semantically similar]
   README.md → mapreduce.pdf
-- `Cleanup Retry Reconciler` --conceptually_related_to--> `Fault Tolerance and Recovery Requirement`  [INFERRED]
+- `KubeMapReduce Platform` --conceptually_related_to--> `Distributed MapReduce Project Specification`  [INFERRED]
+  README.md → mapreduce.pdf
+- `Startup Recovery Graceful Degradation` --conceptually_related_to--> `Fault Tolerance and Recovery Requirement`  [INFERRED]
   changes.txt → mapreduce.pdf
 - `KubeMapReduce Platform` --conceptually_related_to--> `Distributed MapReduce Project Specification`  [INFERRED]
   README.md → mapreduce.pdf
-- `main()` --calls--> `getEnv()`  [EXTRACTED]
-  manager-service\cmd\manager\main.go → auth-service\cmd\setup\main.go
-- `main()` --calls--> `printUsage()`  [EXTRACTED]
-  manager-service\cmd\manager\main.go → cli-service\cmd\cli\main.go
+- `Cleanup Retry Reconciler` --conceptually_related_to--> `Fault Tolerance and Recovery Requirement`  [INFERRED]
+  changes.txt → mapreduce.pdf
 
 ## Hyperedges (group relationships)
 - **Platform Service Topology** — readme_kubemapreduce_platform, readme_cli_service, readme_manager_api_service, readme_keycloak_authentication [EXTRACTED 1.00]
-- **Fault Tolerance Alignment** — changes_scheduler_recover, changes_cleanup_reconciler, pdf_fault_tolerance_requirement [INFERRED 0.83]
+- **Platform Service Topology** — readme_kubemapreduce_platform, readme_cli_service, readme_manager_api_service, readme_keycloak_authentication [EXTRACTED 1.00]
+- **Fault Tolerance Alignment** — changes_scheduler_recover_timeout_hardening, changes_cleanup_retry_reconciler, pdf_fault_tolerance_requirement [INFERRED 0.83]
 
 ## Communities
 
-### Community 0 - "Descriptor String"
+### Community 0 - "mapreduce.pb.go"
 Cohesion: 0.03
 Nodes (11): file_proto_mapreduce_proto_init(), file_proto_mapreduce_proto_rawDescGZIP(), init(), Ack, HeartbeatRequest, HeartbeatResponse, HeartbeatResponse_Action, RegisterRequest (+3 more)
 
-### Community 1 - "Testscheduler Completetask"
+### Community 1 - "scheduler test.go"
 Cohesion: 0.08
 Nodes (48): recordingOrchestrator, spawnCall, expectLeaseValidation(), expectReduceTaskMetadataQueries(), expectTaskMetadataQueries(), setupMockDB(), setupMockDBWithOrchestrator(), TestScheduler_AllMapTasksCompleted_Negative() (+40 more)
 
-### Community 2 - "Testhandleadmincreateuser Testhandlejobssubmit"
-Cohesion: 0.08
-Nodes (45): fakeKeycloak(), newTestHandlers(), newTestHandlersWithKeycloak(), newTestHandlersWithRetention(), TestHandleAdminCreateUser_NilClientUnavailable(), TestHandleAdminCreateUser_NormalizesRole(), TestHandleAdminCreateUser_RejectsInvalidJSON(), TestHandleAdminCreateUser_RejectsInvalidRole() (+37 more)
+### Community 2 - "handlers test.go"
+Cohesion: 0.07
+Nodes (47): fakeKeycloak(), newTestHandlers(), newTestHandlersWithKeycloak(), newTestHandlersWithRetention(), TestHandleAdminCreateUser_NilClientUnavailable(), TestHandleAdminCreateUser_NormalizesRole(), TestHandleAdminCreateUser_RejectsInvalidJSON(), TestHandleAdminCreateUser_RejectsInvalidRole() (+39 more)
 
-### Community 3 - "Scheduler Allmaptaskscompleted"
+### Community 3 - "Scheduler"
 Cohesion: 0.12
 Nodes (2): Scheduler, taskMetadataQuerier
 
-### Community 4 - "String Jobrecord"
+### Community 4 - "task tracker.go"
 Cohesion: 0.08
 Nodes (13): JobRecord, JobState, ScheduleJobRequest, ScheduleTask, ScheduleTaskInput, SystemConfigUpdate, Task, TaskInputSplit (+5 more)
 
-### Community 5 - "Bootstrap Bootstrapconfig"
+### Community 5 - "keycloakBootstrapper"
 Cohesion: 0.21
 Nodes (9): BootstrapConfig, keycloakBootstrapper, keycloakClient, tokenResponse, BootstrapKeycloak(), BootstrapKeycloakWithContext(), newBootstrapHTTPClient(), newBootstrapTransport() (+1 more)
 
-### Community 6 - "Workerservice Handler"
+### Community 6 - "mapreduce grpc.pb.go"
 Cohesion: 0.12
 Nodes (9): RegisterWorkerServiceServer(), _WorkerService_Heartbeat_Handler(), _WorkerService_Register_Handler(), _WorkerService_TaskComplete_Handler(), _WorkerService_TaskFailed_Handler(), UnimplementedWorkerServiceServer, UnsafeWorkerServiceServer, WorkerServiceClient (+1 more)
 
-### Community 7 - "Taskassignment Getattemptid"
+### Community 7 - "TaskAssignment"
 Cohesion: 0.1
 Nodes (1): TaskAssignment
 
-### Community 8 - "Roundtripfunc Roundtrip"
+### Community 8 - "bootstrap test.go"
 Cohesion: 0.12
 Nodes (5): roundTripFunc, TestBootstrapKeycloakWithContextCanceled(), TestCallJSONRetriesNetworkErrorsAndReturnsServiceUnavailable(), TestNewKeycloakBootstrapperUsesDefaultHTTPClientTimeouts(), validBootstrapConfig()
 
-### Community 9 - "Testworkerserver Register"
+### Community 9 - "server test.go"
 Cohesion: 0.2
 Nodes (16): fakeManifestUploader, setupMockServer(), TestWorkerServer_Heartbeat_Expired(), TestWorkerServer_Heartbeat_Success(), TestWorkerServer_Register_ManifestFallback(), TestWorkerServer_Register_ManifestUploadFailureReturnsError(), TestWorkerServer_Register_PermissionDenied(), TestWorkerServer_Register_ReduceUsesReplicaPartition() (+8 more)
 
-### Community 10 - "Handlers Cleanupjobsstore"
-Cohesion: 0.18
-Nodes (5): Handlers, generateJobID(), isAuthDependencyError(), NewHandlers(), newHandlersWithOptions()
+### Community 10 - "KubeMapReduce Platform"
+Cohesion: 0.16
+Nodes (18): Cleanup Retry Reconciler, Eventual Consistency Reconciler Rationale, Graceful Degradation at Startup Rationale, Startup Recovery Graceful Degradation, Fault Tolerance Alignment, Platform Service Topology, Distributed MapReduce Project Specification, Fault Tolerance and Recovery Requirement (+10 more)
 
-### Community 11 - "Createuserrequest Keycloakadminclient"
+### Community 11 - "Handlers"
+Cohesion: 0.15
+Nodes (4): Handlers, isAuthDependencyError(), jobMessage(), parsePagination()
+
+### Community 12 - "main()"
+Cohesion: 0.22
+Nodes (12): emitWorkerRPCSecurityWarnings(), getEnv(), isAuthorizedInternalCancel(), isAuthorizedWorkerRPC(), isLoopbackRemoteAddr(), main(), parseReplicaIndexFromHostname(), printUsage() (+4 more)
+
+### Community 13 - "KeycloakAdminClient"
 Cohesion: 0.25
 Nodes (5): CreateUserRequest, KeycloakAdminClient, keycloakTokenResponse, keycloakUser, roleMapping
 
-### Community 12 - "Http Apiurl"
+### Community 14 - "MemoryJobStore"
+Cohesion: 0.17
+Nodes (4): JobRecord, JobStore, MemoryJobStore, PostgresJobStore
+
+### Community 15 - "http.go"
 Cohesion: 0.31
 Nodes (13): apiURL(), cliRequestContext(), doAuthRequest(), doAuthRequestExpect(), doAuthRequestWithContext(), getEnv(), getValidToken(), keycloakBaseURL() (+5 more)
 
-### Community 13 - "Getenv Isauthorizedinternalcancel"
-Cohesion: 0.24
-Nodes (10): getEnv(), isAuthorizedInternalCancel(), isAuthorizedWorkerRPC(), isLoopbackRemoteAddr(), main(), parseReplicaIndexFromHostname(), printUsage(), resolveManagerAddr() (+2 more)
-
-### Community 14 - "Dds Attemptstatus"
+### Community 16 - "dds.go"
 Cohesion: 0.14
 Nodes (11): AttemptStatus, Job, JobConfig, JobStatus, SystemConfig, Task, TaskAttempt, TaskInput (+3 more)
 
-### Community 15 - "Testdoauthrequestwithcontext Testgetvalidtoken"
+### Community 17 - "http test.go"
 Cohesion: 0.17
 Nodes (0): 
 
-### Community 16 - "Manifestuploader Miniomanifestuploader"
+### Community 18 - "server.go"
 Cohesion: 0.21
 Nodes (6): manifestUploader, minioManifestUploader, WorkerServer, findMapSplitForTask(), NewWorkerServer(), newWorkerServerWithManifestUploader()
 
-### Community 17 - "Reconciler Requirement"
-Cohesion: 0.2
-Nodes (12): Cleanup Retry Reconciler, Eventual Consistency Reconciler Rationale, Internal Job Cancel Endpoint Auth, Fault Tolerance and Recovery Requirement, Keycloak as Identity Manager Candidate, Kubernetes Orchestration Requirement, Distributed MapReduce Project Specification, Workers as Kubernetes Jobs (+4 more)
-
-### Community 18 - "Testmiddleware Jwt"
+### Community 19 - "jwt test.go"
 Cohesion: 0.24
 Nodes (6): stubKeyfunc, newTestValidator(), splitAuthHeader(), TestMiddleware_InvalidAuthHeaderFormat(), TestMiddleware_InvalidToken_ReturnsGenericError(), TestMiddleware_MissingAuthHeader()
 
-### Community 19 - "Testrequesttokens Testrefreshtokens"
+### Community 20 - "oauth test.go"
 Cohesion: 0.18
 Nodes (0): 
 
-### Community 20 - "Testgetroles Testrequireroles"
+### Community 21 - "roles test.go"
 Cohesion: 0.18
 Nodes (0): 
 
-### Community 21 - "Clijobfuncspec Clijobpayload"
+### Community 22 - "jobs.go"
 Cohesion: 0.27
 Nodes (9): cliJobFuncSpec, cliJobPayload, cmdJobsDownload(), cmdJobsStatus(), cmdJobsSubmit(), inferLanguage(), jobRequestPath(), safeJobResultFilename() (+1 more)
 
-### Community 22 - "Canceljob Spawnworker"
+### Community 23 - "orchestrator.go"
 Cohesion: 0.25
 Nodes (5): KubeOrchestrator, MockOrchestrator, WorkerOrchestrator, buildWorkerJobName(), sanitizeForDNSLabel()
 
-### Community 23 - "Testload Customenvvars"
+### Community 24 - "store test.go"
 Cohesion: 0.2
 Nodes (0): 
 
-### Community 24 - "String Testnewtasktracker"
+### Community 25 - "config test.go"
 Cohesion: 0.2
 Nodes (0): 
 
-### Community 25 - "Validation Badrequesterror"
+### Community 26 - "task tracker test.go"
+Cohesion: 0.2
+Nodes (0): 
+
+### Community 27 - "validation.go"
 Cohesion: 0.31
 Nodes (6): BadRequestError, NewBadRequestError(), NormalizeRole(), ValidateCreateUserRequest(), validateFunctionSpec(), ValidateJobSubmission()
 
-### Community 26 - "Testcmdjobssubmit Testsafejobresultfilename"
+### Community 28 - "jobs test.go"
 Cohesion: 0.25
 Nodes (2): testExit, TestValidateReducersCount()
 
-### Community 27 - "Serialization Testtaskattempt"
+### Community 29 - "main test.go"
 Cohesion: 0.22
 Nodes (0): 
 
-### Community 28 - "Requests Createuserrequest"
+### Community 30 - "dds test.go"
+Cohesion: 0.22
+Nodes (0): 
+
+### Community 31 - "requests.go"
 Cohesion: 0.22
 Nodes (8): CreateUserRequest, DeleteUserRequest, FunctionSpec, JobStatusResponse, JobSubmissionRequest, JobSubmissionResponse, NodeConfigRequest, WorkerConfigRequest
 
-### Community 29 - "Json Testjobsubmissionrequest"
+### Community 32 - "requests test.go"
 Cohesion: 0.22
 Nodes (0): 
 
-### Community 30 - "Testwritejson Failingwriteresponsewriter"
+### Community 33 - "response test.go"
 Cohesion: 0.25
 Nodes (2): failingWriteResponseWriter, TestWriteJSON_Success()
 
-### Community 31 - "Cmdadminconfigurenodes Cmdadmincreateuser"
+### Community 34 - "admin.go"
 Cohesion: 0.43
 Nodes (7): cmdAdminConfigureNodes(), cmdAdminCreateUser(), cmdAdminDeleteUser(), cmdAdminWorkerConfig(), configureNodesStatusError(), requireAdminRole(), runAdminConfigureNodes()
 
-### Community 32 - "Whoami Cmdtokeninspect"
+### Community 35 - "whoami.go"
 Cohesion: 0.46
 Nodes (7): cmdTokenInspect(), cmdWhoAmI(), decodeTokenClaims(), extractRealmRoles(), hasAdminRole(), hasRealmRole(), loadTokensAndClaims()
 
-### Community 33 - "Testisauthorizedinternalcancel Testisauthorizedworkerrpc"
-Cohesion: 0.25
-Nodes (0): 
-
-### Community 34 - "Http Helpers"
+### Community 36 - "http helpers.go"
 Cohesion: 0.29
 Nodes (0): 
 
-### Community 35 - "Testgetadminaccesstoken Keycloak"
+### Community 37 - "keycloak admin test.go"
 Cohesion: 0.29
 Nodes (0): 
 
-### Community 36 - "Errors Serviceunavailableerror"
+### Community 38 - "errors.go"
 Cohesion: 0.33
 Nodes (1): ServiceUnavailableError
 
-### Community 37 - "Oauthtokenresponse Oauth"
+### Community 39 - "oauth.go"
 Cohesion: 0.47
 Nodes (5): OAuthTokenResponse, RefreshTokens(), RefreshTokensWithContext(), RequestTokens(), RequestTokensWithContext()
 
-### Community 38 - "Roles Containsrole"
+### Community 40 - "roles.go"
 Cohesion: 0.6
 Nodes (5): containsRole(), GetRoles(), RequireAnyRole(), RequireRole(), requireRoles()
 
-### Community 39 - "Getenv Getenvbool"
+### Community 41 - "config.go"
 Cohesion: 0.67
 Nodes (5): Config, getEnv(), getEnvBool(), getEnvInt(), Load()
 
-### Community 40 - "Validation Testbadrequesthelpers"
+### Community 42 - "validation test.go"
 Cohesion: 0.4
 Nodes (2): TestValidateJobSubmission(), validJobSubmissionRequest()
 
-### Community 41 - "Contextkey Jwtvalidator"
+### Community 43 - "jwt.go"
 Cohesion: 0.4
 Nodes (2): contextKey, JWTValidator
 
-### Community 42 - "Testbootstrapphasetimeout Testphasesuseindependentcontexts"
+### Community 44 - "main test.go"
 Cohesion: 0.5
 Nodes (0): 
 
-### Community 43 - "Testconfigurenodesstatuserror Acceptedisnil"
+### Community 45 - "admin test.go"
 Cohesion: 0.5
 Nodes (0): 
 
-### Community 44 - "Login Cmdhealth"
+### Community 46 - "login.go"
 Cohesion: 0.5
 Nodes (0): 
 
-### Community 45 - "Caseinsensitive Testhasrealmrole"
+### Community 47 - "whoami test.go"
 Cohesion: 0.5
 Nodes (0): 
 
-### Community 46 - "Testkubeorchestrator Spawnworker"
+### Community 48 - "orchestrator test.go"
 Cohesion: 0.5
 Nodes (0): 
 
-### Community 47 - "Response Writeerror"
+### Community 49 - "response.go"
 Cohesion: 1.0
 Nodes (2): WriteError(), WriteJSON()
 
-### Community 48 - "Routes Registerroutes"
+### Community 50 - "DELETE Username in Path Design"
+Cohesion: 0.67
+Nodes (3): DELETE /admin/users/{username} Endpoint, DELETE Body Compatibility Rationale, DELETE Username in Path Design
+
+### Community 51 - "routes.go"
 Cohesion: 1.0
 Nodes (0): 
 
-### Community 49 - "Routes Contract"
+### Community 52 - "routes contract test.go"
 Cohesion: 1.0
 Nodes (0): 
 
-### Community 50 - "Routing Computereplicaindex"
+### Community 53 - "routing.go"
 Cohesion: 1.0
 Nodes (0): 
 
-### Community 51 - "Routing Testcomputereplicaindex"
+### Community 54 - "routing test.go"
 Cohesion: 1.0
 Nodes (0): 
 
-### Community 52 - "Graceful Degradation"
-Cohesion: 1.0
-Nodes (2): Graceful Degradation at Startup Rationale, Startup Recovery Graceful Degradation
-
-### Community 53 - "Timeout Per"
-Cohesion: 1.0
-Nodes (2): Per-operation Timeout Budgeting Rationale, Scheduler Recover Timeout Hardening
-
-### Community 54 - "Delete Body"
+### Community 55 - "DELETE Body Compatibility Rationale"
 Cohesion: 1.0
 Nodes (2): DELETE Body Compatibility Rationale, DELETE Username in Path Design
 
-### Community 55 - "Queries"
+### Community 56 - "Per operation Timeout Budgeting Rationale"
+Cohesion: 1.0
+Nodes (2): Per-operation Timeout Budgeting Rationale, Scheduler Recover Timeout Hardening
+
+### Community 57 - "Defense in Depth for Internal"
+Cohesion: 1.0
+Nodes (2): Defense in Depth for Internal Control Planes, Internal Job Cancel Endpoint Auth
+
+### Community 58 - "queries.go"
 Cohesion: 1.0
 Nodes (0): 
 
 ## Knowledge Gaps
-- **51 isolated node(s):** `BootstrapConfig`, `tokenResponse`, `keycloakClient`, `contextKey`, `CreateUserRequest` (+46 more)
+- **57 isolated node(s):** `BootstrapConfig`, `tokenResponse`, `keycloakClient`, `contextKey`, `CreateUserRequest` (+52 more)
   These have ≤1 connection - possible missing edges or undocumented components.
-- **Thin community `Routes Registerroutes`** (2 nodes): `routes.go`, `RegisterRoutes()`
+- **Thin community `routes.go`** (2 nodes): `routes.go`, `RegisterRoutes()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Routes Contract`** (2 nodes): `routes_contract_test.go`, `TestCLIAdminRoutes_MatchAPIRoutes()`
+- **Thin community `routes contract test.go`** (2 nodes): `routes_contract_test.go`, `TestCLIAdminRoutes_MatchAPIRoutes()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Routing Computereplicaindex`** (2 nodes): `routing.go`, `ComputeReplicaIndex()`
+- **Thin community `routing.go`** (2 nodes): `routing.go`, `ComputeReplicaIndex()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Routing Testcomputereplicaindex`** (2 nodes): `routing_test.go`, `TestComputeReplicaIndex()`
+- **Thin community `routing test.go`** (2 nodes): `routing_test.go`, `TestComputeReplicaIndex()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Graceful Degradation`** (2 nodes): `Graceful Degradation at Startup Rationale`, `Startup Recovery Graceful Degradation`
+- **Thin community `DELETE Body Compatibility Rationale`** (2 nodes): `DELETE Body Compatibility Rationale`, `DELETE Username in Path Design`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Timeout Per`** (2 nodes): `Per-operation Timeout Budgeting Rationale`, `Scheduler Recover Timeout Hardening`
+- **Thin community `Per operation Timeout Budgeting Rationale`** (2 nodes): `Per-operation Timeout Budgeting Rationale`, `Scheduler Recover Timeout Hardening`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Delete Body`** (2 nodes): `DELETE Body Compatibility Rationale`, `DELETE Username in Path Design`
+- **Thin community `Defense in Depth for Internal`** (2 nodes): `Defense in Depth for Internal Control Planes`, `Internal Job Cancel Endpoint Auth`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Queries`** (1 nodes): `queries.go`
+- **Thin community `queries.go`** (1 nodes): `queries.go`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
 
 ## Suggested Questions
 _Questions this graph is uniquely positioned to answer:_
 
-- **Why does `TaskAssignment` connect `Taskassignment Getattemptid` to `Descriptor String`?**
-  _High betweenness centrality (0.007) - this node is a cross-community bridge._
+- **Why does `TaskAssignment` connect `TaskAssignment` to `mapreduce.pb.go`?**
+  _High betweenness centrality (0.006) - this node is a cross-community bridge._
 - **What connects `BootstrapConfig`, `tokenResponse`, `keycloakClient` to the rest of the system?**
-  _51 weakly-connected nodes found - possible documentation gaps or missing edges._
-- **Should `Descriptor String` be split into smaller, more focused modules?**
+  _57 weakly-connected nodes found - possible documentation gaps or missing edges._
+- **Should `mapreduce.pb.go` be split into smaller, more focused modules?**
   _Cohesion score 0.03 - nodes in this community are weakly interconnected._
-- **Should `Testscheduler Completetask` be split into smaller, more focused modules?**
+- **Should `scheduler test.go` be split into smaller, more focused modules?**
   _Cohesion score 0.08 - nodes in this community are weakly interconnected._
-- **Should `Testhandleadmincreateuser Testhandlejobssubmit` be split into smaller, more focused modules?**
-  _Cohesion score 0.08 - nodes in this community are weakly interconnected._
-- **Should `Scheduler Allmaptaskscompleted` be split into smaller, more focused modules?**
+- **Should `handlers test.go` be split into smaller, more focused modules?**
+  _Cohesion score 0.07 - nodes in this community are weakly interconnected._
+- **Should `Scheduler` be split into smaller, more focused modules?**
   _Cohesion score 0.12 - nodes in this community are weakly interconnected._
-- **Should `String Jobrecord` be split into smaller, more focused modules?**
+- **Should `task tracker.go` be split into smaller, more focused modules?**
   _Cohesion score 0.08 - nodes in this community are weakly interconnected._
