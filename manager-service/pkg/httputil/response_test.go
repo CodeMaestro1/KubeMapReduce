@@ -93,3 +93,71 @@ func TestWriteError_WritesStatusAndMessage(t *testing.T) {
 		t.Fatalf("expected response body to contain message, got %q", rec.Body.String())
 	}
 }
+
+// ── DecodeJSONBody tests ────────────────────────────────────
+
+func TestDecodeJSONBody_Success(t *testing.T) {
+	body := `{"name":"test"}`
+	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+
+	var dst struct{ Name string }
+	err := DecodeJSONBody(rec, req, &dst, 0)
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+	if dst.Name != "test" {
+		t.Fatalf("expected Name=test, got %q", dst.Name)
+	}
+}
+
+func TestDecodeJSONBody_RejectsOversizedBody(t *testing.T) {
+	// Create a body larger than the limit.
+	payload := `{"name":"` + strings.Repeat("x", 128) + `"}`
+	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(payload))
+	rec := httptest.NewRecorder()
+
+	var dst struct{ Name string }
+	err := DecodeJSONBody(rec, req, &dst, 16) // 16 byte limit
+	if err == nil {
+		t.Fatal("expected error for oversized body, got nil")
+	}
+	if rec.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("expected status %d, got %d", http.StatusRequestEntityTooLarge, rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "request body too large") {
+		t.Fatalf("expected body-too-large message, got %q", rec.Body.String())
+	}
+}
+
+func TestDecodeJSONBody_RejectsMalformedJSON(t *testing.T) {
+	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader("not-json"))
+	rec := httptest.NewRecorder()
+
+	var dst struct{ Name string }
+	err := DecodeJSONBody(rec, req, &dst, 0)
+	if err == nil {
+		t.Fatal("expected error for bad JSON, got nil")
+	}
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected status %d, got %d", http.StatusBadRequest, rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "invalid request payload") {
+		t.Fatalf("expected invalid payload message, got %q", rec.Body.String())
+	}
+}
+
+func TestDecodeJSONBody_UsesDefaultLimitWhenZero(t *testing.T) {
+	// A body well under 1 MB should succeed with limit=0 (default).
+	body := `{"ok":true}`
+	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+
+	var dst struct{ Ok bool }
+	if err := DecodeJSONBody(rec, req, &dst, 0); err != nil {
+		t.Fatalf("expected no error with default limit, got %v", err)
+	}
+	if !dst.Ok {
+		t.Fatal("expected Ok=true")
+	}
+}
