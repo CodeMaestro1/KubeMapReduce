@@ -21,3 +21,23 @@ Fix: Adjusted idle-task selection so manager affinity is enforced for Map tasks 
 [#7] Stale-task reaper lock query missed `SKIP LOCKED`
 Source: copilot-instructions.md
 Fix: Updated stale-task selection SQL to `FOR UPDATE ... SKIP LOCKED` so concurrent reapers avoid lock contention and continue reclaiming expired attempts in parallel.
+
+[#8] Cancelled jobs could leave orphan `Running` attempts and exhaust quota
+Source: copilot-instructions.md
+Fix: Applied the PostgreSQL/DDS instruction to keep `TASKS.current_attempt_id` state transitions consistent with `TASK_ATTEMPTS` in one transaction by failing active attempts during cancellation as tasks/jobs are updated.
+Note: Better approach applied by also setting `end_time`, ensuring observability and preventing quota leakage from orphan `Running` attempts.
+
+[#9] Global pod quota checks were not serialized under concurrent schedulers
+Source: copilot-instructions.md
+Fix: Applied the Resource Quota Enforcement pattern (query `SYSTEM_CONFIG.max_concurrent_pods` and running attempts before scheduling) and strengthened it with row locking via `FOR UPDATE` to keep concurrent decisions safe.
+Note: Better approach applied by serializing quota decisions under contention, reducing oversubscription races without changing the existing quota model.
+
+[#10] Reaper respawn loop reused a shared timeout context for all retries
+Source: Best practice (Per-call deadline isolation)
+Fix: Updated stale-task respawn logic to create a fresh timeout context per `SpawnWorker` call, preventing backlog retries from inheriting an expired context and failing immediately.
+Note: No explicit per-call timeout recommendation exists in copilot-instructions.md; this hardening was applied as a robustness best practice.
+
+[#11] Worker control-plane gRPC lacked configurable auth/TLS hardening
+Source: Best practice (Zero-trust service-to-service defaults)
+Fix: Added optional worker RPC token validation (`x-worker-token`), optional TLS cert/key server configuration, and disabled gRPC reflection by default unless explicitly enabled by environment.
+Note: copilot-instructions.md mandates RPC fencing fields and behavior but does not prescribe transport/auth hardening; this stronger protection was applied as an additive best practice.

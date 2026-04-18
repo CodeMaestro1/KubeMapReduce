@@ -1,8 +1,11 @@
 package main
 
 import (
+	"context"
 	"net/http/httptest"
 	"testing"
+
+	"google.golang.org/grpc/metadata"
 )
 
 func TestParseReplicaIndexFromHostname(t *testing.T) {
@@ -61,5 +64,24 @@ func TestIsAuthorizedInternalCancel_WithoutTokenRequiresLoopback(t *testing.T) {
 	remoteReq.RemoteAddr = "10.0.0.1:4000"
 	if isAuthorizedInternalCancel(remoteReq, "") {
 		t.Fatalf("expected non-loopback request to be denied when token is unset")
+	}
+}
+
+func TestIsAuthorizedWorkerRPC_WithExpectedToken(t *testing.T) {
+	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("x-worker-token", "abc123"))
+	if !isAuthorizedWorkerRPC(ctx, "abc123") {
+		t.Fatalf("expected worker rpc token match to authorize")
+	}
+}
+
+func TestIsAuthorizedWorkerRPC_MissingOrWrongToken(t *testing.T) {
+	noTokenCtx := context.Background()
+	if isAuthorizedWorkerRPC(noTokenCtx, "abc123") {
+		t.Fatalf("expected missing worker rpc token to be rejected")
+	}
+
+	wrongTokenCtx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("x-worker-token", "wrong"))
+	if isAuthorizedWorkerRPC(wrongTokenCtx, "abc123") {
+		t.Fatalf("expected wrong worker rpc token to be rejected")
 	}
 }
