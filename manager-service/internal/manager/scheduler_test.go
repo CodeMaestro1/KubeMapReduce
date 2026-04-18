@@ -253,7 +253,7 @@ func TestScheduler_GetNextTask_NoMapIdle_ReduceSuccess(t *testing.T) {
 
 	mock.ExpectQuery(regexp.QuoteMeta(QuerySelectIdleTask)).
 		WithArgs(jobID.String(), 0, "Reduce").
-		WillReturnRows(sqlmock.NewRows([]string{"task_id", "job_id", "task_type", "replica_index"}).AddRow(taskID, jobID, "Reduce", 0))
+		WillReturnRows(sqlmock.NewRows([]string{"task_id", "job_id", "task_type", "replica_index"}).AddRow(taskID, jobID, "Reduce", 3))
 
 	expectReduceTaskMetadataQueries(mock, taskID, "s3://code/mapper.py", "s3://code/reducer.py", 2)
 
@@ -284,6 +284,9 @@ func TestScheduler_GetNextTask_NoMapIdle_ReduceSuccess(t *testing.T) {
 	}
 	if task.CodeURI != "s3://code/reducer.py" {
 		t.Errorf("expected reducer code URI, got %s", task.CodeURI)
+	}
+	if task.ReducePartition != 3 {
+		t.Errorf("expected reduce partition 3, got %d", task.ReducePartition)
 	}
 }
 
@@ -715,6 +718,22 @@ func TestScheduler_Recover_NoRecoverableAttempts_NoSpawn(t *testing.T) {
 	}
 	if len(rec.calls) != 0 {
 		t.Fatalf("expected no spawn calls, got %d", len(rec.calls))
+	}
+}
+
+func TestScheduler_Recover_PartialSpawnFailure_DoesNotReturnError(t *testing.T) {
+	rec := &recordingOrchestrator{err: errors.New("k8s unavailable")}
+	db, mock, scheduler := setupMockDBWithOrchestrator(t, rec)
+	defer db.Close()
+
+	mock.ExpectQuery(regexp.QuoteMeta(QuerySelectRecoverableAttempts)).
+		WithArgs(0).
+		WillReturnRows(sqlmock.NewRows([]string{"task_id", "current_attempt_id", "job_id"}).
+			AddRow(uuid.NewString(), uuid.NewString(), uuid.NewString()).
+			AddRow(uuid.NewString(), uuid.NewString(), uuid.NewString()))
+
+	if err := scheduler.Recover(context.Background()); err != nil {
+		t.Fatalf("expected recover to continue after partial spawn failures, got %v", err)
 	}
 }
 

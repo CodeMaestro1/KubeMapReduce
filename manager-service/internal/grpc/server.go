@@ -142,7 +142,7 @@ func (s *WorkerServer) Register(ctx context.Context, req *pb.RegisterRequest) (*
 		}
 	} else if task.Type == manager.ReduceTask {
 		assignment.Type = pb.TaskType_REDUCE
-		assignment.PartitionId = int32(task.ReplicaIndex)
+		assignment.PartitionId = int32(task.ReducePartition)
 		for _, input := range task.ShuffleInputs {
 			assignment.DataLocations = append(assignment.DataLocations, input.OutputURI)
 		}

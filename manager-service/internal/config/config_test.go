@@ -11,7 +11,7 @@ func TestLoad_Defaults(t *testing.T) {
 		"KEYCLOAK_BASE_URL", "KEYCLOAK_REALM", "KEYCLOAK_AUDIENCE",
 		"KEYCLOAK_JWKS_URL", "KEYCLOAK_ISSUER", "SERVER_ADDR",
 		"KEYCLOAK_ADMIN_USERNAME", "KEYCLOAK_ADMIN_PASSWORD",
-		"GRPC_ADDR", "GRPC_PORT",
+		"GRPC_ADDR", "GRPC_PORT", "MANAGER_INTERNAL_API_KEY",
 	}
 	for _, key := range envVars {
 		t.Setenv(key, "")
@@ -49,6 +49,9 @@ func TestLoad_Defaults(t *testing.T) {
 	if cfg.MinioEndpoint != "" || cfg.MinioAccessKey != "" || cfg.MinioSecretKey != "" {
 		t.Errorf("expected MinIO defaults to be disabled/empty, got endpoint=%q access=%q secret=%q", cfg.MinioEndpoint, cfg.MinioAccessKey, cfg.MinioSecretKey)
 	}
+	if cfg.InternalAPIKey != "" {
+		t.Errorf("expected InternalAPIKey default to be empty")
+	}
 
 	expectedJWKS := "http://localhost:8080/realms/mapreduce/protocol/openid-connect/certs"
 	if cfg.JWKSURL != expectedJWKS {
@@ -74,6 +77,7 @@ func TestLoad_CustomEnvVars(t *testing.T) {
 	t.Setenv("MINIO_ENDPOINT", "minio.default.svc.cluster.local:9000")
 	t.Setenv("MINIO_ACCESS_KEY", "access")
 	t.Setenv("MINIO_SECRET_KEY", "secret")
+	t.Setenv("MANAGER_INTERNAL_API_KEY", "internal-secret")
 
 	cfg, err := Load()
 	if err != nil {
@@ -115,6 +119,9 @@ func TestLoad_CustomEnvVars(t *testing.T) {
 	}
 	if cfg.MinioSecretKey != "secret" {
 		t.Errorf("MinioSecretKey = %q, want %q", cfg.MinioSecretKey, "secret")
+	}
+	if cfg.InternalAPIKey != "internal-secret" {
+		t.Errorf("InternalAPIKey = %q, want %q", cfg.InternalAPIKey, "internal-secret")
 	}
 }
 

@@ -86,9 +86,11 @@ func main() {
 		log.Fatalf("failed to recover scheduler tasks: %v", err)
 	}
 
-	// 3. Start Reaper loop
+	// 3. Start background loops
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+	scheduler.StartCleanupReconciler(ctx, 15*time.Second)
+
 	go func() {
 		ticker := time.NewTicker(10 * time.Second)
 		defer ticker.Stop()
@@ -110,6 +112,10 @@ func main() {
 	// 4. Start HTTP Server for Health & Readiness
 	mux := http.NewServeMux()
 	mux.HandleFunc("DELETE /internal/jobs/{job_id}", func(w http.ResponseWriter, r *http.Request) {
+		if !isAuthorizedInternalCancel(r, cfg.InternalAPIKey) {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
 		jobID := r.PathValue("job_id")
 		if jobID == "" {
 			http.Error(w, "missing job_id", http.StatusBadRequest)
@@ -232,4 +238,21 @@ func resolveManagerAddr(hostname, headlessService, namespace, port string) strin
 		podName = "manager-0"
 	}
 	return net.JoinHostPort(podName+"."+headlessService+"."+namespace+".svc.cluster.local", port)
+}
+
+func isAuthorizedInternalCancel(r *http.Request, expectedToken string) bool {
+	expectedToken = strings.TrimSpace(expectedToken)
+	if expectedToken != "" {
+		return r.Header.Get("X-Internal-Token") == expectedToken
+	}
+	return isLoopbackRemoteAddr(r.RemoteAddr)
+}
+
+func isLoopbackRemoteAddr(remoteAddr string) bool {
+	host, _, err := net.SplitHostPort(strings.TrimSpace(remoteAddr))
+	if err != nil {
+		host = strings.TrimSpace(remoteAddr)
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }

@@ -28,6 +28,7 @@ type Config struct {
 	MinioAccessKey string
 	MinioSecretKey string
 	MinioUseSSL    bool
+	InternalAPIKey string
 }
 
 func Load() (*Config, error) {
@@ -70,6 +71,7 @@ func Load() (*Config, error) {
 		MinioAccessKey:      getEnv("MINIO_ACCESS_KEY", ""),
 		MinioSecretKey:      getEnv("MINIO_SECRET_KEY", ""),
 		MinioUseSSL:         getEnvBool("MINIO_USE_SSL", false),
+		InternalAPIKey:      getEnv("MANAGER_INTERNAL_API_KEY", ""),
 	}
 	cfg.LeaseTTL = cfg.HeartbeatInterval * cfg.MaxMissedHeartbeats
 	return cfg, nil

@@ -1,6 +1,9 @@
 package main
 
-import "testing"
+import (
+	"net/http/httptest"
+	"testing"
+)
 
 func TestParseReplicaIndexFromHostname(t *testing.T) {
 	tests := []struct {
@@ -35,5 +38,28 @@ func TestResolveReplicaIndexFallsBackToHostname(t *testing.T) {
 	t.Setenv("STATEFULSET_ORDINAL", "invalid")
 	if got := resolveReplicaIndex("manager-12"); got != 12 {
 		t.Fatalf("resolveReplicaIndex should fall back to hostname, got %d", got)
+	}
+}
+
+func TestIsAuthorizedInternalCancel_WithToken(t *testing.T) {
+	req := httptest.NewRequest("DELETE", "/internal/jobs/job-1", nil)
+	req.Header.Set("X-Internal-Token", "secret")
+	req.RemoteAddr = "10.10.10.10:4567"
+	if !isAuthorizedInternalCancel(req, "secret") {
+		t.Fatalf("expected request with matching token to be authorized")
+	}
+}
+
+func TestIsAuthorizedInternalCancel_WithoutTokenRequiresLoopback(t *testing.T) {
+	localReq := httptest.NewRequest("DELETE", "/internal/jobs/job-1", nil)
+	localReq.RemoteAddr = "127.0.0.1:4000"
+	if !isAuthorizedInternalCancel(localReq, "") {
+		t.Fatalf("expected loopback request to be authorized when token is unset")
+	}
+
+	remoteReq := httptest.NewRequest("DELETE", "/internal/jobs/job-1", nil)
+	remoteReq.RemoteAddr = "10.0.0.1:4000"
+	if isAuthorizedInternalCancel(remoteReq, "") {
+		t.Fatalf("expected non-loopback request to be denied when token is unset")
 	}
 }
