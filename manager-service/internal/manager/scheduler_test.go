@@ -50,7 +50,6 @@ type recordingOrchestrator struct {
 	mu         sync.Mutex
 	calls      []spawnCall
 	cancelJobs []string
-	cancelCh   chan string
 	err        error
 }
 
@@ -68,9 +67,6 @@ func (r *recordingOrchestrator) CancelJob(ctx context.Context, jobID string) err
 	r.mu.Lock()
 	r.cancelJobs = append(r.cancelJobs, jobID)
 	r.mu.Unlock()
-	if r.cancelCh != nil {
-		r.cancelCh <- jobID
-	}
 	return nil
 }
 
@@ -830,7 +826,7 @@ func TestScheduler_FailStaleTasks_MarksJobFailedAtMaxAttempts(t *testing.T) {
 }
 
 func TestScheduler_FailStaleTasks_DeduplicatesJobCancellation(t *testing.T) {
-	rec := &recordingOrchestrator{cancelCh: make(chan string, 2)}
+	rec := &recordingOrchestrator{}
 	db, mock, scheduler := setupMockDBWithOrchestrator(t, rec)
 	defer db.Close()
 
@@ -887,17 +883,8 @@ func TestScheduler_FailStaleTasks_DeduplicatesJobCancellation(t *testing.T) {
 	if recovered != 2 {
 		t.Fatalf("expected 2 recovered tasks, got %d", recovered)
 	}
-
-	select {
-	case <-rec.cancelCh:
-	case <-time.After(500 * time.Millisecond):
-		t.Fatal("expected one cancellation call")
-	}
-
-	select {
-	case extra := <-rec.cancelCh:
-		t.Fatalf("expected deduplicated cancellation, got extra call for %s", extra)
-	case <-time.After(150 * time.Millisecond):
+	if len(rec.cancelJobs) != 1 || rec.cancelJobs[0] != jobID {
+		t.Fatalf("expected one cancellation call for %s, got %+v", jobID, rec.cancelJobs)
 	}
 }
 
