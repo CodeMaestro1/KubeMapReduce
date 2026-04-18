@@ -24,7 +24,10 @@ const QueryCountFailedTasks = `SELECT COUNT(*) FROM TASKS WHERE job_id = $1 AND 
 // concurrent Manager replicas (Section 5.2: "Concurrency Control via Row-Level Locking").
 const QuerySelectIdleTask = `
 	SELECT task_id, job_id, task_type, replica_index FROM TASKS
-	WHERE job_id = $1 AND status = 'Idle' AND replica_index = $2 AND task_type = $3
+	WHERE job_id = $1
+	  AND status = 'Idle'
+	  AND task_type = $3
+	  AND ($3 = 'Reduce' OR replica_index = $2)
 	FOR UPDATE SKIP LOCKED LIMIT 1`
 
 // QueryCountPendingTasksByType counts non-completed tasks of a given type.
@@ -129,14 +132,22 @@ const QuerySelectStaleTasks = `
 	FROM TASKS t
 	JOIN TASK_ATTEMPTS a ON t.current_attempt_id = a.attempt_id
 	WHERE t.status = 'In-Progress' AND a.status = 'Running' AND a.last_renewed_at + a.lease_ttl * INTERVAL '1 second' < NOW()
-	FOR UPDATE OF t`
+	FOR UPDATE OF t SKIP LOCKED`
 
 // QuerySelectRecoverableAttempts returns active attempts that belong to this manager replica.
 // Recovery uses these rows to re-spawn workers with the existing attempt_id fence token.
 const QuerySelectRecoverableAttempts = `
-	SELECT task_id, current_attempt_id, job_id
-	FROM TASKS
-	WHERE status = 'In-Progress' AND replica_index = $1 AND current_attempt_id IS NOT NULL`
+	SELECT t.task_id, t.current_attempt_id, t.job_id
+	FROM TASKS t
+	WHERE t.status = 'In-Progress'
+	  AND t.current_attempt_id IS NOT NULL
+	  AND EXISTS (
+	    SELECT 1
+	    FROM TASKS map_task
+	    WHERE map_task.job_id = t.job_id
+	      AND map_task.task_type = 'Map'
+	      AND map_task.replica_index = $1
+	  )`
 
 // ---------------------------------------------------------------------------
 // Read-only output queries

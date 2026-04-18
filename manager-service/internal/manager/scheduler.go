@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -29,12 +30,14 @@ var (
 )
 
 type Scheduler struct {
-	db            *sql.DB
-	replicaIndex  int
-	totalReplicas int
-	orchestrator  WorkerOrchestrator
-	managerAddr   string
-	leaseTTL      int
+	db             *sql.DB
+	replicaIndex   int
+	totalReplicas  int
+	orchestrator   WorkerOrchestrator
+	managerAddr    string
+	leaseTTL       int
+	cleanupMu      sync.Mutex
+	pendingCleanup map[string]struct{}
 }
 
 type taskMetadataQuerier interface {
@@ -56,12 +59,13 @@ func NewScheduler(db *sql.DB, replicaIndex int, totalReplicas int, orchestrator 
 		leaseTTL = 30
 	}
 	return &Scheduler{
-		db:            db,
-		replicaIndex:  replicaIndex,
-		totalReplicas: totalReplicas,
-		orchestrator:  orchestrator,
-		managerAddr:   managerAddr,
-		leaseTTL:      leaseTTL,
+		db:             db,
+		replicaIndex:   replicaIndex,
+		totalReplicas:  totalReplicas,
+		orchestrator:   orchestrator,
+		managerAddr:    managerAddr,
+		leaseTTL:       leaseTTL,
+		pendingCleanup: make(map[string]struct{}),
 	}, nil
 }
 
@@ -91,17 +95,19 @@ func (s *Scheduler) Recover(ctx context.Context) error {
 		return fmt.Errorf("row error during recovery: %w", err)
 	}
 
-	spawnCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
-	defer cancel()
+	const recoverSpawnTimeout = 20 * time.Second
 	spawnFailures := 0
 	for _, rec := range attemptsToSpawn {
-		if err := s.orchestrator.SpawnWorker(spawnCtx, rec.taskID, rec.jobID, rec.attemptID, s.managerAddr); err != nil {
+		spawnCtx, cancel := context.WithTimeout(ctx, recoverSpawnTimeout)
+		err := s.orchestrator.SpawnWorker(spawnCtx, rec.taskID, rec.jobID, rec.attemptID, s.managerAddr)
+		cancel()
+		if err != nil {
 			log.Printf("Failed to spawn worker for recovered task %s (attempt %s): %v", rec.taskID, rec.attemptID, err)
 			spawnFailures++
 		}
 	}
 	if spawnFailures > 0 {
-		return fmt.Errorf("failed to spawn %d/%d recovered workers", spawnFailures, len(attemptsToSpawn))
+		log.Printf("Recovery finished with %d/%d spawn failures; service will continue and retry via reaper", spawnFailures, len(attemptsToSpawn))
 	}
 	return nil
 }
@@ -248,6 +254,7 @@ func (s *Scheduler) tryAssignTask(ctx context.Context, tx *sql.Tx, requestedJobI
 		t.Type = MapTask
 	case "Reduce":
 		t.Type = ReduceTask
+		t.ReducePartition = replicaIndex
 	default:
 		return nil, fmt.Errorf("unexpected task type %q for task %s", tType, taskID.String())
 	}
@@ -579,9 +586,7 @@ func (s *Scheduler) CompleteTask(taskID string, attemptID string, leaseID string
 		go func() {
 			cancelCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 			defer cancel()
-			if err := s.orchestrator.CancelJob(cancelCtx, jobID); err != nil {
-				log.Printf("Failed to cleanup K8s worker jobs for completed job %s: %v", jobID, err)
-			}
+			s.tryCancelJob(cancelCtx, jobID, "completed")
 		}()
 	}
 
@@ -649,9 +654,7 @@ func (s *Scheduler) CancelJob(jobID string) error {
 	go func() {
 		cancelCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 		defer cancel()
-		if err := s.orchestrator.CancelJob(cancelCtx, jobID); err != nil {
-			log.Printf("Failed to cancel K8s worker jobs for job %s: %v", jobID, err)
-		}
+		s.tryCancelJob(cancelCtx, jobID, "cancelled")
 	}()
 
 	return nil
@@ -732,9 +735,7 @@ func (s *Scheduler) FailTask(taskID string, attemptID string, leaseID string, re
 		go func() {
 			cancelCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 			defer cancel()
-			if err := s.orchestrator.CancelJob(cancelCtx, jobID); err != nil {
-				log.Printf("Failed to cancel K8s worker jobs for failed job %s: %v", jobID, err)
-			}
+			s.tryCancelJob(cancelCtx, jobID, "failed")
 		}()
 	} else if newState == "Idle" {
 		spawnCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
@@ -834,9 +835,7 @@ func (s *Scheduler) FailStaleTasks() (int, error) {
 	cancelCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 	for jobID := range failedJobs {
-		if err := s.orchestrator.CancelJob(cancelCtx, jobID); err != nil {
-			log.Printf("Failed to cancel K8s worker jobs for failed job %s: %v", jobID, err)
-		}
+		s.tryCancelJob(cancelCtx, jobID, "failed")
 	}
 
 	spawnCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
@@ -952,6 +951,7 @@ func (s *Scheduler) GetTaskByID(taskID string) (*Task, error) {
 		t.Type = MapTask
 	case "Reduce":
 		t.Type = ReduceTask
+		t.ReducePartition = t.ReplicaIndex
 	default:
 		return nil, fmt.Errorf("unknown task type %q for task %s", dbType, taskID)
 	}
@@ -985,4 +985,58 @@ func (s *Scheduler) GetTaskByID(taskID string) (*Task, error) {
 	t.OutputURIs = []string{}
 	t.OutputChecksums = []string{}
 	return &t, nil
+}
+
+func (s *Scheduler) enqueueCleanup(jobID string) {
+	if strings.TrimSpace(jobID) == "" {
+		return
+	}
+	s.cleanupMu.Lock()
+	s.pendingCleanup[jobID] = struct{}{}
+	s.cleanupMu.Unlock()
+}
+
+func (s *Scheduler) popPendingCleanup() []string {
+	s.cleanupMu.Lock()
+	defer s.cleanupMu.Unlock()
+	if len(s.pendingCleanup) == 0 {
+		return nil
+	}
+	jobs := make([]string, 0, len(s.pendingCleanup))
+	for jobID := range s.pendingCleanup {
+		jobs = append(jobs, jobID)
+		delete(s.pendingCleanup, jobID)
+	}
+	return jobs
+}
+
+func (s *Scheduler) tryCancelJob(ctx context.Context, jobID, reason string) {
+	if err := s.orchestrator.CancelJob(ctx, jobID); err != nil {
+		log.Printf("Failed to cleanup K8s worker jobs for %s job %s: %v", reason, jobID, err)
+		s.enqueueCleanup(jobID)
+	}
+}
+
+// StartCleanupReconciler retries failed Kubernetes worker cleanup requests.
+// It should run for the process lifetime with a cancellable context.
+func (s *Scheduler) StartCleanupReconciler(ctx context.Context, interval time.Duration) {
+	if interval <= 0 {
+		interval = 15 * time.Second
+	}
+	ticker := time.NewTicker(interval)
+	go func() {
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				for _, jobID := range s.popPendingCleanup() {
+					retryCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+					s.tryCancelJob(retryCtx, jobID, "retry")
+					cancel()
+				}
+			}
+		}
+	}()
 }
