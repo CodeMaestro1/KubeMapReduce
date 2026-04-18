@@ -63,6 +63,53 @@ func TestHandleJobsSubmit_RejectsInvalidPayload(t *testing.T) {
 	}
 }
 
+func TestHandleJobsSubmit_RejectsOversizedBody(t *testing.T) {
+	h := newTestHandlers()
+
+	// Build a payload larger than the default 1 MB limit.
+	oversized := `{"filename":"` + strings.Repeat("x", 1<<20+1) + `"}`
+	req := httptest.NewRequest(http.MethodPost, "/jobs", strings.NewReader(oversized))
+	rec := httptest.NewRecorder()
+
+	h.HandleJobsSubmit(rec, req)
+
+	if rec.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("expected status %d, got %d", http.StatusRequestEntityTooLarge, rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "request body too large") {
+		t.Fatalf("expected body-too-large message, got %q", rec.Body.String())
+	}
+}
+
+func TestHandleWorkerConfig_RejectsOversizedBody(t *testing.T) {
+	h := newTestHandlers()
+
+	oversized := `{"workerReplicas":` + strings.Repeat("1", 1<<20+1) + `}`
+	req := httptest.NewRequest(http.MethodPut, "/admin/workers/config", strings.NewReader(oversized))
+	rec := httptest.NewRecorder()
+
+	h.HandleWorkerConfig(rec, req)
+
+	if rec.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("expected status %d, got %d", http.StatusRequestEntityTooLarge, rec.Code)
+	}
+}
+
+func TestHandleAdminCreateUser_RejectsOversizedBody(t *testing.T) {
+	h, kc := newTestHandlersWithKeycloak(t)
+	defer kc.Close()
+
+	oversized := `{"username":"` + strings.Repeat("a", 1<<20+1) + `"}`
+	req := httptest.NewRequest(http.MethodPost, "/admin/users", strings.NewReader(oversized))
+	rec := httptest.NewRecorder()
+
+	h.HandleAdminCreateUser(rec, req)
+
+	if rec.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("expected status %d, got %d", http.StatusRequestEntityTooLarge, rec.Code)
+	}
+}
+
 func TestHandleJobsSubmit_RejectsEmptyFilename(t *testing.T) {
 	h := newTestHandlers()
 
