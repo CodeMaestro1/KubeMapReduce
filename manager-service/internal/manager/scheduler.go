@@ -37,7 +37,7 @@ type Scheduler struct {
 	managerAddr    string
 	leaseTTL       int
 	cleanupMu      sync.Mutex
-	pendingCleanup map[string]struct{}
+	pendingCleanup map[string]string
 }
 
 type taskMetadataQuerier interface {
@@ -65,7 +65,7 @@ func NewScheduler(db *sql.DB, replicaIndex int, totalReplicas int, orchestrator 
 		orchestrator:   orchestrator,
 		managerAddr:    managerAddr,
 		leaseTTL:       leaseTTL,
-		pendingCleanup: make(map[string]struct{}),
+		pendingCleanup: make(map[string]string),
 	}, nil
 }
 
@@ -572,7 +572,7 @@ func (s *Scheduler) CompleteTask(taskID string, attemptID string, leaseID string
 	}
 	jobCompleted := false
 	if pendingTasks == 0 {
-		if err := s.updateJobStatusTx(ctx, tx, jobID, "Completed"); err != nil {
+		if err := s.updateJobStatusTx(ctx, tx, jobID, "Cleaning"); err != nil {
 			return err
 		}
 		jobCompleted = true
@@ -586,7 +586,7 @@ func (s *Scheduler) CompleteTask(taskID string, attemptID string, leaseID string
 		go func() {
 			cancelCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 			defer cancel()
-			s.tryCancelJob(cancelCtx, jobID, "completed")
+			s.finalizeJob(cancelCtx, jobID, "Completed")
 		}()
 	}
 
@@ -638,7 +638,7 @@ func (s *Scheduler) CancelJob(jobID string) error {
 	}
 	defer tx.Rollback()
 
-	if err := s.updateJobStatusTx(ctx, tx, jobID, "Cancelled"); err != nil {
+	if err := s.updateJobStatusTx(ctx, tx, jobID, "Cleaning"); err != nil {
 		return err
 	}
 
@@ -658,7 +658,7 @@ func (s *Scheduler) CancelJob(jobID string) error {
 	go func() {
 		cancelCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 		defer cancel()
-		s.tryCancelJob(cancelCtx, jobID, "cancelled")
+		s.finalizeJob(cancelCtx, jobID, "Cancelled")
 	}()
 
 	return nil
@@ -721,7 +721,7 @@ func (s *Scheduler) FailTask(taskID string, attemptID string, leaseID string, re
 
 	var retryAttemptID string
 	if newState == "Failed" {
-		if err := s.updateJobStatusTx(ctx, tx, jobID, "Failed"); err != nil {
+		if err := s.updateJobStatusTx(ctx, tx, jobID, "Cleaning"); err != nil {
 			return err
 		}
 	} else {
@@ -739,7 +739,7 @@ func (s *Scheduler) FailTask(taskID string, attemptID string, leaseID string, re
 		go func() {
 			cancelCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 			defer cancel()
-			s.tryCancelJob(cancelCtx, jobID, "failed")
+			s.finalizeJob(cancelCtx, jobID, "Failed")
 		}()
 	} else if newState == "Idle" {
 		spawnCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
@@ -817,7 +817,7 @@ func (s *Scheduler) FailStaleTasks() (int, error) {
 			return 0, fmt.Errorf("failing attempt %s: %w", rec.attemptID, err)
 		}
 		if newState == "Failed" {
-			if err := s.updateJobStatusTx(ctx, tx, jobID, "Failed"); err != nil {
+			if err := s.updateJobStatusTx(ctx, tx, jobID, "Cleaning"); err != nil {
 				return 0, fmt.Errorf("marking job %s failed: %w", jobID, err)
 			}
 			failedJobs[jobID] = struct{}{}
@@ -839,7 +839,7 @@ func (s *Scheduler) FailStaleTasks() (int, error) {
 	cancelCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 	for jobID := range failedJobs {
-		s.tryCancelJob(cancelCtx, jobID, "failed")
+		s.finalizeJob(cancelCtx, jobID, "Failed")
 	}
 
 	for _, rec := range respawnTasks {
@@ -991,33 +991,54 @@ func (s *Scheduler) GetTaskByID(taskID string) (*Task, error) {
 	return &t, nil
 }
 
-func (s *Scheduler) enqueueCleanup(jobID string) {
+func (s *Scheduler) enqueueCleanup(jobID, terminalState string) {
 	if strings.TrimSpace(jobID) == "" {
 		return
 	}
 	s.cleanupMu.Lock()
-	s.pendingCleanup[jobID] = struct{}{}
+	s.pendingCleanup[jobID] = terminalState
 	s.cleanupMu.Unlock()
 }
 
-func (s *Scheduler) popPendingCleanup() []string {
+func (s *Scheduler) popPendingCleanup() map[string]string {
 	s.cleanupMu.Lock()
 	defer s.cleanupMu.Unlock()
 	if len(s.pendingCleanup) == 0 {
 		return nil
 	}
-	jobs := make([]string, 0, len(s.pendingCleanup))
-	for jobID := range s.pendingCleanup {
-		jobs = append(jobs, jobID)
+	jobs := make(map[string]string, len(s.pendingCleanup))
+	for jobID, terminalState := range s.pendingCleanup {
+		jobs[jobID] = terminalState
 		delete(s.pendingCleanup, jobID)
 	}
 	return jobs
 }
 
-func (s *Scheduler) tryCancelJob(ctx context.Context, jobID, reason string) {
+func (s *Scheduler) finalizeJob(ctx context.Context, jobID, terminalState string) {
 	if err := s.orchestrator.CancelJob(ctx, jobID); err != nil {
-		log.Printf("Failed to cleanup K8s worker jobs for %s job %s: %v", reason, jobID, err)
-		s.enqueueCleanup(jobID)
+		log.Printf("Failed to cleanup K8s worker jobs for job %s: %v", jobID, err)
+		s.enqueueCleanup(jobID, terminalState)
+		return
+	}
+
+	ctxBg := context.Background()
+	tx, err := s.db.BeginTx(ctxBg, nil)
+	if err != nil {
+		log.Printf("Failed to begin tx for terminal status update of job %s: %v", jobID, err)
+		s.enqueueCleanup(jobID, terminalState)
+		return
+	}
+	defer tx.Rollback()
+
+	if err := s.updateJobStatusTx(ctxBg, tx, jobID, terminalState); err != nil {
+		log.Printf("Failed to update terminal status of job %s: %v", jobID, err)
+		s.enqueueCleanup(jobID, terminalState)
+		return
+	}
+	if err := tx.Commit(); err != nil {
+		log.Printf("Failed to commit terminal status update of job %s: %v", jobID, err)
+		s.enqueueCleanup(jobID, terminalState)
+		return
 	}
 }
 
@@ -1027,6 +1048,34 @@ func (s *Scheduler) StartCleanupReconciler(ctx context.Context, interval time.Du
 	if interval <= 0 {
 		interval = 15 * time.Second
 	}
+
+	// Recovery: Deduce terminal state for jobs stuck in Cleaning
+	rows, err := s.db.QueryContext(ctx, "SELECT job_id FROM JOBS WHERE status = 'Cleaning'")
+	if err == nil {
+		defer rows.Close()
+		for rows.Next() {
+			var jobID string
+			if err := rows.Scan(&jobID); err == nil {
+				var failedCount int
+				s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM TASKS WHERE job_id = $1 AND status = 'Failed'", jobID).Scan(&failedCount)
+
+				terminalState := "Completed"
+				if failedCount > 0 {
+					terminalState = "Failed" // fallback to Failed for Cancelled/Failed if tasks failed
+				} else {
+					var pending int
+					s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM TASKS WHERE job_id = $1 AND status != 'Completed'", jobID).Scan(&pending)
+					if pending > 0 {
+						terminalState = "Failed"
+					}
+				}
+				s.enqueueCleanup(jobID, terminalState)
+			}
+		}
+	} else {
+		log.Printf("Warning: failed to recover Cleaning jobs: %v", err)
+	}
+
 	ticker := time.NewTicker(interval)
 	go func() {
 		defer ticker.Stop()
@@ -1035,9 +1084,9 @@ func (s *Scheduler) StartCleanupReconciler(ctx context.Context, interval time.Du
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				for _, jobID := range s.popPendingCleanup() {
+				for jobID, terminalState := range s.popPendingCleanup() {
 					retryCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-					s.tryCancelJob(retryCtx, jobID, "retry")
+					s.finalizeJob(retryCtx, jobID, terminalState)
 					cancel()
 				}
 			}
