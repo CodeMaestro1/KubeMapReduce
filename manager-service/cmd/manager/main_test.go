@@ -67,6 +67,39 @@ func TestIsAuthorizedInternalCancel_WithoutTokenRequiresLoopback(t *testing.T) {
 	if isAuthorizedInternalCancel(remoteReq, "") {
 		t.Fatalf("expected non-loopback request to be denied when token is unset")
 	}
+
+	ipv6Req := httptest.NewRequest("DELETE", "/internal/jobs/job-1", nil)
+	ipv6Req.RemoteAddr = "[::1]:4000"
+	if !isAuthorizedInternalCancel(ipv6Req, "") {
+		t.Fatalf("expected IPv6 loopback request to be authorized when token is unset")
+	}
+}
+
+func TestIsAuthorizedInternalCancel_WrongToken(t *testing.T) {
+	req := httptest.NewRequest("DELETE", "/internal/jobs/job-1", nil)
+	req.Header.Set("X-Internal-Token", "wrong")
+	req.RemoteAddr = "127.0.0.1:4000"
+	if isAuthorizedInternalCancel(req, "secret") {
+		t.Fatalf("expected request with wrong token to be denied even if on loopback")
+	}
+}
+
+func TestIsAuthorizedInternalCancel_EmptyTokenHeader(t *testing.T) {
+	req := httptest.NewRequest("DELETE", "/internal/jobs/job-1", nil)
+	req.Header.Set("X-Internal-Token", "")
+	req.RemoteAddr = "127.0.0.1:4000"
+	if isAuthorizedInternalCancel(req, "secret") {
+		t.Fatalf("expected request with empty token to be denied when token is configured")
+	}
+}
+
+func TestIsAuthorizedInternalCancel_TokenTakesPrecedence(t *testing.T) {
+	req := httptest.NewRequest("DELETE", "/internal/jobs/job-1", nil)
+	req.Header.Set("X-Internal-Token", "secret")
+	req.RemoteAddr = "10.0.0.1:4000"
+	if !isAuthorizedInternalCancel(req, "secret") {
+		t.Fatalf("expected valid token to authorize from non-loopback addr")
+	}
 }
 
 func TestIsAuthorizedWorkerRPC_WithExpectedToken(t *testing.T) {
@@ -135,6 +168,51 @@ func TestValidateWorkerRPCSecurityConfig(t *testing.T) {
 			err := validateWorkerRPCSecurityConfig(tt.cfg)
 			if (err != nil) != tt.wantErr {
 				t.Fatalf("validateWorkerRPCSecurityConfig() error = %v, wantErr %v", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestValidateInternalCancelSecurityConfig(t *testing.T) {
+	tests := []struct {
+		name    string
+		cfg     *config.Config
+		wantErr bool
+	}{
+		{
+			name: "token set is allowed",
+			cfg: &config.Config{
+				InternalAPIKey: "secret",
+			},
+			wantErr: false,
+		},
+		{
+			name: "token set and insecure opt-in is allowed",
+			cfg: &config.Config{
+				InternalAPIKey:           "secret",
+				AllowInsecureInternalAPI: true,
+			},
+			wantErr: false,
+		},
+		{
+			name: "no token and insecure opt-in is allowed",
+			cfg: &config.Config{
+				AllowInsecureInternalAPI: true,
+			},
+			wantErr: false,
+		},
+		{
+			name:    "no token and no opt-in is rejected",
+			cfg:     &config.Config{},
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateInternalCancelSecurityConfig(tt.cfg)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("validateInternalCancelSecurityConfig() error = %v, wantErr %v", err, tt.wantErr)
 			}
 		})
 	}
