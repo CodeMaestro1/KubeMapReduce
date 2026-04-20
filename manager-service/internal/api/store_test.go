@@ -283,3 +283,57 @@ func TestMemoryJobStore_ListReturnsNewestFirst(t *testing.T) {
 		t.Fatalf("expected newest first, got %+v", list)
 	}
 }
+
+func TestMemoryJobStore_ListJobs_ClampsExcessiveLimit(t *testing.T) {
+	store := NewMemoryJobStore(time.Hour, 100, nil)
+	for i := 0; i < 10; i++ {
+		_ = store.CreateJob(context.Background(), JobRecord{JobID: uuid.NewString(), CreatedAt: time.Now()})
+	}
+
+	// Request huge limit, should be capped at maxListLimit
+	list, _ := store.ListJobs(context.Background(), 9999, 0)
+	if len(list) > 500 { // maxListLimit
+		t.Fatalf("expected store to cap limit, got %d", len(list))
+	}
+}
+
+func TestMemoryJobStore_ListJobs_ClampsNegativeInputs(t *testing.T) {
+	store := NewMemoryJobStore(time.Hour, 100, nil)
+	_ = store.CreateJob(context.Background(), JobRecord{JobID: "j1", CreatedAt: time.Now()})
+
+	// Negative limit should default to defaultListLimit
+	list, _ := store.ListJobs(context.Background(), -1, 0)
+	if len(list) != 1 {
+		t.Fatalf("expected negative limit to be clamped, got %d", len(list))
+	}
+
+	// Negative offset should be clamped to 0
+	list, _ = store.ListJobs(context.Background(), 10, -5)
+	if len(list) != 1 {
+		t.Fatalf("expected negative offset to be clamped, got %d", len(list))
+	}
+}
+
+func TestPostgresJobStore_ListJobs_ClampsExcessiveLimit(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("failed to create sqlmock: %v", err)
+	}
+	defer db.Close()
+
+	store := NewPostgresJobStore(db)
+
+	// Mock expects clamped limit (500) even though handler/caller passed 9999
+	mock.ExpectQuery("SELECT j.job_id").
+		WithArgs(500, 0).
+		WillReturnRows(sqlmock.NewRows([]string{"job_id", "status", "input_uri", "r_tasks", "created_at"}))
+
+	_, err = store.ListJobs(context.Background(), 9999, 0)
+	if err != nil {
+		t.Fatalf("ListJobs failed: %v", err)
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet expectations: %v", err)
+	}
+}
