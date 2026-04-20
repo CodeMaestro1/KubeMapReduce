@@ -202,7 +202,7 @@ func main() {
 	}
 
 	grpcServer := grpc.NewServer(grpcOpts...)
-	workerServer := mgrpc.NewWorkerServer(scheduler, minioClient)
+	workerServer := mgrpc.NewWorkerServer(scheduler, minioClient, cfg.ManifestThresholdBytes)
 	pb.RegisterWorkerServiceServer(grpcServer, workerServer)
 	if cfg.EnableGRPCReflection {
 		reflection.Register(grpcServer)

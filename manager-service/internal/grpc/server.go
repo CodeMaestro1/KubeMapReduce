@@ -3,10 +3,12 @@ package grpc
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
+	"strings"
 
 	"github.com/minio/minio-go/v7"
 	"google.golang.org/grpc/codes"
@@ -19,16 +21,17 @@ import (
 
 type WorkerServer struct {
 	pb.UnimplementedWorkerServiceServer
-	scheduler   *manager.Scheduler
-	minioClient *minio.Client
-	uploader    manifestUploader
+	scheduler         *manager.Scheduler
+	minioClient       *minio.Client
+	uploader          manifestUploader
+	manifestThreshold int
 }
 
 // manifestBucketName stores serialized data_locations manifests for oversized assignments.
 // These objects are short-lived retry metadata and should be managed via bucket lifecycle policy.
 const manifestBucketName = "mapreduce-manifests"
 
-var maxTaskAssignmentSizeBytes = 2 * 1024 * 1024
+const defaultManifestThresholdBytes = 2 * 1024 * 1024
 
 type manifestUploader interface {
 	UploadManifest(ctx context.Context, bucketName, objectName string, payload []byte) (string, error)
@@ -61,19 +64,23 @@ func (m *minioManifestUploader) UploadManifest(ctx context.Context, bucketName, 
 	return fmt.Sprintf("s3://%s/%s", bucketName, objectName), nil
 }
 
-func NewWorkerServer(scheduler *manager.Scheduler, minioClient *minio.Client) *WorkerServer {
+func NewWorkerServer(scheduler *manager.Scheduler, minioClient *minio.Client, manifestThreshold int) *WorkerServer {
 	var uploader manifestUploader
 	if minioClient != nil {
 		uploader = &minioManifestUploader{client: minioClient}
 	}
-	return newWorkerServerWithManifestUploader(scheduler, minioClient, uploader)
+	return newWorkerServerWithManifestUploader(scheduler, minioClient, uploader, manifestThreshold)
 }
 
-func newWorkerServerWithManifestUploader(scheduler *manager.Scheduler, minioClient *minio.Client, uploader manifestUploader) *WorkerServer {
+func newWorkerServerWithManifestUploader(scheduler *manager.Scheduler, minioClient *minio.Client, uploader manifestUploader, manifestThreshold int) *WorkerServer {
+	if manifestThreshold <= 0 {
+		manifestThreshold = defaultManifestThresholdBytes
+	}
 	return &WorkerServer{
-		scheduler:   scheduler,
-		minioClient: minioClient,
-		uploader:    uploader,
+		scheduler:         scheduler,
+		minioClient:       minioClient,
+		uploader:          uploader,
+		manifestThreshold: manifestThreshold,
 	}
 }
 
@@ -149,12 +156,18 @@ func (s *WorkerServer) Register(ctx context.Context, req *pb.RegisterRequest) (*
 		}
 	}
 
-	if proto.Size(assignment) > maxTaskAssignmentSizeBytes {
+	if proto.Size(assignment) > s.manifestThreshold {
 		if s.uploader == nil {
 			return nil, status.Errorf(codes.ResourceExhausted, "task assignment for task %s exceeds manifest threshold", task.ID)
 		}
-		manifestBytes, err := json.Marshal(map[string][]string{
-			"data_locations": assignment.DataLocations,
+
+		locations := assignment.DataLocations
+		hash := sha256.Sum256([]byte(strings.Join(locations, "\n")))
+		checksumStr := fmt.Sprintf("sha256:%x", hash)
+
+		manifestBytes, err := json.Marshal(map[string]interface{}{
+			"data_locations": locations,
+			"checksum":       checksumStr,
 		})
 		if err != nil {
 			log.Printf("Failed to marshal manifest for task %s: %v", task.ID, err)
@@ -173,7 +186,7 @@ func (s *WorkerServer) Register(ctx context.Context, req *pb.RegisterRequest) (*
 		assignment.IsManifest = false
 	}
 
-	if proto.Size(assignment) > maxTaskAssignmentSizeBytes {
+	if proto.Size(assignment) > s.manifestThreshold {
 		// Defensive guard: after manifest replacement this should normally be below threshold,
 		// but keep the check for unexpectedly large metadata fields.
 		log.Printf("TaskAssignment for task %s still exceeds manifest threshold after manifest fallback", task.ID)
