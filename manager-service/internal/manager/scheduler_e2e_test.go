@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"regexp"
+	"sync"
 	"testing"
 	"time"
 
@@ -12,9 +13,12 @@ import (
 )
 
 // TrackingOrchestrator captures lifecycle calls for assertion in E2E tests.
+// All fields are protected by mu to prevent data races when finalizeJob runs
+// in a background goroutine.
 type TrackingOrchestrator struct {
-	SpawnCalls  []SpawnCall
-	CancelCalls []string
+	mu          sync.Mutex
+	spawnCalls  []SpawnCall
+	cancelCalls []string
 	SpawnErr    error
 }
 
@@ -26,13 +30,45 @@ type SpawnCall struct {
 }
 
 func (o *TrackingOrchestrator) SpawnWorker(ctx context.Context, taskID, jobID, attemptID, addr string) error {
-	o.SpawnCalls = append(o.SpawnCalls, SpawnCall{taskID, jobID, attemptID, addr})
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.spawnCalls = append(o.spawnCalls, SpawnCall{taskID, jobID, attemptID, addr})
 	return o.SpawnErr
 }
 
 func (o *TrackingOrchestrator) CancelJob(ctx context.Context, jobID string) error {
-	o.CancelCalls = append(o.CancelCalls, jobID)
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.cancelCalls = append(o.cancelCalls, jobID)
 	return nil
+}
+
+// SpawnCount returns the number of SpawnWorker calls recorded so far.
+func (o *TrackingOrchestrator) SpawnCount() int {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return len(o.spawnCalls)
+}
+
+// GetSpawnCall returns the i-th SpawnWorker call.
+func (o *TrackingOrchestrator) GetSpawnCall(i int) SpawnCall {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return o.spawnCalls[i]
+}
+
+// CancelCount returns the number of CancelJob calls recorded so far.
+func (o *TrackingOrchestrator) CancelCount() int {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return len(o.cancelCalls)
+}
+
+// GetCancelCall returns the i-th CancelJob call.
+func (o *TrackingOrchestrator) GetCancelCall(i int) string {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return o.cancelCalls[i]
 }
 
 func setupE2ETest(t *testing.T) (*sql.DB, sqlmock.Sqlmock, *Scheduler, *TrackingOrchestrator) {
@@ -105,11 +141,12 @@ func TestE2E_WorkerKillDuringMapTask(t *testing.T) {
 	}
 
 	// 3. Assert SpawnWorker was called for the new attempt
-	if len(orch.SpawnCalls) != 1 {
-		t.Fatalf("Expected 1 SpawnWorker call, got %d", len(orch.SpawnCalls))
+	if orch.SpawnCount() != 1 {
+		t.Fatalf("Expected 1 SpawnWorker call, got %d", orch.SpawnCount())
 	}
-	if orch.SpawnCalls[0].AttemptID == "" || orch.SpawnCalls[0].AttemptID == attemptID1 {
-		t.Errorf("Expected spawn for a new attempt, got %s", orch.SpawnCalls[0].AttemptID)
+	got := orch.GetSpawnCall(0).AttemptID
+	if got == "" || got == attemptID1 {
+		t.Errorf("Expected spawn for a new attempt, got %s", got)
 	}
 }
 
@@ -192,16 +229,17 @@ func TestE2E_CancellationDuringExecution(t *testing.T) {
 		t.Fatalf("CancelJob failed: %v", err)
 	}
 
-	// Wait for async finalizeJob
-	for i := 0; i < 10; i++ {
-		if len(orch.CancelCalls) > 0 {
+	// Poll with mutex-safe accessor until the async finalizeJob goroutine completes.
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		if orch.CancelCount() > 0 {
 			break
 		}
-		time.Sleep(50 * time.Millisecond)
+		time.Sleep(10 * time.Millisecond)
 	}
 
-	if len(orch.CancelCalls) != 1 || orch.CancelCalls[0] != jobID {
-		t.Errorf("Expected orchestrator CancelJob for %s, got %v", jobID, orch.CancelCalls)
+	if orch.CancelCount() != 1 || orch.GetCancelCall(0) != jobID {
+		t.Errorf("Expected orchestrator CancelJob for %s, got count=%d", jobID, orch.CancelCount())
 	}
 
 	if err := mock.ExpectationsWereMet(); err != nil {
@@ -224,7 +262,7 @@ func TestE2E_ManagerRestartRecovery(t *testing.T) {
 		t.Fatalf("Recover failed: %v", err)
 	}
 
-	if len(orch.SpawnCalls) != 1 || orch.SpawnCalls[0].AttemptID != attemptID {
+	if orch.SpawnCount() != 1 || orch.GetSpawnCall(0).AttemptID != attemptID {
 		t.Errorf("Expected spawn call for attempt %s", attemptID)
 	}
 }
