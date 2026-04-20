@@ -11,6 +11,11 @@ package manager
 // Used by GetNextTask for Resource Quota Enforcement (Section 4.3 of the Design Document).
 const QueryGetMaxConcurrentPods = `SELECT max_concurrent_pods FROM SYSTEM_CONFIG WHERE config_id = 1`
 
+// QueryAcquireSchedulingLock acquires a transaction-scoped advisory lock
+// to serialize quota decisions across concurrent manager replicas.
+// Uses an arbitrary but fixed namespace (42) for scheduling decisions.
+const QueryAcquireSchedulingLock = `SELECT pg_advisory_xact_lock(42)`
+
 // QueryCountRunningAttempts counts globally active worker attempts.
 // Compared against max_concurrent_pods to enforce cluster-wide scheduling limits.
 const QueryCountRunningAttempts = `SELECT COUNT(*) FROM TASK_ATTEMPTS WHERE status = 'Running'`

@@ -152,6 +152,14 @@ func (s *Scheduler) GetNextTask(jobID string, workerID string) (*Task, error) {
 	}
 	defer tx.Rollback()
 
+	// 0. Quota Serialization
+	// Acquire a transaction-scoped advisory lock to prevent oversubscription
+	// races when multiple managers evaluate quota concurrently.
+	// This is the "Resource Quota Enforcement" pattern from Section 4.3.
+	if _, err := tx.ExecContext(ctx, QueryAcquireSchedulingLock); err != nil {
+		return nil, err
+	}
+
 	// 1. Quota Enforcement
 	var maxPods, activePods int
 	err = tx.QueryRowContext(ctx, QueryGetMaxConcurrentPods).Scan(&maxPods)
