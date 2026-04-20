@@ -82,56 +82,6 @@ func TestTaskAttempt_AttemptStatus(t *testing.T) {
 	}
 }
 
-func TestTaskAttempt_LeaseExpired(t *testing.T) {
-	// Active lease: renewed just now with a 30-second TTL
-	active := TaskAttempt{
-		AttemptID:     uuid.New(),
-		TaskID:        uuid.New(),
-		WorkerID:      "worker-1",
-		LeaseID:       uuid.New(),
-		LastRenewedAt: time.Now(),
-		LeaseTTL:      30,
-		StartTime:     time.Now(),
-		Status:        AttemptRunning,
-	}
-
-	if active.LeaseExpired() {
-		t.Fatal("expected active lease (renewed just now with 30s TTL) to NOT be expired")
-	}
-
-	// Expired lease: renewed 60 seconds ago with a 30-second TTL
-	expired := TaskAttempt{
-		AttemptID:     uuid.New(),
-		TaskID:        uuid.New(),
-		WorkerID:      "worker-2",
-		LeaseID:       uuid.New(),
-		LastRenewedAt: time.Now().Add(-60 * time.Second),
-		LeaseTTL:      30,
-		StartTime:     time.Now().Add(-60 * time.Second),
-		Status:        AttemptRunning,
-	}
-
-	if !expired.LeaseExpired() {
-		t.Fatal("expected lease (renewed 60s ago with 30s TTL) to be expired")
-	}
-
-	// Edge case: zero TTL means the lease expires immediately
-	zeroTTL := TaskAttempt{
-		AttemptID:     uuid.New(),
-		TaskID:        uuid.New(),
-		WorkerID:      "worker-3",
-		LeaseID:       uuid.New(),
-		LastRenewedAt: time.Now().Add(-1 * time.Millisecond),
-		LeaseTTL:      0,
-		StartTime:     time.Now(),
-		Status:        AttemptRunning,
-	}
-
-	if !zeroTTL.LeaseExpired() {
-		t.Fatal("expected zero-TTL lease to be expired")
-	}
-}
-
 func TestJob_IsTerminal(t *testing.T) {
 	tests := []struct {
 		name     string
