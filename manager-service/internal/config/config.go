@@ -35,6 +35,7 @@ type Config struct {
 	EnableGRPCReflection     bool
 	AllowInsecureWorkerRPC   bool
 	AllowInsecureInternalAPI bool
+	ManifestThresholdBytes   int
 }
 
 func Load() (*Config, error) {
@@ -84,6 +85,13 @@ func Load() (*Config, error) {
 		EnableGRPCReflection:     getEnvBool("ENABLE_GRPC_REFLECTION", false),
 		AllowInsecureWorkerRPC:   getEnvBool("ALLOW_INSECURE_WORKER_RPC", false),
 		AllowInsecureInternalAPI: getEnvBool("ALLOW_INSECURE_INTERNAL_API", false),
+		ManifestThresholdBytes: func() int {
+			v, err := getEnvInt("MANIFEST_THRESHOLD_BYTES", 2097152)
+			if err != nil {
+				return 2097152
+			}
+			return v
+		}(),
 	}
 	cfg.LeaseTTL = cfg.HeartbeatInterval * cfg.MaxMissedHeartbeats
 	return cfg, nil

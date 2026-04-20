@@ -3,6 +3,7 @@ package grpc
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"regexp"
@@ -30,7 +31,7 @@ func setupMockServer(t *testing.T) (*sql.DB, sqlmock.Sqlmock, *WorkerServer) {
 		t.Fatalf("unexpected error creating scheduler: %v", err)
 	}
 
-	return db, mock, NewWorkerServer(scheduler, nil)
+	return db, mock, NewWorkerServer(scheduler, nil, 0)
 }
 
 type fakeManifestUploader struct {
@@ -268,9 +269,9 @@ func TestWorkerServer_Register_ManifestFallback(t *testing.T) {
 	db, mock, baseServer := setupMockServer(t)
 	defer db.Close()
 
-	origThreshold := maxTaskAssignmentSizeBytes
-	maxTaskAssignmentSizeBytes = 500
-	defer func() { maxTaskAssignmentSizeBytes = origThreshold }()
+	origThreshold := baseServer.manifestThreshold
+	baseServer.manifestThreshold = 500
+	defer func() { baseServer.manifestThreshold = origThreshold }()
 
 	taskID := uuid.New().String()
 	jobID := uuid.New().String()
@@ -300,7 +301,7 @@ func TestWorkerServer_Register_ManifestFallback(t *testing.T) {
 			AddRow("worker-1", "lease123", time.Now(), time.Now()))
 
 	uploader := &fakeManifestUploader{uri: "s3://mapreduce-manifests/test-manifest.json"}
-	server := newWorkerServerWithManifestUploader(baseServer.scheduler, nil, uploader)
+	server := newWorkerServerWithManifestUploader(baseServer.scheduler, nil, uploader, baseServer.manifestThreshold)
 	resp, err := server.Register(context.Background(), &pb.RegisterRequest{
 		TaskId:    taskID,
 		AttemptId: attemptID,
@@ -326,9 +327,9 @@ func TestWorkerServer_Register_ManifestUploadFailureReturnsError(t *testing.T) {
 	db, mock, baseServer := setupMockServer(t)
 	defer db.Close()
 
-	origThreshold := maxTaskAssignmentSizeBytes
-	maxTaskAssignmentSizeBytes = 500
-	defer func() { maxTaskAssignmentSizeBytes = origThreshold }()
+	origThreshold := baseServer.manifestThreshold
+	baseServer.manifestThreshold = 500
+	defer func() { baseServer.manifestThreshold = origThreshold }()
 
 	taskID := uuid.New().String()
 	jobID := uuid.New().String()
@@ -357,7 +358,7 @@ func TestWorkerServer_Register_ManifestUploadFailureReturnsError(t *testing.T) {
 			AddRow("worker-1", "lease123", time.Now(), time.Now()))
 
 	uploader := &fakeManifestUploader{err: errors.New("upload failed")}
-	server := newWorkerServerWithManifestUploader(baseServer.scheduler, nil, uploader)
+	server := newWorkerServerWithManifestUploader(baseServer.scheduler, nil, uploader, baseServer.manifestThreshold)
 	_, err := server.Register(context.Background(), &pb.RegisterRequest{
 		TaskId:    taskID,
 		AttemptId: attemptID,
@@ -604,5 +605,157 @@ func TestWorkerServer_TaskFailed_SuccessReturnsAck(t *testing.T) {
 	}
 	if !resp.Success {
 		t.Fatalf("expected success ack")
+	}
+}
+
+func TestWorkerServer_Register_ManifestFallback_ReduceTask(t *testing.T) {
+	db, mock, baseServer := setupMockServer(t)
+	defer db.Close()
+
+	baseServer.manifestThreshold = 500
+
+	taskID := uuid.New().String()
+	jobID := uuid.New().String()
+	attemptID := uuid.New().String()
+
+	mock.ExpectQuery(regexp.QuoteMeta(manager.QueryGetTaskByID)).
+		WithArgs(taskID).
+		WillReturnRows(sqlmock.NewRows([]string{"task_id", "job_id", "task_type", "status", "current_attempt_id", "replica_index"}).
+			AddRow(taskID, jobID, "Reduce", "In-Progress", attemptID, 0))
+
+	mock.ExpectQuery(regexp.QuoteMeta(manager.QueryGetJobConfigByTask)).
+		WithArgs(taskID).
+		WillReturnRows(sqlmock.NewRows([]string{"mapper_uri", "reducer_uri", "combiner_uri", "r_tasks", "input_checksum"}).
+			AddRow("s3://code/mapper.py", "s3://code/reducer.py", "s3://code/combiner.py", 3, "sha256-input"))
+
+	inputRows := sqlmock.NewRows([]string{"partition_index", "output_uri", "checksum"})
+	for i := 0; i < 40; i++ {
+		inputRows.AddRow(0, fmt.Sprintf("s3://shuffle/part-0-%d.jsonl", i), fmt.Sprintf("sha256-output-%d", i))
+	}
+	mock.ExpectQuery(regexp.QuoteMeta(manager.QueryGetReduceTaskInputs)).
+		WithArgs(taskID).
+		WillReturnRows(inputRows)
+
+	mock.ExpectQuery(regexp.QuoteMeta(manager.QueryGetAttemptDetails)).
+		WithArgs(attemptID).
+		WillReturnRows(sqlmock.NewRows([]string{"worker_id", "lease_id", "start_time", "last_renewed_at"}).
+			AddRow("worker-1", "lease123", time.Now(), time.Now()))
+
+	uploader := &fakeManifestUploader{uri: "s3://mapreduce-manifests/test-manifest.json"}
+	server := newWorkerServerWithManifestUploader(baseServer.scheduler, nil, uploader, baseServer.manifestThreshold)
+	resp, err := server.Register(context.Background(), &pb.RegisterRequest{
+		TaskId:    taskID,
+		AttemptId: attemptID,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !resp.IsManifest {
+		t.Fatalf("expected manifest mode")
+	}
+
+	// Verify checksum in manifest
+	var manifestData struct {
+		DataLocations []string `json:"data_locations"`
+		Checksum      string   `json:"checksum"`
+	}
+	if err := json.Unmarshal(uploader.payload, &manifestData); err != nil {
+		t.Fatalf("failed to unmarshal manifest: %v", err)
+	}
+
+	if !strings.HasPrefix(manifestData.Checksum, "sha256:") {
+		t.Fatalf("expected sha256 checksum, got %q", manifestData.Checksum)
+	}
+}
+
+func TestWorkerServer_Register_NoManifestBelowThreshold(t *testing.T) {
+	db, mock, server := setupMockServer(t)
+	defer db.Close()
+
+	server.manifestThreshold = 1000000 // Large threshold
+
+	taskID := uuid.New().String()
+	jobID := uuid.New().String()
+	attemptID := uuid.New().String()
+
+	mock.ExpectQuery(regexp.QuoteMeta(manager.QueryGetTaskByID)).
+		WithArgs(taskID).
+		WillReturnRows(sqlmock.NewRows([]string{"task_id", "job_id", "task_type", "status", "current_attempt_id", "replica_index"}).
+			AddRow(taskID, jobID, "Map", "In-Progress", attemptID, 0))
+
+	mock.ExpectQuery(regexp.QuoteMeta(manager.QueryGetJobConfigByTask)).
+		WithArgs(taskID).
+		WillReturnRows(sqlmock.NewRows([]string{"mapper_uri", "reducer_uri", "combiner_uri", "r_tasks", "input_checksum"}).
+			AddRow("s3://code/mapper.py", "s3://code/reducer.py", "s3://code/combiner.py", 3, "sha256-input"))
+
+	mock.ExpectQuery(regexp.QuoteMeta(manager.QueryGetTaskInputs)).
+		WithArgs(taskID).
+		WillReturnRows(sqlmock.NewRows([]string{"input_uri", "byte_start", "byte_end", "split_checksum"}).
+			AddRow("s3://inputs/split-0.jsonl", 0, 128, "sha256-split-0"))
+
+	mock.ExpectQuery(regexp.QuoteMeta(manager.QueryGetAttemptDetails)).
+		WithArgs(attemptID).
+		WillReturnRows(sqlmock.NewRows([]string{"worker_id", "lease_id", "start_time", "last_renewed_at"}).
+			AddRow("worker-1", "lease123", time.Now(), time.Now()))
+
+	resp, err := server.Register(context.Background(), &pb.RegisterRequest{
+		TaskId:    taskID,
+		AttemptId: attemptID,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resp.IsManifest {
+		t.Fatalf("expected direct mode, got manifest mode")
+	}
+	if len(resp.DataLocations) != 1 || resp.DataLocations[0] != "s3://inputs/split-0.jsonl" {
+		t.Fatalf("expected direct data location, got %+v", resp.DataLocations)
+	}
+}
+
+func TestWorkerServer_Register_ManifestFallback_NilUploader_ReduceTask(t *testing.T) {
+	db, mock, server := setupMockServer(t)
+	defer db.Close()
+
+	server.manifestThreshold = 500
+	server.uploader = nil
+
+	taskID := uuid.New().String()
+	jobID := uuid.New().String()
+	attemptID := uuid.New().String()
+
+	mock.ExpectQuery(regexp.QuoteMeta(manager.QueryGetTaskByID)).
+		WithArgs(taskID).
+		WillReturnRows(sqlmock.NewRows([]string{"task_id", "job_id", "task_type", "status", "current_attempt_id", "replica_index"}).
+			AddRow(taskID, jobID, "Reduce", "In-Progress", attemptID, 0))
+
+	mock.ExpectQuery(regexp.QuoteMeta(manager.QueryGetJobConfigByTask)).
+		WithArgs(taskID).
+		WillReturnRows(sqlmock.NewRows([]string{"mapper_uri", "reducer_uri", "combiner_uri", "r_tasks", "input_checksum"}).
+			AddRow("s3://code/mapper.py", "s3://code/reducer.py", "s3://code/combiner.py", 3, "sha256-input"))
+
+	inputRows := sqlmock.NewRows([]string{"partition_index", "output_uri", "checksum"})
+	for i := 0; i < 40; i++ {
+		inputRows.AddRow(0, fmt.Sprintf("s3://shuffle/part-0-%d.jsonl", i), fmt.Sprintf("sha256-output-%d", i))
+	}
+	mock.ExpectQuery(regexp.QuoteMeta(manager.QueryGetReduceTaskInputs)).
+		WithArgs(taskID).
+		WillReturnRows(inputRows)
+
+	mock.ExpectQuery(regexp.QuoteMeta(manager.QueryGetAttemptDetails)).
+		WithArgs(attemptID).
+		WillReturnRows(sqlmock.NewRows([]string{"worker_id", "lease_id", "start_time", "last_renewed_at"}).
+			AddRow("worker-1", "lease123", time.Now(), time.Now()))
+
+	_, err := server.Register(context.Background(), &pb.RegisterRequest{
+		TaskId:    taskID,
+		AttemptId: attemptID,
+	})
+	if err == nil {
+		t.Fatalf("expected error, got nil")
+	}
+	st, ok := status.FromError(err)
+	if !ok || st.Code() != codes.ResourceExhausted {
+		t.Fatalf("expected ResourceExhausted, got %v", err)
 	}
 }
