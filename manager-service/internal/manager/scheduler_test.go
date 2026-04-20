@@ -558,6 +558,78 @@ func TestScheduler_FailTask_RetryableSuccess(t *testing.T) {
 	}
 }
 
+func TestScheduler_E2E_FailTaskRetry_StaleCompletionRejected(t *testing.T) {
+	rec := &recordingOrchestrator{}
+	db, mock, scheduler := setupMockDBWithOrchestrator(t, rec)
+	defer db.Close()
+
+	taskID := uuid.New().String()
+	jobID := uuid.New().String()
+	attemptID := uuid.New().String()
+	leaseID := uuid.New().String()
+
+	// 1) Current attempt fails and scheduler creates a retry attempt.
+	mock.ExpectBegin()
+	mock.ExpectQuery(regexp.QuoteMeta(QuerySelectTaskForUpdate)).
+		WithArgs(taskID).
+		WillReturnRows(sqlmock.NewRows([]string{"status", "current_attempt_id"}).AddRow("In-Progress", attemptID))
+	expectLeaseValidation(mock, attemptID, leaseID, true)
+
+	mock.ExpectQuery(regexp.QuoteMeta(QueryCountAttemptsByTask)).
+		WithArgs(taskID).
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(1))
+
+	mock.ExpectExec(regexp.QuoteMeta(QueryUpdateTaskStatus)).
+		WithArgs("Idle", taskID).
+		WillReturnResult(sqlmock.NewResult(1, 1))
+
+	mock.ExpectExec(regexp.QuoteMeta(QueryFailAttempt)).
+		WithArgs(attemptID).
+		WillReturnResult(sqlmock.NewResult(1, 1))
+
+	mock.ExpectQuery(regexp.QuoteMeta(QueryGetTaskJobID)).
+		WithArgs(taskID).
+		WillReturnRows(sqlmock.NewRows([]string{"job_id"}).AddRow(jobID))
+
+	mock.ExpectExec(regexp.QuoteMeta(QueryUpdateTaskInProgress)).
+		WithArgs(sqlmock.AnyArg(), taskID).
+		WillReturnResult(sqlmock.NewResult(1, 1))
+
+	mock.ExpectExec(regexp.QuoteMeta(QueryInsertAttempt)).
+		WithArgs(sqlmock.AnyArg(), taskID, "system-recovery", sqlmock.AnyArg(), sqlmock.AnyArg()).
+		WillReturnResult(sqlmock.NewResult(1, 1))
+
+	mock.ExpectCommit()
+
+	if err := scheduler.FailTask(taskID, attemptID, leaseID, "worker exited"); err != nil {
+		t.Fatalf("unexpected failtask error: %v", err)
+	}
+
+	if len(rec.calls) != 1 {
+		t.Fatalf("expected one retry spawn call, got %d", len(rec.calls))
+	}
+	retryAttemptID := rec.calls[0].attemptID
+	if retryAttemptID == "" {
+		t.Fatal("expected non-empty retry attempt ID")
+	}
+
+	// 2) Old attempt tries to complete after retry exists; must be fenced as stale.
+	mock.ExpectBegin()
+	mock.ExpectQuery(regexp.QuoteMeta(QuerySelectTaskForUpdate)).
+		WithArgs(taskID).
+		WillReturnRows(sqlmock.NewRows([]string{"status", "current_attempt_id"}).AddRow("In-Progress", retryAttemptID))
+	mock.ExpectRollback()
+
+	err := scheduler.CompleteTask(taskID, attemptID, leaseID, []string{"s3://out"}, []string{"sha"})
+	if !errors.Is(err, ErrStaleAttempt) {
+		t.Fatalf("expected ErrStaleAttempt, got %v", err)
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unfulfilled expectations: %s", err)
+	}
+}
+
 func TestScheduler_FailTask_DBClockExpiredEvenIfAppWouldThinkValid(t *testing.T) {
 	db, mock, scheduler := setupMockDB(t)
 	defer db.Close()
@@ -798,6 +870,80 @@ func TestScheduler_FailStaleTasks_Success(t *testing.T) {
 	}
 	if recovered != 1 {
 		t.Errorf("expected 1 recovered task, got %d", recovered)
+	}
+}
+
+func TestScheduler_E2E_ReaperRecovery_StaleHeartbeatRejectedAfterReassign(t *testing.T) {
+	rec := &recordingOrchestrator{}
+	db, mock, scheduler := setupMockDBWithOrchestrator(t, rec)
+	defer db.Close()
+
+	taskID := uuid.New().String()
+	jobID := uuid.New().String()
+	staleAttemptID := uuid.New().String()
+	staleLeaseID := uuid.New().String()
+
+	// 1) Reaper detects stale running attempt and reassigns task with a fresh attempt.
+	mock.ExpectBegin()
+	mock.ExpectQuery(regexp.QuoteMeta(QuerySelectStaleTasks)).
+		WillReturnRows(sqlmock.NewRows([]string{"task_id", "attempt_id"}).AddRow(taskID, staleAttemptID))
+
+	mock.ExpectQuery(regexp.QuoteMeta(QueryGetTaskJobID)).
+		WithArgs(taskID).
+		WillReturnRows(sqlmock.NewRows([]string{"job_id"}).AddRow(jobID))
+
+	mock.ExpectQuery(regexp.QuoteMeta(QueryCountAttemptsByTask)).
+		WithArgs(taskID).
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(1))
+
+	mock.ExpectExec(regexp.QuoteMeta(QueryUpdateTaskStatus)).
+		WithArgs("Idle", taskID).
+		WillReturnResult(sqlmock.NewResult(1, 1))
+
+	mock.ExpectExec(regexp.QuoteMeta(QueryFailAttempt)).
+		WithArgs(staleAttemptID).
+		WillReturnResult(sqlmock.NewResult(1, 1))
+
+	mock.ExpectExec(regexp.QuoteMeta(QueryUpdateTaskInProgress)).
+		WithArgs(sqlmock.AnyArg(), taskID).
+		WillReturnResult(sqlmock.NewResult(1, 1))
+
+	mock.ExpectExec(regexp.QuoteMeta(QueryInsertAttempt)).
+		WithArgs(sqlmock.AnyArg(), taskID, "system-recovery", sqlmock.AnyArg(), sqlmock.AnyArg()).
+		WillReturnResult(sqlmock.NewResult(1, 1))
+
+	mock.ExpectCommit()
+
+	recovered, err := scheduler.FailStaleTasks()
+	if err != nil {
+		t.Fatalf("unexpected reaper error: %v", err)
+	}
+	if recovered != 1 {
+		t.Fatalf("expected 1 recovered task, got %d", recovered)
+	}
+	if len(rec.calls) != 1 {
+		t.Fatalf("expected one respawn after stale cleanup, got %d", len(rec.calls))
+	}
+
+	newAttemptID := rec.calls[0].attemptID
+	if newAttemptID == "" {
+		t.Fatal("expected non-empty reassigned attempt ID")
+	}
+
+	// 2) Stale worker heartbeat/renew must be rejected because current_attempt_id moved.
+	mock.ExpectBegin()
+	mock.ExpectQuery(regexp.QuoteMeta(QuerySelectTaskForUpdate)).
+		WithArgs(taskID).
+		WillReturnRows(sqlmock.NewRows([]string{"status", "current_attempt_id"}).AddRow("In-Progress", newAttemptID))
+	mock.ExpectRollback()
+
+	err = scheduler.RenewLease(taskID, staleAttemptID, staleLeaseID)
+	if !errors.Is(err, ErrStaleAttempt) {
+		t.Fatalf("expected ErrStaleAttempt, got %v", err)
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unfulfilled expectations: %s", err)
 	}
 }
 
