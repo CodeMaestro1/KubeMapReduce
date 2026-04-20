@@ -126,6 +126,8 @@ func TestScheduler_GetNextTask_QuotaExceeded(t *testing.T) {
 	jobID := uuid.NewString()
 
 	mock.ExpectBegin()
+	mock.ExpectExec(regexp.QuoteMeta(QueryAcquireSchedulingLock)).
+		WillReturnResult(sqlmock.NewResult(1, 1))
 	mock.ExpectQuery(regexp.QuoteMeta(QueryGetMaxConcurrentPods)).
 		WillReturnRows(sqlmock.NewRows([]string{"max_concurrent_pods"}).AddRow(10))
 	mock.ExpectQuery(regexp.QuoteMeta(QueryCountRunningAttempts)).
@@ -148,6 +150,8 @@ func TestScheduler_GetNextTask_JobFailed(t *testing.T) {
 	jobID := uuid.NewString()
 
 	mock.ExpectBegin()
+	mock.ExpectExec(regexp.QuoteMeta(QueryAcquireSchedulingLock)).
+		WillReturnResult(sqlmock.NewResult(1, 1))
 	mock.ExpectQuery(regexp.QuoteMeta(QueryGetMaxConcurrentPods)).
 		WillReturnRows(sqlmock.NewRows([]string{"max_concurrent_pods"}).AddRow(10))
 	mock.ExpectQuery(regexp.QuoteMeta(QueryCountRunningAttempts)).
@@ -171,6 +175,8 @@ func TestScheduler_GetNextTask_MapSuccess(t *testing.T) {
 	jobID := uuid.New()
 
 	mock.ExpectBegin()
+	mock.ExpectExec(regexp.QuoteMeta(QueryAcquireSchedulingLock)).
+		WillReturnResult(sqlmock.NewResult(1, 1))
 	mock.ExpectQuery(regexp.QuoteMeta(QueryGetMaxConcurrentPods)).
 		WillReturnRows(sqlmock.NewRows([]string{"max_concurrent_pods"}).AddRow(10))
 	mock.ExpectQuery(regexp.QuoteMeta(QueryCountRunningAttempts)).
@@ -235,6 +241,8 @@ func TestScheduler_GetNextTask_NoMapIdle_ReduceSuccess(t *testing.T) {
 	jobID := uuid.New()
 
 	mock.ExpectBegin()
+	mock.ExpectExec(regexp.QuoteMeta(QueryAcquireSchedulingLock)).
+		WillReturnResult(sqlmock.NewResult(1, 1))
 	mock.ExpectQuery(regexp.QuoteMeta(QueryGetMaxConcurrentPods)).
 		WillReturnRows(sqlmock.NewRows([]string{"max_concurrent_pods"}).AddRow(10))
 	mock.ExpectQuery(regexp.QuoteMeta(QueryCountRunningAttempts)).
@@ -296,6 +304,8 @@ func TestScheduler_GetNextTask_JobCompleted(t *testing.T) {
 	jobID := uuid.NewString()
 
 	mock.ExpectBegin()
+	mock.ExpectExec(regexp.QuoteMeta(QueryAcquireSchedulingLock)).
+		WillReturnResult(sqlmock.NewResult(1, 1))
 	mock.ExpectQuery(regexp.QuoteMeta(QueryGetMaxConcurrentPods)).
 		WillReturnRows(sqlmock.NewRows([]string{"max_concurrent_pods"}).AddRow(10))
 	mock.ExpectQuery(regexp.QuoteMeta(QueryCountRunningAttempts)).
@@ -1334,6 +1344,80 @@ func TestScheduler_CompleteTask_JobCompleted_TriggersCleanup(t *testing.T) {
 		[]string{"s3://output/file.txt"}, []string{"sha256-output"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unfulfilled expectations: %s", err)
+	}
+}
+
+func TestScheduler_GetNextTask_ConcurrentQuotaSafety(t *testing.T) {
+	db, mock, scheduler := setupMockDB(t)
+	defer db.Close()
+	jobID := uuid.NewString()
+
+	// Simulating concurrent calls: first caller acquires lock, sees quota available, and assigns.
+	// We use ordered expectations to simulate the serialized critical section.
+	taskID := uuid.New()
+	dbJobID, _ := uuid.Parse(jobID)
+
+	mock.ExpectBegin()
+	mock.ExpectExec(regexp.QuoteMeta(QueryAcquireSchedulingLock)).
+		WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectQuery(regexp.QuoteMeta(QueryGetMaxConcurrentPods)).
+		WillReturnRows(sqlmock.NewRows([]string{"max_concurrent_pods"}).AddRow(1))
+	mock.ExpectQuery(regexp.QuoteMeta(QueryCountRunningAttempts)).
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
+	mock.ExpectQuery(regexp.QuoteMeta(QueryCountFailedTasks)).
+		WithArgs(jobID).
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
+	mock.ExpectQuery(regexp.QuoteMeta(QuerySelectIdleTask)).
+		WithArgs(jobID, 0, "Map").
+		WillReturnRows(sqlmock.NewRows([]string{"task_id", "job_id", "task_type", "replica_index"}).AddRow(taskID, dbJobID, "Map", 0))
+	expectTaskMetadataQueries(mock, taskID, "s3://map", "s3://reduce", 1)
+	mock.ExpectExec(regexp.QuoteMeta(QueryUpdateTaskInProgress)).WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectExec(regexp.QuoteMeta(QueryInsertAttempt)).WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectExec(regexp.QuoteMeta(QueryUpdateJobStatus)).WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectCommit()
+
+	_, err := scheduler.GetNextTask(jobID, "worker-1")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unfulfilled expectations: %s", err)
+	}
+}
+
+func TestScheduler_GetNextTask_NoStarvation_MapBeforeReduce(t *testing.T) {
+	db, mock, scheduler := setupMockDB(t)
+	defer db.Close()
+	jobID := uuid.NewString()
+
+	// Verify that if Map tasks are pending, the scheduler returns ErrNoIdleTasks
+	// instead of proceeding to Reduce tasks (Map-phase starvation check).
+	mock.ExpectBegin()
+	mock.ExpectExec(regexp.QuoteMeta(QueryAcquireSchedulingLock)).
+		WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectQuery(regexp.QuoteMeta(QueryGetMaxConcurrentPods)).
+		WillReturnRows(sqlmock.NewRows([]string{"max_concurrent_pods"}).AddRow(10))
+	mock.ExpectQuery(regexp.QuoteMeta(QueryCountRunningAttempts)).
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
+	mock.ExpectQuery(regexp.QuoteMeta(QueryCountFailedTasks)).
+		WithArgs(jobID).
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
+	mock.ExpectQuery(regexp.QuoteMeta(QuerySelectIdleTask)).
+		WithArgs(jobID, 0, "Map").
+		WillReturnError(sql.ErrNoRows) // No IDLE map tasks
+	mock.ExpectQuery(regexp.QuoteMeta(QueryCountPendingTasksByType)).
+		WithArgs(jobID, "Map").
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(5)) // But 5 map tasks are still IN-PROGRESS
+	mock.ExpectRollback()
+
+	_, err := scheduler.GetNextTask(jobID, "worker-1")
+	if !errors.Is(err, ErrNoIdleTasks) {
+		t.Errorf("expected ErrNoIdleTasks due to Map phase incomplete, got %v", err)
 	}
 
 	if err := mock.ExpectationsWereMet(); err != nil {
