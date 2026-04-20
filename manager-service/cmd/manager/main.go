@@ -38,6 +38,12 @@ func main() {
 		log.Fatalf("failed to load configuration: %v", err)
 	}
 
+	// Security validation for internal cancel endpoint
+	if err := validateInternalCancelSecurityConfig(cfg); err != nil {
+		log.Fatalf("insecure internal cancel configuration: %v", err)
+	}
+	emitInternalCancelSecurityWarnings(cfg)
+
 	// 1. Connect to Database
 	db, err := sql.Open("postgres", cfg.DatabaseDSN)
 	if err != nil {
@@ -343,5 +349,23 @@ func emitWorkerRPCSecurityWarnings(cfg *config.Config) {
 	}
 	if cfg.AllowInsecureWorkerRPC && !hasWorkerToken && !useTLS {
 		log.Printf("[WARN] ALLOW_INSECURE_WORKER_RPC=true: worker RPC is running without token auth and without TLS")
+	}
+}
+
+func validateInternalCancelSecurityConfig(cfg *config.Config) error {
+	if cfg == nil {
+		return errors.New("config is nil")
+	}
+	hasToken := strings.TrimSpace(cfg.InternalAPIKey) != ""
+	if !hasToken && !cfg.AllowInsecureInternalAPI {
+		return errors.New("set MANAGER_INTERNAL_API_KEY (or explicitly set ALLOW_INSECURE_INTERNAL_API=true for local development only)")
+	}
+	return nil
+}
+
+func emitInternalCancelSecurityWarnings(cfg *config.Config) {
+	hasToken := strings.TrimSpace(cfg.InternalAPIKey) != ""
+	if cfg.AllowInsecureInternalAPI && !hasToken {
+		log.Printf("[WARN] ALLOW_INSECURE_INTERNAL_API=true: internal cancel endpoint is protected by loopback restriction only")
 	}
 }

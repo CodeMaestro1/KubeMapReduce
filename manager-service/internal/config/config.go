@@ -25,15 +25,16 @@ type Config struct {
 	MinioEndpoint       string
 	// MinioAccessKey and MinioSecretKey are expected to be injected via environment
 	// variables (typically from Kubernetes Secrets) when manifest fallback is enabled.
-	MinioAccessKey         string
-	MinioSecretKey         string
-	MinioUseSSL            bool
-	InternalAPIKey         string
-	WorkerRPCToken         string
-	GRPCTLSCertFile        string
-	GRPCTLSKeyFile         string
-	EnableGRPCReflection   bool
-	AllowInsecureWorkerRPC bool
+	MinioAccessKey           string
+	MinioSecretKey           string
+	MinioUseSSL              bool
+	InternalAPIKey           string
+	WorkerRPCToken           string
+	GRPCTLSCertFile          string
+	GRPCTLSKeyFile           string
+	EnableGRPCReflection     bool
+	AllowInsecureWorkerRPC   bool
+	AllowInsecureInternalAPI bool
 }
 
 func Load() (*Config, error) {
@@ -59,29 +60,30 @@ func Load() (*Config, error) {
 	}
 
 	cfg := &Config{
-		KeycloakBaseURL:        keycloakBaseURL,
-		Realm:                  realm,
-		JWKSURL:                getEnv("KEYCLOAK_JWKS_URL", keycloakBaseURL+"/realms/"+realm+"/protocol/openid-connect/certs"),
-		Issuer:                 getEnv("KEYCLOAK_ISSUER", keycloakBaseURL+"/realms/"+realm),
-		Audience:               audience,
-		ServerAddr:             getEnv("SERVER_ADDR", ":8081"),
-		AdminUsername:          adminUsername,
-		AdminPassword:          adminPassword,
-		DatabaseDSN:            getEnv("DATABASE_DSN", "postgres://user:pass@localhost:5432/mapreduce?sslmode=disable"),
-		GRPCAddr:               getEnv("GRPC_ADDR", getEnv("GRPC_PORT", ":50051")),
-		TotalReplicas:          totalReplicas,
-		HeartbeatInterval:      hbInterval,
-		MaxMissedHeartbeats:    maxMissed,
-		MinioEndpoint:          getEnv("MINIO_ENDPOINT", ""),
-		MinioAccessKey:         getEnv("MINIO_ACCESS_KEY", ""),
-		MinioSecretKey:         getEnv("MINIO_SECRET_KEY", ""),
-		MinioUseSSL:            getEnvBool("MINIO_USE_SSL", false),
-		InternalAPIKey:         getEnv("MANAGER_INTERNAL_API_KEY", ""),
-		WorkerRPCToken:         getEnv("MANAGER_WORKER_RPC_TOKEN", ""),
-		GRPCTLSCertFile:        getEnv("GRPC_TLS_CERT_FILE", ""),
-		GRPCTLSKeyFile:         getEnv("GRPC_TLS_KEY_FILE", ""),
-		EnableGRPCReflection:   getEnvBool("ENABLE_GRPC_REFLECTION", false),
-		AllowInsecureWorkerRPC: getEnvBool("ALLOW_INSECURE_WORKER_RPC", false),
+		KeycloakBaseURL:          keycloakBaseURL,
+		Realm:                    realm,
+		JWKSURL:                  getEnv("KEYCLOAK_JWKS_URL", keycloakBaseURL+"/realms/"+realm+"/protocol/openid-connect/certs"),
+		Issuer:                   getEnv("KEYCLOAK_ISSUER", keycloakBaseURL+"/realms/"+realm),
+		Audience:                 audience,
+		ServerAddr:               getEnv("SERVER_ADDR", ":8081"),
+		AdminUsername:            adminUsername,
+		AdminPassword:            adminPassword,
+		DatabaseDSN:              getEnv("DATABASE_DSN", "postgres://user:pass@localhost:5432/mapreduce?sslmode=disable"),
+		GRPCAddr:                 getEnv("GRPC_ADDR", getEnv("GRPC_PORT", ":50051")),
+		TotalReplicas:            totalReplicas,
+		HeartbeatInterval:        hbInterval,
+		MaxMissedHeartbeats:      maxMissed,
+		MinioEndpoint:            getEnv("MINIO_ENDPOINT", ""),
+		MinioAccessKey:           getEnv("MINIO_ACCESS_KEY", ""),
+		MinioSecretKey:           getEnv("MINIO_SECRET_KEY", ""),
+		MinioUseSSL:              getEnvBool("MINIO_USE_SSL", false),
+		InternalAPIKey:           getEnv("MANAGER_INTERNAL_API_KEY", ""),
+		WorkerRPCToken:           getEnv("MANAGER_WORKER_RPC_TOKEN", ""),
+		GRPCTLSCertFile:          getEnv("GRPC_TLS_CERT_FILE", ""),
+		GRPCTLSKeyFile:           getEnv("GRPC_TLS_KEY_FILE", ""),
+		EnableGRPCReflection:     getEnvBool("ENABLE_GRPC_REFLECTION", false),
+		AllowInsecureWorkerRPC:   getEnvBool("ALLOW_INSECURE_WORKER_RPC", false),
+		AllowInsecureInternalAPI: getEnvBool("ALLOW_INSECURE_INTERNAL_API", false),
 	}
 	cfg.LeaseTTL = cfg.HeartbeatInterval * cfg.MaxMissedHeartbeats
 	return cfg, nil
