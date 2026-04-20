@@ -112,6 +112,7 @@ func (s *PostgresJobStore) GetJob(ctx context.Context, jobID string) (*JobRecord
 
 // ListJobs returns all jobs ordered by creation time descending.
 func (s *PostgresJobStore) ListJobs(ctx context.Context, limit, offset int) ([]JobRecord, error) {
+	limit, offset = clampPagination(limit, offset)
 	rows, err := s.db.QueryContext(ctx, queryListAPIJobs, limit, offset)
 	if err != nil {
 		return nil, err
@@ -189,6 +190,7 @@ func (m *MemoryJobStore) GetJob(_ context.Context, jobID string) (*JobRecord, er
 
 // ListJobs returns all non-expired jobs ordered by creation time descending.
 func (m *MemoryJobStore) ListJobs(_ context.Context, limit, offset int) ([]JobRecord, error) {
+	limit, offset = clampPagination(limit, offset)
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.cleanup()
@@ -238,4 +240,18 @@ func (m *MemoryJobStore) evict() {
 	for _, e := range entries[:len(entries)-m.maxStoredJobs] {
 		delete(m.jobs, e.id)
 	}
+}
+
+// clampPagination ensures limit and offset are within valid operational bounds.
+func clampPagination(limit, offset int) (int, int) {
+	if limit <= 0 {
+		limit = defaultListLimit
+	}
+	if limit > maxListLimit {
+		limit = maxListLimit
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	return limit, offset
 }
