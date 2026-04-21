@@ -371,6 +371,61 @@ func TestWorkerServer_Register_ManifestUploadFailureReturnsError(t *testing.T) {
 	}
 }
 
+func TestWorkerServer_Register_ManifestTooLargeReturnsResourceExhausted(t *testing.T) {
+	db, mock, baseServer := setupMockServer(t)
+	defer db.Close()
+
+	origThreshold := maxTaskAssignmentSizeBytes
+	maxTaskAssignmentSizeBytes = 100
+	defer func() { maxTaskAssignmentSizeBytes = origThreshold }()
+	origManifestThreshold := maxManifestPayloadSizeBytes
+	maxManifestPayloadSizeBytes = 100
+	defer func() { maxManifestPayloadSizeBytes = origManifestThreshold }()
+
+	taskID := uuid.New().String()
+	jobID := uuid.New().String()
+	attemptID := uuid.New().String()
+
+	mock.ExpectQuery(regexp.QuoteMeta(manager.QueryGetTaskByID)).
+		WithArgs(taskID).
+		WillReturnRows(sqlmock.NewRows([]string{"task_id", "job_id", "task_type", "status", "current_attempt_id", "replica_index"}).
+			AddRow(taskID, jobID, "Map", "In-Progress", attemptID, 0))
+	mock.ExpectQuery(regexp.QuoteMeta(manager.QueryGetJobConfigByTask)).
+		WithArgs(taskID).
+		WillReturnRows(sqlmock.NewRows([]string{"mapper_uri", "reducer_uri", "combiner_uri", "r_tasks", "input_checksum"}).
+			AddRow("s3://code/mapper.py", "s3://code/reducer.py", "s3://code/combiner.py", 3, "sha256-input"))
+	mock.ExpectQuery(regexp.QuoteMeta(manager.QueryGetTaskInputs)).
+		WithArgs(taskID).
+		WillReturnRows(func() *sqlmock.Rows {
+			rows := sqlmock.NewRows([]string{"input_uri", "byte_start", "byte_end", "split_checksum"})
+			for i := 0; i < 15; i++ {
+				rows.AddRow(fmt.Sprintf("s3://inputs/split-%d.jsonl", i), int64(i*128), int64((i+1)*128), fmt.Sprintf("sha256-split-%d", i))
+			}
+			return rows
+		}())
+	mock.ExpectQuery(regexp.QuoteMeta(manager.QueryGetAttemptDetails)).
+		WithArgs(attemptID).
+		WillReturnRows(sqlmock.NewRows([]string{"worker_id", "lease_id", "start_time", "last_renewed_at"}).
+			AddRow("worker-1", "lease123", time.Now(), time.Now()))
+
+	uploader := &fakeManifestUploader{uri: "s3://mapreduce-manifests/test-manifest.json"}
+	server := newWorkerServerWithManifestUploader(baseServer.scheduler, nil, uploader)
+	_, err := server.Register(context.Background(), &pb.RegisterRequest{
+		TaskId:    taskID,
+		AttemptId: attemptID,
+	})
+	if err == nil {
+		t.Fatalf("expected error, got nil")
+	}
+	st, ok := status.FromError(err)
+	if !ok || st.Code() != codes.ResourceExhausted {
+		t.Fatalf("expected ResourceExhausted, got %v", err)
+	}
+	if len(uploader.payload) != 0 {
+		t.Fatalf("expected no manifest upload when marshaled manifest exceeds threshold")
+	}
+}
+
 func TestWorkerServer_TaskComplete_StaleAttemptReturnsPermissionDenied(t *testing.T) {
 	db, mock, server := setupMockServer(t)
 	defer db.Close()

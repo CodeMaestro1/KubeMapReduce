@@ -29,6 +29,7 @@ type WorkerServer struct {
 const manifestBucketName = "mapreduce-manifests"
 
 var maxTaskAssignmentSizeBytes = 2 * 1024 * 1024
+var maxManifestPayloadSizeBytes = 2 * 1024 * 1024
 
 type manifestUploader interface {
 	UploadManifest(ctx context.Context, bucketName, objectName string, payload []byte) (string, error)
@@ -159,6 +160,9 @@ func (s *WorkerServer) Register(ctx context.Context, req *pb.RegisterRequest) (*
 		if err != nil {
 			log.Printf("Failed to marshal manifest for task %s: %v", task.ID, err)
 			return nil, status.Errorf(codes.Internal, "failed to marshal manifest: %v", err)
+		}
+		if len(manifestBytes) > maxManifestPayloadSizeBytes {
+			return nil, status.Errorf(codes.ResourceExhausted, "manifest for task %s exceeds manifest threshold", task.ID)
 		}
 
 		objectName := fmt.Sprintf("%s/%s-manifest.json", task.JobID, task.ActiveAttemptID)

@@ -30,6 +30,7 @@ const (
 	defaultReducers  = 1
 	defaultListLimit = 100
 	maxListLimit     = 500
+	maxJSONBodyBytes = 1 << 20 // 1 MiB
 )
 
 // NewHandlers creates production-ready Handlers backed by the given JobStore.
@@ -90,8 +91,7 @@ func (h *Handlers) HandleJobsSubmit(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var request models.JobSubmissionRequest
-	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
-		http.Error(w, "invalid job payload", http.StatusBadRequest)
+	if !decodeJSONBody(w, r, &request, "invalid job payload") {
 		return
 	}
 
@@ -200,9 +200,17 @@ func (h *Handlers) HandleJobsGet(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "job id required", http.StatusBadRequest)
 		return
 	}
+	if _, err := uuid.Parse(jobID); err != nil {
+		http.Error(w, "invalid job id", http.StatusBadRequest)
+		return
+	}
 
 	rec, err := h.store.GetJob(r.Context(), jobID)
 	if err != nil {
+		if errors.Is(err, ErrInvalidJobID) {
+			http.Error(w, "invalid job id", http.StatusBadRequest)
+			return
+		}
 		http.Error(w, "failed to retrieve job", http.StatusInternalServerError)
 		return
 	}
@@ -231,9 +239,17 @@ func (h *Handlers) HandleJobsDownload(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "job id required", http.StatusBadRequest)
 		return
 	}
+	if _, err := uuid.Parse(jobID); err != nil {
+		http.Error(w, "invalid job id", http.StatusBadRequest)
+		return
+	}
 
 	rec, err := h.store.GetJob(r.Context(), jobID)
 	if err != nil {
+		if errors.Is(err, ErrInvalidJobID) {
+			http.Error(w, "invalid job id", http.StatusBadRequest)
+			return
+		}
 		http.Error(w, "failed to retrieve job", http.StatusInternalServerError)
 		return
 	}
@@ -258,8 +274,7 @@ func (h *Handlers) HandleConfigureNodes(w http.ResponseWriter, r *http.Request) 
 	}
 
 	var req models.NodeConfigRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "invalid node config payload", http.StatusBadRequest)
+	if !decodeJSONBody(w, r, &req, "invalid node config payload") {
 		return
 	}
 
@@ -294,8 +309,7 @@ func (h *Handlers) HandleWorkerConfig(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var request models.WorkerConfigRequest
-	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
-		http.Error(w, "invalid worker config payload", http.StatusBadRequest)
+	if !decodeJSONBody(w, r, &request, "invalid worker config payload") {
 		return
 	}
 
@@ -352,8 +366,7 @@ func (h *Handlers) HandleAdminCreateUser(w http.ResponseWriter, r *http.Request)
 	}
 
 	var req models.CreateUserRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "invalid request payload", http.StatusBadRequest)
+	if !decodeJSONBody(w, r, &req, "invalid request payload") {
 		return
 	}
 
@@ -428,4 +441,19 @@ func isAuthDependencyError(err error) bool {
 	return auth.IsServiceUnavailable(err) ||
 		errors.Is(err, context.DeadlineExceeded) ||
 		errors.Is(err, context.Canceled)
+}
+
+func decodeJSONBody(w http.ResponseWriter, r *http.Request, out any, invalidMessage string) bool {
+	r.Body = http.MaxBytesReader(w, r.Body, maxJSONBodyBytes)
+	dec := json.NewDecoder(r.Body)
+	if err := dec.Decode(out); err != nil {
+		var maxErr *http.MaxBytesError
+		if errors.As(err, &maxErr) {
+			http.Error(w, "request payload too large", http.StatusRequestEntityTooLarge)
+			return false
+		}
+		http.Error(w, invalidMessage, http.StatusBadRequest)
+		return false
+	}
+	return true
 }

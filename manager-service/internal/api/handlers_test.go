@@ -67,6 +67,20 @@ func TestHandleJobsSubmit_RejectsInvalidPayload(t *testing.T) {
 	}
 }
 
+func TestHandleJobsSubmit_RejectsOversizedPayload(t *testing.T) {
+	h := newTestHandlers()
+
+	oversized := `{"filename":"` + strings.Repeat("a", maxJSONBodyBytes) + `","mapper":{"language":"python","artifact":"m.py","entrypoint":"map","interface":"map(key,value)->[]KeyValue"},"reducer":{"language":"python","artifact":"r.py","entrypoint":"reduce","interface":"reduce(key,values)->Value"}}`
+	req := httptest.NewRequest(http.MethodPost, "/jobs", strings.NewReader(oversized))
+	rec := httptest.NewRecorder()
+
+	h.HandleJobsSubmit(rec, req)
+
+	if rec.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("expected status %d, got %d", http.StatusRequestEntityTooLarge, rec.Code)
+	}
+}
+
 func TestHandleJobsSubmit_RejectsEmptyFilename(t *testing.T) {
 	h := newTestHandlers()
 
@@ -868,9 +882,10 @@ func TestHandleJobsGet_ReturnsKnownJob(t *testing.T) {
 
 func TestHandleJobsGet_ReturnsNotFoundForUnknownJob(t *testing.T) {
 	h := newTestHandlers()
+	unknownJobID := "3fcb6284-4cd7-4f8b-b8c6-5fd6e5687f0f"
 
-	req := httptest.NewRequest(http.MethodGet, "/jobs/job-doesnotexist", nil)
-	req.SetPathValue("job_id", "job-doesnotexist")
+	req := httptest.NewRequest(http.MethodGet, "/jobs/"+unknownJobID, nil)
+	req.SetPathValue("job_id", unknownJobID)
 	rec := httptest.NewRecorder()
 	h.HandleJobsGet(rec, req)
 
@@ -879,18 +894,45 @@ func TestHandleJobsGet_ReturnsNotFoundForUnknownJob(t *testing.T) {
 	}
 }
 
+func TestHandleJobsGet_InvalidUUID_ReturnsBadRequest(t *testing.T) {
+	h := newTestHandlers()
+
+	req := httptest.NewRequest(http.MethodGet, "/jobs/not-a-uuid", nil)
+	req.SetPathValue("job_id", "not-a-uuid")
+	rec := httptest.NewRecorder()
+	h.HandleJobsGet(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected %d, got %d", http.StatusBadRequest, rec.Code)
+	}
+}
+
 // ── HandleJobsDownload tests ────────────────────────────────
 
 func TestHandleJobsDownload_NotFoundForUnknownJob(t *testing.T) {
 	h := newTestHandlers()
+	unknownJobID := "36f77f7a-cb6d-4d89-b9d6-643f8222f7de"
 
-	req := httptest.NewRequest(http.MethodGet, "/jobs/job-doesnotexist/results", nil)
-	req.SetPathValue("job_id", "job-doesnotexist")
+	req := httptest.NewRequest(http.MethodGet, "/jobs/"+unknownJobID+"/results", nil)
+	req.SetPathValue("job_id", unknownJobID)
 	rec := httptest.NewRecorder()
 	h.HandleJobsDownload(rec, req)
 
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("expected %d, got %d", http.StatusNotFound, rec.Code)
+	}
+}
+
+func TestHandleJobsDownload_InvalidUUID_ReturnsBadRequest(t *testing.T) {
+	h := newTestHandlers()
+
+	req := httptest.NewRequest(http.MethodGet, "/jobs/not-a-uuid/results", nil)
+	req.SetPathValue("job_id", "not-a-uuid")
+	rec := httptest.NewRecorder()
+	h.HandleJobsDownload(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected %d, got %d", http.StatusBadRequest, rec.Code)
 	}
 }
 

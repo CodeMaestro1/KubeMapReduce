@@ -69,3 +69,15 @@ Fix: Added a global timeout to `Scheduler.Recover` and deadline-aware spawn loop
 [#18] Expired orphan attempts could remain `Running` and leak global quota
 Source: Best practice (Lease lifecycle consistency)
 Fix: Added `QueryFailOrphanExpiredAttempts` and executed it during `FailStaleTasks` transactions to close expired running attempts no longer referenced by `TASKS.current_attempt_id`, preventing quota leakage from stale orphan records.
+
+[#19] API handlers accepted unbounded JSON request bodies
+Source: Best practice (Defensive request size limits)
+Fix: Added bounded JSON body decoding with `http.MaxBytesReader` across JSON-mutating handlers and return `413 Request Entity Too Large` for oversized payloads.
+
+[#20] Invalid `job_id` values were treated as not-found instead of invalid input
+Source: Best practice (Explicit input validation errors)
+Fix: Introduced `ErrInvalidJobID` in `PostgresJobStore.GetJob` for malformed UUIDs and mapped this in handlers to `400 Bad Request` for `/jobs/{job_id}` and `/jobs/{job_id}/results`.
+
+[#21] Manifest fallback could upload oversized manifest payloads
+Source: copilot-instructions.md (gRPC Message Scalability manifest threshold)
+Fix: Added a post-serialization manifest size check before upload in `WorkerServer.Register`; if marshaled manifest exceeds threshold, return `ResourceExhausted` and skip upload.

@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -113,7 +114,7 @@ func TestPostgresJobStore_GetJob_ReturnsNilForMissing(t *testing.T) {
 	}
 }
 
-func TestPostgresJobStore_GetJob_ReturnsNilForInvalidUUID(t *testing.T) {
+func TestPostgresJobStore_GetJob_ReturnsErrorForInvalidUUID(t *testing.T) {
 	db, _, err := sqlmock.New()
 	if err != nil {
 		t.Fatalf("failed to create sqlmock: %v", err)
@@ -123,8 +124,8 @@ func TestPostgresJobStore_GetJob_ReturnsNilForInvalidUUID(t *testing.T) {
 	store := NewPostgresJobStore(db)
 
 	rec, err := store.GetJob(context.Background(), "not-a-uuid")
-	if err != nil {
-		t.Fatalf("expected nil error for invalid UUID, got %v", err)
+	if !errors.Is(err, ErrInvalidJobID) {
+		t.Fatalf("expected ErrInvalidJobID, got %v", err)
 	}
 	if rec != nil {
 		t.Fatalf("expected nil for invalid UUID, got %+v", rec)

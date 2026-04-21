@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"sort"
 	"sync"
 	"time"
@@ -19,6 +20,8 @@ type JobRecord struct {
 	Reducers  int
 	CreatedAt time.Time
 }
+
+var ErrInvalidJobID = errors.New("invalid job id")
 
 // JobStore abstracts persistent job storage for the API handlers.
 // Production uses PostgresJobStore; tests use MemoryJobStore.
@@ -92,7 +95,7 @@ func (s *PostgresJobStore) CreateJob(ctx context.Context, rec JobRecord) error {
 func (s *PostgresJobStore) GetJob(ctx context.Context, jobID string) (*JobRecord, error) {
 	jobUUID, err := uuid.Parse(jobID)
 	if err != nil {
-		return nil, nil // invalid UUID → not found
+		return nil, ErrInvalidJobID
 	}
 
 	var rec JobRecord
