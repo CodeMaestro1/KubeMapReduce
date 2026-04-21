@@ -1,0 +1,73 @@
+syntax = "proto3";
+
+package mapreduce;
+
+option go_package = "kubemapreduce/proto";
+
+service WorkerService {
+  rpc Register (RegisterRequest) returns (TaskAssignment);
+  rpc Heartbeat (HeartbeatRequest) returns (HeartbeatResponse);
+  rpc TaskComplete (TaskCompleteRequest) returns (Ack);
+  rpc TaskFailed (TaskFailedRequest) returns (Ack);
+}
+
+enum TaskType {
+  MAP = 0;
+  REDUCE = 1;
+}
+
+message RegisterRequest {
+  string task_id = 1;
+  string attempt_id = 2; 
+}
+
+message TaskAssignment { 
+  string task_id = 1;
+  string attempt_id = 2; 
+  string job_id = 3;
+  TaskType type = 4;
+  string code_location = 5;
+  string combiner_location = 6; 
+  string runtime_env = 7;      
+  repeated string data_locations = 8; 
+  int64 byte_start = 9;        
+  int64 byte_end = 10;         
+  int32 partition_id = 11;     
+  bool is_manifest = 12; 
+  int32 total_reducers = 13;
+  string split_checksum = 14;
+  string lease_id = 15;
+}
+
+message HeartbeatRequest {
+  string task_id = 1;
+  string attempt_id = 2;
+  string lease_id = 3;
+}
+
+message HeartbeatResponse { 
+  enum Action {
+    CONTINUE = 0;
+    TERMINATE = 1; 
+  }
+  Action action = 1;
+}
+
+message TaskCompleteRequest { 
+  string task_id = 1; 
+  string attempt_id = 2;
+  string lease_id = 3;
+  repeated string output_locations = 4;
+  repeated string output_checksums = 5;
+}
+
+message TaskFailedRequest {
+  string task_id = 1;
+  string attempt_id = 2;
+  string lease_id = 3;      // Fencing: Manager rejects stale failures
+  string error_message = 4;
+}
+
+message Ack {
+  bool success = 1;
+}

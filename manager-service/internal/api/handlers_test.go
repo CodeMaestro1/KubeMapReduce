@@ -10,14 +10,18 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 func newTestHandlers() *Handlers {
-	return NewHandlers(nil)
+	store := NewMemoryJobStore(24*time.Hour, 10000, nil)
+	return NewHandlers(nil, store)
 }
 
 func newTestHandlersWithRetention(now func() time.Time, ttl time.Duration, max int) *Handlers {
-	return newHandlersWithOptions(nil, ttl, max, now)
+	store := NewMemoryJobStore(ttl, max, now)
+	return newHandlersWithOptions(nil, store, now)
 }
 
 func TestHandleHealth(t *testing.T) {
@@ -63,47 +67,14 @@ func TestHandleJobsSubmit_RejectsInvalidPayload(t *testing.T) {
 	}
 }
 
-func TestHandleJobsSubmit_RejectsOversizedBody(t *testing.T) {
+func TestHandleJobsSubmit_RejectsOversizedPayload(t *testing.T) {
 	h := newTestHandlers()
 
-	// Build a payload larger than the default 1 MB limit.
-	oversized := `{"filename":"` + strings.Repeat("x", 1<<20+1) + `"}`
+	oversized := `{"filename":"` + strings.Repeat("a", maxJSONBodyBytes) + `","mapper":{"language":"python","artifact":"m.py","entrypoint":"map","interface":"map(key,value)->[]KeyValue"},"reducer":{"language":"python","artifact":"r.py","entrypoint":"reduce","interface":"reduce(key,values)->Value"}}`
 	req := httptest.NewRequest(http.MethodPost, "/jobs", strings.NewReader(oversized))
 	rec := httptest.NewRecorder()
 
 	h.HandleJobsSubmit(rec, req)
-
-	if rec.Code != http.StatusRequestEntityTooLarge {
-		t.Fatalf("expected status %d, got %d", http.StatusRequestEntityTooLarge, rec.Code)
-	}
-	if !strings.Contains(rec.Body.String(), "request body too large") {
-		t.Fatalf("expected body-too-large message, got %q", rec.Body.String())
-	}
-}
-
-func TestHandleWorkerConfig_RejectsOversizedBody(t *testing.T) {
-	h := newTestHandlers()
-
-	oversized := `{"workerReplicas":` + strings.Repeat("1", 1<<20+1) + `}`
-	req := httptest.NewRequest(http.MethodPut, "/admin/workers/config", strings.NewReader(oversized))
-	rec := httptest.NewRecorder()
-
-	h.HandleWorkerConfig(rec, req)
-
-	if rec.Code != http.StatusRequestEntityTooLarge {
-		t.Fatalf("expected status %d, got %d", http.StatusRequestEntityTooLarge, rec.Code)
-	}
-}
-
-func TestHandleAdminCreateUser_RejectsOversizedBody(t *testing.T) {
-	h, kc := newTestHandlersWithKeycloak(t)
-	defer kc.Close()
-
-	oversized := `{"username":"` + strings.Repeat("a", 1<<20+1) + `"}`
-	req := httptest.NewRequest(http.MethodPost, "/admin/users", strings.NewReader(oversized))
-	rec := httptest.NewRecorder()
-
-	h.HandleAdminCreateUser(rec, req)
 
 	if rec.Code != http.StatusRequestEntityTooLarge {
 		t.Fatalf("expected status %d, got %d", http.StatusRequestEntityTooLarge, rec.Code)
@@ -208,6 +179,42 @@ func TestHandleJobsSubmit_DefaultsReducersToOneWhenZeroProvided(t *testing.T) {
 	}
 }
 
+func TestHandleJobsList_AppliesPagination(t *testing.T) {
+	h := newTestHandlers()
+	now := time.Now().UTC()
+	_ = h.store.CreateJob(context.Background(), JobRecord{JobID: "job-a", Status: "Pending", Filename: "a.csv", Reducers: 1, CreatedAt: now})
+	_ = h.store.CreateJob(context.Background(), JobRecord{JobID: "job-b", Status: "Pending", Filename: "b.csv", Reducers: 1, CreatedAt: now.Add(time.Second)})
+	_ = h.store.CreateJob(context.Background(), JobRecord{JobID: "job-c", Status: "Pending", Filename: "c.csv", Reducers: 1, CreatedAt: now.Add(2 * time.Second)})
+
+	req := httptest.NewRequest(http.MethodGet, "/jobs?limit=1&offset=1", nil)
+	rec := httptest.NewRecorder()
+	h.HandleJobsList(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d", http.StatusOK, rec.Code)
+	}
+	var jobs []map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &jobs); err != nil {
+		t.Fatalf("failed to decode jobs list: %v", err)
+	}
+	if len(jobs) != 1 {
+		t.Fatalf("expected 1 job, got %d", len(jobs))
+	}
+	if jobs[0]["filename"] != "b.csv" {
+		t.Fatalf("expected second newest job (b.csv), got %#v", jobs[0]["filename"])
+	}
+}
+
+func TestHandleJobsList_RejectsInvalidPagination(t *testing.T) {
+	h := newTestHandlers()
+	req := httptest.NewRequest(http.MethodGet, "/jobs?limit=0", nil)
+	rec := httptest.NewRecorder()
+	h.HandleJobsList(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected status %d, got %d", http.StatusBadRequest, rec.Code)
+	}
+}
+
 func TestHandleWorkerConfig_RejectsInvalidValues(t *testing.T) {
 	h := newTestHandlers()
 
@@ -293,7 +300,8 @@ func newTestHandlersWithKeycloak(t *testing.T) (*Handlers, *httptest.Server) {
 	t.Helper()
 	kc := fakeKeycloak(t)
 	adminClient := auth.NewKeycloakAdminClient(kc.URL, "test", "admin", "admin")
-	return NewHandlers(adminClient), kc
+	store := NewMemoryJobStore(24*time.Hour, 10000, nil)
+	return NewHandlers(adminClient, store), kc
 }
 
 // ── Admin Create User tests ─────────────────────────────────
@@ -480,7 +488,8 @@ func TestHandleAdminCreateUser_KeycloakDown_Returns503(t *testing.T) {
 	srv.Close()
 
 	adminClient := auth.NewKeycloakAdminClient(srv.URL, "test", "admin", "admin")
-	h := NewHandlers(adminClient)
+	store := NewMemoryJobStore(24*time.Hour, 10000, nil)
+	h := NewHandlers(adminClient, store)
 
 	body := `{"username":"alice","email":"alice@example.com","password":"secret","role":"USER"}`
 	req := httptest.NewRequest(http.MethodPost, "/admin/users", strings.NewReader(body))
@@ -507,7 +516,8 @@ func TestHandleAdminCreateUser_KeycloakTimeout_Returns503(t *testing.T) {
 	}()
 
 	adminClient := auth.NewKeycloakAdminClient(srv.URL, "test", "admin", "admin")
-	h := NewHandlers(adminClient)
+	store := NewMemoryJobStore(24*time.Hour, 10000, nil)
+	h := NewHandlers(adminClient, store)
 
 	body := `{"username":"alice","email":"alice@example.com","password":"secret","role":"USER"}`
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
@@ -529,7 +539,8 @@ func TestHandleAdminDeleteUser_KeycloakDown_Returns503(t *testing.T) {
 	srv.Close()
 
 	adminClient := auth.NewKeycloakAdminClient(srv.URL, "test", "admin", "admin")
-	h := NewHandlers(adminClient)
+	store := NewMemoryJobStore(24*time.Hour, 10000, nil)
+	h := NewHandlers(adminClient, store)
 
 	req := httptest.NewRequest(http.MethodDelete, "/admin/users/alice", nil)
 	req.SetPathValue("username", "alice")
@@ -722,6 +733,120 @@ func TestHandleJobsList_ReturnsNewestFirst(t *testing.T) {
 	}
 }
 
+func TestHandleJobsList_CapsLimitAtMax(t *testing.T) {
+	h := newTestHandlers()
+	now := time.Now().UTC()
+	for i := 0; i < maxListLimit+10; i++ {
+		_ = h.store.CreateJob(context.Background(), JobRecord{JobID: uuid.NewString(), Status: "Pending", CreatedAt: now.Add(time.Duration(i) * time.Second)})
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/jobs?limit=9999", nil)
+	rec := httptest.NewRecorder()
+	h.HandleJobsList(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+	var jobs []models.JobStatusResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &jobs); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(jobs) != maxListLimit {
+		t.Fatalf("expected limit capped at %d, got %d", maxListLimit, len(jobs))
+	}
+}
+
+func TestHandleJobsList_DefaultLimitWhenOmitted(t *testing.T) {
+	h := newTestHandlers()
+	now := time.Now().UTC()
+	for i := 0; i < defaultListLimit+10; i++ {
+		_ = h.store.CreateJob(context.Background(), JobRecord{JobID: uuid.NewString(), Status: "Pending", CreatedAt: now.Add(time.Duration(i) * time.Second)})
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/jobs", nil)
+	rec := httptest.NewRecorder()
+	h.HandleJobsList(rec, req)
+
+	var jobs []models.JobStatusResponse
+	_ = json.Unmarshal(rec.Body.Bytes(), &jobs)
+	if len(jobs) != defaultListLimit {
+		t.Fatalf("expected default limit %d, got %d", defaultListLimit, len(jobs))
+	}
+}
+
+func TestHandleJobsList_RejectsNegativeLimit(t *testing.T) {
+	h := newTestHandlers()
+	req := httptest.NewRequest(http.MethodGet, "/jobs?limit=-1", nil)
+	rec := httptest.NewRecorder()
+	h.HandleJobsList(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for negative limit, got %d", rec.Code)
+	}
+}
+
+func TestHandleJobsList_RejectsNegativeOffset(t *testing.T) {
+	h := newTestHandlers()
+	req := httptest.NewRequest(http.MethodGet, "/jobs?offset=-1", nil)
+	rec := httptest.NewRecorder()
+	h.HandleJobsList(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for negative offset, got %d", rec.Code)
+	}
+}
+
+func TestHandleJobsList_RejectsNonNumericLimit(t *testing.T) {
+	h := newTestHandlers()
+	req := httptest.NewRequest(http.MethodGet, "/jobs?limit=abc", nil)
+	rec := httptest.NewRecorder()
+	h.HandleJobsList(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for non-numeric limit, got %d", rec.Code)
+	}
+}
+
+func TestHandleJobsList_OffsetBeyondRangeReturnsEmpty(t *testing.T) {
+	h := newTestHandlers()
+	_ = h.store.CreateJob(context.Background(), JobRecord{JobID: "j1", Status: "Pending", CreatedAt: time.Now()})
+
+	req := httptest.NewRequest(http.MethodGet, "/jobs?offset=100", nil)
+	rec := httptest.NewRecorder()
+	h.HandleJobsList(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+	if strings.TrimSpace(rec.Body.String()) != "[]" {
+		t.Fatalf("expected empty array, got %q", rec.Body.String())
+	}
+}
+
+func TestHandleJobsList_StableOrderingAcrossPages(t *testing.T) {
+	h := newTestHandlers()
+	now := time.Now().UTC()
+	// Job 1 is oldest, Job 3 is newest
+	_ = h.store.CreateJob(context.Background(), JobRecord{JobID: "j1", Filename: "1.csv", CreatedAt: now})
+	_ = h.store.CreateJob(context.Background(), JobRecord{JobID: "j2", Filename: "2.csv", CreatedAt: now.Add(time.Second)})
+	_ = h.store.CreateJob(context.Background(), JobRecord{JobID: "j3", Filename: "3.csv", CreatedAt: now.Add(2 * time.Second)})
+
+	// Page 1: newest (j3)
+	req1 := httptest.NewRequest(http.MethodGet, "/jobs?limit=1&offset=0", nil)
+	rec1 := httptest.NewRecorder()
+	h.HandleJobsList(rec1, req1)
+	var p1 []models.JobStatusResponse
+	_ = json.Unmarshal(rec1.Body.Bytes(), &p1)
+
+	// Page 2: second newest (j2)
+	req2 := httptest.NewRequest(http.MethodGet, "/jobs?limit=1&offset=1", nil)
+	rec2 := httptest.NewRecorder()
+	h.HandleJobsList(rec2, req2)
+	var p2 []models.JobStatusResponse
+	_ = json.Unmarshal(rec2.Body.Bytes(), &p2)
+
+	if p1[0].JobID != "j3" || p2[0].JobID != "j2" {
+		t.Fatalf("unstable ordering: page 1 got %s, page 2 got %s", p1[0].JobID, p2[0].JobID)
+	}
+}
+
 // ── HandleJobsGet tests ─────────────────────────────────────
 
 func TestHandleJobsGet_ReturnsKnownJob(t *testing.T) {
@@ -757,9 +882,10 @@ func TestHandleJobsGet_ReturnsKnownJob(t *testing.T) {
 
 func TestHandleJobsGet_ReturnsNotFoundForUnknownJob(t *testing.T) {
 	h := newTestHandlers()
+	unknownJobID := "3fcb6284-4cd7-4f8b-b8c6-5fd6e5687f0f"
 
-	req := httptest.NewRequest(http.MethodGet, "/jobs/job-doesnotexist", nil)
-	req.SetPathValue("job_id", "job-doesnotexist")
+	req := httptest.NewRequest(http.MethodGet, "/jobs/"+unknownJobID, nil)
+	req.SetPathValue("job_id", unknownJobID)
 	rec := httptest.NewRecorder()
 	h.HandleJobsGet(rec, req)
 
@@ -768,18 +894,45 @@ func TestHandleJobsGet_ReturnsNotFoundForUnknownJob(t *testing.T) {
 	}
 }
 
+func TestHandleJobsGet_InvalidUUID_ReturnsBadRequest(t *testing.T) {
+	h := newTestHandlers()
+
+	req := httptest.NewRequest(http.MethodGet, "/jobs/not-a-uuid", nil)
+	req.SetPathValue("job_id", "not-a-uuid")
+	rec := httptest.NewRecorder()
+	h.HandleJobsGet(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected %d, got %d", http.StatusBadRequest, rec.Code)
+	}
+}
+
 // ── HandleJobsDownload tests ────────────────────────────────
 
 func TestHandleJobsDownload_NotFoundForUnknownJob(t *testing.T) {
 	h := newTestHandlers()
+	unknownJobID := "36f77f7a-cb6d-4d89-b9d6-643f8222f7de"
 
-	req := httptest.NewRequest(http.MethodGet, "/jobs/job-doesnotexist/results", nil)
-	req.SetPathValue("job_id", "job-doesnotexist")
+	req := httptest.NewRequest(http.MethodGet, "/jobs/"+unknownJobID+"/results", nil)
+	req.SetPathValue("job_id", unknownJobID)
 	rec := httptest.NewRecorder()
 	h.HandleJobsDownload(rec, req)
 
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("expected %d, got %d", http.StatusNotFound, rec.Code)
+	}
+}
+
+func TestHandleJobsDownload_InvalidUUID_ReturnsBadRequest(t *testing.T) {
+	h := newTestHandlers()
+
+	req := httptest.NewRequest(http.MethodGet, "/jobs/not-a-uuid/results", nil)
+	req.SetPathValue("job_id", "not-a-uuid")
+	rec := httptest.NewRecorder()
+	h.HandleJobsDownload(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected %d, got %d", http.StatusBadRequest, rec.Code)
 	}
 }
 

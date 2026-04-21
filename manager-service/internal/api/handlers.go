@@ -2,63 +2,54 @@ package api
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"net/http"
-	"sort"
+	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"kubemapreduce/auth-service/pkg/auth"
 	"kubemapreduce/manager-service/internal/models"
 	"kubemapreduce/manager-service/internal/validation"
 	"kubemapreduce/manager-service/pkg/httputil"
+
+	"github.com/google/uuid"
 )
 
 // Handlers holds HTTP handler state for the API server.
-//
-// TEMPORARY: Job storage uses an in-memory sync.Map. This means:
-//   - All job data is lost on server restart.
-//   - Job visibility is not shared across multiple replicas.
-//
-// This will be replaced with a persistent store (e.g. database) in a future release.
+// Job storage is delegated to a JobStore implementation, which is backed
+// by PostgreSQL in production for replica-safe, persistent state.
 type Handlers struct {
-	adminClient   *auth.KeycloakAdminClient
-	jobs          sync.Map // key: string (jobID) → models.JobStatusResponse  [interim: in-memory only]
-	jobsMu        sync.Mutex
-	jobStatusTTL  time.Duration
-	maxStoredJobs int
-	now           func() time.Time
+	adminClient *auth.KeycloakAdminClient
+	store       JobStore
+	now         func() time.Time
 }
 
 const (
-	defaultReducers      = 1
-	defaultJobStatusTTL  = 24 * time.Hour
-	defaultMaxStoredJobs = 10000
+	defaultReducers  = 1
+	defaultListLimit = 100
+	maxListLimit     = 500
+	maxJSONBodyBytes = 1 << 20 // 1 MiB
 )
 
-func NewHandlers(adminClient *auth.KeycloakAdminClient) *Handlers {
-	return newHandlersWithOptions(adminClient, defaultJobStatusTTL, defaultMaxStoredJobs, time.Now)
+// NewHandlers creates production-ready Handlers backed by the given JobStore.
+func NewHandlers(adminClient *auth.KeycloakAdminClient, store JobStore) *Handlers {
+	return &Handlers{
+		adminClient: adminClient,
+		store:       store,
+		now:         time.Now,
+	}
 }
 
-func newHandlersWithOptions(adminClient *auth.KeycloakAdminClient, jobStatusTTL time.Duration, maxStoredJobs int, now func() time.Time) *Handlers {
-	if jobStatusTTL <= 0 {
-		jobStatusTTL = defaultJobStatusTTL
-	}
-	if maxStoredJobs <= 0 {
-		maxStoredJobs = defaultMaxStoredJobs
-	}
+func newHandlersWithOptions(adminClient *auth.KeycloakAdminClient, store JobStore, now func() time.Time) *Handlers {
 	if now == nil {
 		now = time.Now
 	}
-
 	return &Handlers{
-		adminClient:   adminClient,
-		jobStatusTTL:  jobStatusTTL,
-		maxStoredJobs: maxStoredJobs,
-		now:           now,
+		adminClient: adminClient,
+		store:       store,
+		now:         now,
 	}
 }
 
@@ -100,7 +91,7 @@ func (h *Handlers) HandleJobsSubmit(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var request models.JobSubmissionRequest
-	if err := httputil.DecodeJSONBody(w, r, &request, 0); err != nil {
+	if !decodeJSONBody(w, r, &request, "invalid job payload") {
 		return
 	}
 
@@ -108,30 +99,25 @@ func (h *Handlers) HandleJobsSubmit(w http.ResponseWriter, r *http.Request) {
 		request.Reducers = defaultReducers
 	}
 
-	h.cleanupJobsStore()
-
 	if err := validation.ValidateJobSubmission(request); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 
-	jobID, err := generateJobID()
-	if err != nil {
-		http.Error(w, "failed to create job id", http.StatusInternalServerError)
-		return
-	}
-
+	jobID := uuid.New().String()
 	now := h.now().UTC()
-	jobStatus := models.JobStatusResponse{
+
+	rec := JobRecord{
 		JobID:     jobID,
-		Status:    "accepted",
-		Message:   "job specification validated and accepted (metadata only — no file transfer)",
+		Status:    "Pending",
 		Filename:  request.Filename,
 		Reducers:  request.Reducers,
 		CreatedAt: now,
 	}
-	h.jobs.Store(jobID, jobStatus)
-	h.cleanupJobsStore()
+	if err := h.store.CreateJob(r.Context(), rec); err != nil {
+		http.Error(w, "failed to persist job", http.StatusInternalServerError)
+		return
+	}
 
 	response := models.JobSubmissionResponse{
 		JobID:   jobID,
@@ -150,23 +136,57 @@ func (h *Handlers) HandleJobsList(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	h.cleanupJobsStore()
+	limit, offset, err := parsePagination(r)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
 
-	var list []models.JobStatusResponse
-	h.jobs.Range(func(_, v any) bool {
-		list = append(list, v.(models.JobStatusResponse))
-		return true
-	})
-	sort.Slice(list, func(i, j int) bool {
-		return list[i].CreatedAt.After(list[j].CreatedAt)
-	})
-	if list == nil {
-		list = []models.JobStatusResponse{}
+	records, err := h.store.ListJobs(r.Context(), limit, offset)
+	if err != nil {
+		http.Error(w, "failed to list jobs", http.StatusInternalServerError)
+		return
+	}
+
+	list := make([]models.JobStatusResponse, 0, len(records))
+	for _, rec := range records {
+		list = append(list, models.JobStatusResponse{
+			JobID:     rec.JobID,
+			Status:    rec.Status,
+			Message:   jobMessage(rec.Status),
+			Filename:  rec.Filename,
+			Reducers:  rec.Reducers,
+			CreatedAt: rec.CreatedAt,
+		})
 	}
 
 	if err := httputil.WriteJSON(w, http.StatusOK, list); err != nil {
 		return
 	}
+}
+
+func parsePagination(r *http.Request) (int, int, error) {
+	limit := defaultListLimit
+	if rawLimit := strings.TrimSpace(r.URL.Query().Get("limit")); rawLimit != "" {
+		parsedLimit, err := strconv.Atoi(rawLimit)
+		if err != nil || parsedLimit <= 0 {
+			return 0, 0, errors.New("limit must be a positive integer")
+		}
+		if parsedLimit > maxListLimit {
+			parsedLimit = maxListLimit
+		}
+		limit = parsedLimit
+	}
+
+	offset := 0
+	if rawOffset := strings.TrimSpace(r.URL.Query().Get("offset")); rawOffset != "" {
+		parsedOffset, err := strconv.Atoi(rawOffset)
+		if err != nil || parsedOffset < 0 {
+			return 0, 0, errors.New("offset must be a non-negative integer")
+		}
+		offset = parsedOffset
+	}
+	return limit, offset, nil
 }
 
 func (h *Handlers) HandleJobsGet(w http.ResponseWriter, r *http.Request) {
@@ -175,36 +195,65 @@ func (h *Handlers) HandleJobsGet(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	h.cleanupJobsStore()
-
 	jobID := r.PathValue("job_id")
 	if jobID == "" {
 		http.Error(w, "job id required", http.StatusBadRequest)
 		return
 	}
+	if _, err := uuid.Parse(jobID); err != nil {
+		http.Error(w, "invalid job id", http.StatusBadRequest)
+		return
+	}
 
-	v, ok := h.jobs.Load(jobID)
-	if !ok {
+	rec, err := h.store.GetJob(r.Context(), jobID)
+	if err != nil {
+		if errors.Is(err, ErrInvalidJobID) {
+			http.Error(w, "invalid job id", http.StatusBadRequest)
+			return
+		}
+		http.Error(w, "failed to retrieve job", http.StatusInternalServerError)
+		return
+	}
+	if rec == nil {
 		http.Error(w, "job not found", http.StatusNotFound)
 		return
 	}
 
-	if err := httputil.WriteJSON(w, http.StatusOK, v.(models.JobStatusResponse)); err != nil {
+	resp := models.JobStatusResponse{
+		JobID:     rec.JobID,
+		Status:    rec.Status,
+		Message:   jobMessage(rec.Status),
+		Filename:  rec.Filename,
+		Reducers:  rec.Reducers,
+		CreatedAt: rec.CreatedAt,
+	}
+
+	if err := httputil.WriteJSON(w, http.StatusOK, resp); err != nil {
 		return
 	}
 }
 
 func (h *Handlers) HandleJobsDownload(w http.ResponseWriter, r *http.Request) {
-	h.cleanupJobsStore()
-
 	jobID := r.PathValue("job_id")
 	if jobID == "" {
 		http.Error(w, "job id required", http.StatusBadRequest)
 		return
 	}
+	if _, err := uuid.Parse(jobID); err != nil {
+		http.Error(w, "invalid job id", http.StatusBadRequest)
+		return
+	}
 
-	_, ok := h.jobs.Load(jobID)
-	if !ok {
+	rec, err := h.store.GetJob(r.Context(), jobID)
+	if err != nil {
+		if errors.Is(err, ErrInvalidJobID) {
+			http.Error(w, "invalid job id", http.StatusBadRequest)
+			return
+		}
+		http.Error(w, "failed to retrieve job", http.StatusInternalServerError)
+		return
+	}
+	if rec == nil {
 		http.Error(w, "job not found", http.StatusNotFound)
 		return
 	}
@@ -212,7 +261,7 @@ func (h *Handlers) HandleJobsDownload(w http.ResponseWriter, r *http.Request) {
 	if err := httputil.WriteJSON(w, http.StatusNotImplemented, map[string]interface{}{
 		"status":  "not_implemented",
 		"message": "result download is not available yet; job processing backend is not implemented",
-		"jobId":   jobID,
+		"jobId":   rec.JobID,
 	}); err != nil {
 		return
 	}
@@ -225,7 +274,7 @@ func (h *Handlers) HandleConfigureNodes(w http.ResponseWriter, r *http.Request) 
 	}
 
 	var req models.NodeConfigRequest
-	if err := httputil.DecodeJSONBody(w, r, &req, 0); err != nil {
+	if !decodeJSONBody(w, r, &req, "invalid node config payload") {
 		return
 	}
 
@@ -260,7 +309,7 @@ func (h *Handlers) HandleWorkerConfig(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var request models.WorkerConfigRequest
-	if err := httputil.DecodeJSONBody(w, r, &request, 0); err != nil {
+	if !decodeJSONBody(w, r, &request, "invalid worker config payload") {
 		return
 	}
 
@@ -283,69 +332,23 @@ func (h *Handlers) HandleWorkerConfig(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func generateJobID() (string, error) {
-	raw := make([]byte, 12)
-	if _, err := rand.Read(raw); err != nil {
-		return "", err
-	}
-	return "job-" + hex.EncodeToString(raw), nil
-}
-
-func (h *Handlers) cleanupJobsStore() {
-	h.jobsMu.Lock()
-	defer h.jobsMu.Unlock()
-
-	now := h.now().UTC()
-	h.jobs.Range(func(k, v any) bool {
-		jobID, ok := k.(string)
-		if !ok {
-			return true
-		}
-		status, ok := v.(models.JobStatusResponse)
-		if !ok {
-			h.jobs.Delete(jobID)
-			return true
-		}
-		if now.Sub(status.CreatedAt) > h.jobStatusTTL {
-			h.jobs.Delete(jobID)
-		}
-		return true
-	})
-
-	if h.maxStoredJobs <= 0 {
-		return
-	}
-
-	type jobRecord struct {
-		jobID   string
-		created time.Time
-	}
-
-	records := make([]jobRecord, 0)
-	h.jobs.Range(func(k, v any) bool {
-		jobID, ok := k.(string)
-		if !ok {
-			return true
-		}
-		status, ok := v.(models.JobStatusResponse)
-		if !ok {
-			h.jobs.Delete(jobID)
-			return true
-		}
-		records = append(records, jobRecord{jobID: jobID, created: status.CreatedAt})
-		return true
-	})
-
-	if len(records) <= h.maxStoredJobs {
-		return
-	}
-
-	sort.Slice(records, func(i, j int) bool {
-		return records[i].created.Before(records[j].created)
-	})
-
-	for _, record := range records[:len(records)-h.maxStoredJobs] {
-		h.jobs.Delete(record.jobID)
+// jobMessage derives a human-readable message from the DDS job status.
+func jobMessage(status string) string {
+	switch status {
+	case "Pending":
+		return "job specification validated and accepted"
+	case "Running":
+		return "job is currently running"
+	case "Completed":
+		return "job completed successfully"
+	case "Failed":
+		return "job failed"
+	case "Cancelled":
+		return "job was cancelled"
+	case "Cleaning":
+		return "job is cleaning up temporary resources"
+	default:
+		return ""
 	}
 }
 
@@ -363,7 +366,7 @@ func (h *Handlers) HandleAdminCreateUser(w http.ResponseWriter, r *http.Request)
 	}
 
 	var req models.CreateUserRequest
-	if err := httputil.DecodeJSONBody(w, r, &req, 0); err != nil {
+	if !decodeJSONBody(w, r, &req, "invalid request payload") {
 		return
 	}
 
@@ -438,4 +441,19 @@ func isAuthDependencyError(err error) bool {
 	return auth.IsServiceUnavailable(err) ||
 		errors.Is(err, context.DeadlineExceeded) ||
 		errors.Is(err, context.Canceled)
+}
+
+func decodeJSONBody(w http.ResponseWriter, r *http.Request, out any, invalidMessage string) bool {
+	r.Body = http.MaxBytesReader(w, r.Body, maxJSONBodyBytes)
+	dec := json.NewDecoder(r.Body)
+	if err := dec.Decode(out); err != nil {
+		var maxErr *http.MaxBytesError
+		if errors.As(err, &maxErr) {
+			http.Error(w, "request payload too large", http.StatusRequestEntityTooLarge)
+			return false
+		}
+		http.Error(w, invalidMessage, http.StatusBadRequest)
+		return false
+	}
+	return true
 }

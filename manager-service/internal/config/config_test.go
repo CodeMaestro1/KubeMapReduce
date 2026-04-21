@@ -11,6 +11,8 @@ func TestLoad_Defaults(t *testing.T) {
 		"KEYCLOAK_BASE_URL", "KEYCLOAK_REALM", "KEYCLOAK_AUDIENCE",
 		"KEYCLOAK_JWKS_URL", "KEYCLOAK_ISSUER", "SERVER_ADDR",
 		"KEYCLOAK_ADMIN_USERNAME", "KEYCLOAK_ADMIN_PASSWORD",
+		"GRPC_ADDR", "GRPC_PORT", "MANAGER_INTERNAL_API_KEY",
+		"ALLOW_INSECURE_INTERNAL_CANCEL_AUTH", "MANAGER_WORKER_RPC_TOKEN", "GRPC_TLS_CERT_FILE", "GRPC_TLS_KEY_FILE", "ENABLE_GRPC_REFLECTION", "ALLOW_INSECURE_WORKER_RPC",
 	}
 	for _, key := range envVars {
 		t.Setenv(key, "")
@@ -36,11 +38,35 @@ func TestLoad_Defaults(t *testing.T) {
 	if cfg.ServerAddr != ":8081" {
 		t.Errorf("ServerAddr = %q, want %q", cfg.ServerAddr, ":8081")
 	}
+	if cfg.GRPCAddr != ":50051" {
+		t.Errorf("GRPCAddr = %q, want %q", cfg.GRPCAddr, ":50051")
+	}
 	if cfg.AdminUsername != "admin" {
 		t.Errorf("AdminUsername = %q, want %q", cfg.AdminUsername, "admin")
 	}
 	if cfg.AdminPassword != "admin" {
 		t.Errorf("AdminPassword = %q, want %q", cfg.AdminPassword, "admin")
+	}
+	if cfg.MinioEndpoint != "" || cfg.MinioAccessKey != "" || cfg.MinioSecretKey != "" {
+		t.Errorf("expected MinIO defaults to be disabled/empty, got endpoint=%q access=%q secret=%q", cfg.MinioEndpoint, cfg.MinioAccessKey, cfg.MinioSecretKey)
+	}
+	if cfg.InternalAPIKey != "" {
+		t.Errorf("expected InternalAPIKey default to be empty")
+	}
+	if cfg.AllowInsecureInternalCancelAuth {
+		t.Errorf("expected insecure internal cancel auth disabled by default")
+	}
+	if cfg.WorkerRPCToken != "" {
+		t.Errorf("expected WorkerRPCToken default to be empty")
+	}
+	if cfg.GRPCTLSCertFile != "" || cfg.GRPCTLSKeyFile != "" {
+		t.Errorf("expected gRPC TLS file defaults to be empty")
+	}
+	if cfg.EnableGRPCReflection {
+		t.Errorf("expected gRPC reflection to be disabled by default")
+	}
+	if cfg.AllowInsecureWorkerRPC {
+		t.Errorf("expected insecure worker RPC mode disabled by default")
 	}
 
 	expectedJWKS := "http://localhost:8080/realms/mapreduce/protocol/openid-connect/certs"
@@ -61,8 +87,19 @@ func TestLoad_CustomEnvVars(t *testing.T) {
 	t.Setenv("KEYCLOAK_JWKS_URL", "http://kc:9090/jwks")
 	t.Setenv("KEYCLOAK_ISSUER", "http://kc:9090/issuer")
 	t.Setenv("SERVER_ADDR", ":9999")
+	t.Setenv("GRPC_ADDR", "0.0.0.0:50052")
 	t.Setenv("KEYCLOAK_ADMIN_USERNAME", "u")
 	t.Setenv("KEYCLOAK_ADMIN_PASSWORD", "p")
+	t.Setenv("MINIO_ENDPOINT", "minio.default.svc.cluster.local:9000")
+	t.Setenv("MINIO_ACCESS_KEY", "access")
+	t.Setenv("MINIO_SECRET_KEY", "secret")
+	t.Setenv("MANAGER_INTERNAL_API_KEY", "internal-secret")
+	t.Setenv("ALLOW_INSECURE_INTERNAL_CANCEL_AUTH", "true")
+	t.Setenv("MANAGER_WORKER_RPC_TOKEN", "worker-secret")
+	t.Setenv("GRPC_TLS_CERT_FILE", "/certs/tls.crt")
+	t.Setenv("GRPC_TLS_KEY_FILE", "/certs/tls.key")
+	t.Setenv("ENABLE_GRPC_REFLECTION", "true")
+	t.Setenv("ALLOW_INSECURE_WORKER_RPC", "true")
 
 	cfg, err := Load()
 	if err != nil {
@@ -87,11 +124,44 @@ func TestLoad_CustomEnvVars(t *testing.T) {
 	if cfg.ServerAddr != ":9999" {
 		t.Errorf("ServerAddr = %q, want %q", cfg.ServerAddr, ":9999")
 	}
+	if cfg.GRPCAddr != "0.0.0.0:50052" {
+		t.Errorf("GRPCAddr = %q, want %q", cfg.GRPCAddr, "0.0.0.0:50052")
+	}
 	if cfg.AdminUsername != "u" {
 		t.Errorf("AdminUsername = %q, want %q", cfg.AdminUsername, "u")
 	}
 	if cfg.AdminPassword != "p" {
 		t.Errorf("AdminPassword = %q, want %q", cfg.AdminPassword, "p")
+	}
+	if cfg.MinioEndpoint != "minio.default.svc.cluster.local:9000" {
+		t.Errorf("MinioEndpoint = %q, want %q", cfg.MinioEndpoint, "minio.default.svc.cluster.local:9000")
+	}
+	if cfg.MinioAccessKey != "access" {
+		t.Errorf("MinioAccessKey = %q, want %q", cfg.MinioAccessKey, "access")
+	}
+	if cfg.MinioSecretKey != "secret" {
+		t.Errorf("MinioSecretKey = %q, want %q", cfg.MinioSecretKey, "secret")
+	}
+	if cfg.InternalAPIKey != "internal-secret" {
+		t.Errorf("InternalAPIKey = %q, want %q", cfg.InternalAPIKey, "internal-secret")
+	}
+	if !cfg.AllowInsecureInternalCancelAuth {
+		t.Errorf("expected AllowInsecureInternalCancelAuth=true")
+	}
+	if cfg.WorkerRPCToken != "worker-secret" {
+		t.Errorf("WorkerRPCToken = %q, want %q", cfg.WorkerRPCToken, "worker-secret")
+	}
+	if cfg.GRPCTLSCertFile != "/certs/tls.crt" {
+		t.Errorf("GRPCTLSCertFile = %q, want %q", cfg.GRPCTLSCertFile, "/certs/tls.crt")
+	}
+	if cfg.GRPCTLSKeyFile != "/certs/tls.key" {
+		t.Errorf("GRPCTLSKeyFile = %q, want %q", cfg.GRPCTLSKeyFile, "/certs/tls.key")
+	}
+	if !cfg.EnableGRPCReflection {
+		t.Errorf("expected EnableGRPCReflection=true")
+	}
+	if !cfg.AllowInsecureWorkerRPC {
+		t.Errorf("expected AllowInsecureWorkerRPC=true")
 	}
 }
 
@@ -184,5 +254,28 @@ func TestLoad_MissingBothAdminCredentialsDoesNotFail(t *testing.T) {
 	}
 	if cfg.AdminUsername != "" || cfg.AdminPassword != "" {
 		t.Fatalf("expected empty admin credentials, got username=%q password=%q", cfg.AdminUsername, cfg.AdminPassword)
+	}
+}
+
+func TestLoad_InvalidStatefulSetReplicasReturnsError(t *testing.T) {
+	t.Setenv("STATEFULSET_REPLICAS", "not-a-number")
+
+	_, err := Load()
+	if err == nil {
+		t.Fatal("expected Load to fail for non-numeric STATEFULSET_REPLICAS")
+	}
+}
+
+func TestLoad_ParsesStatefulSetReplicas(t *testing.T) {
+	t.Setenv("STATEFULSET_REPLICAS", "3")
+	t.Setenv("KEYCLOAK_ADMIN_USERNAME", "admin")
+	t.Setenv("KEYCLOAK_ADMIN_PASSWORD", "admin")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("expected Load to succeed, got %v", err)
+	}
+	if cfg.TotalReplicas != 3 {
+		t.Fatalf("expected TotalReplicas=3, got %d", cfg.TotalReplicas)
 	}
 }

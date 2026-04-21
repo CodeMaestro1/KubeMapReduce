@@ -9,7 +9,12 @@ package manager
 
 // QueryGetMaxConcurrentPods reads the cluster-wide pod limit from SYSTEM_CONFIG.
 // Used by GetNextTask for Resource Quota Enforcement (Section 4.3 of the Design Document).
-const QueryGetMaxConcurrentPods = `SELECT max_concurrent_pods FROM SYSTEM_CONFIG LIMIT 1`
+const QueryGetMaxConcurrentPods = `SELECT max_concurrent_pods FROM SYSTEM_CONFIG WHERE config_id = 1`
+
+// QueryAcquireSchedulingLock acquires a transaction-scoped advisory lock
+// to serialize quota decisions across concurrent manager replicas.
+// Uses an arbitrary but fixed namespace (42) for scheduling decisions.
+const QueryAcquireSchedulingLock = `SELECT pg_advisory_xact_lock(42)`
 
 // QueryCountRunningAttempts counts globally active worker attempts.
 // Compared against max_concurrent_pods to enforce cluster-wide scheduling limits.
@@ -24,7 +29,10 @@ const QueryCountFailedTasks = `SELECT COUNT(*) FROM TASKS WHERE job_id = $1 AND 
 // concurrent Manager replicas (Section 5.2: "Concurrency Control via Row-Level Locking").
 const QuerySelectIdleTask = `
 	SELECT task_id, job_id, task_type, replica_index FROM TASKS
-	WHERE job_id = $1 AND status = 'Idle' AND replica_index = $2 AND task_type = $3
+	WHERE job_id = $1
+	  AND status = 'Idle'
+	  AND task_type = $3
+	  AND ($3 = 'Reduce' OR replica_index = $2)
 	FOR UPDATE SKIP LOCKED LIMIT 1`
 
 // QueryCountPendingTasksByType counts non-completed tasks of a given type.
@@ -45,10 +53,10 @@ const QueryCountAllPendingTasks = `SELECT COUNT(*) FROM TASKS WHERE job_id = $1 
 const QueryUpdateTaskInProgress = `UPDATE TASKS SET status = 'In-Progress', current_attempt_id = $1 WHERE task_id = $2`
 
 // QueryInsertAttempt creates a new TASK_ATTEMPTS record when a worker is assigned.
-// The lease_ttl of 30 seconds matches the 3-heartbeat timeout window from Section 5.
+// lease_ttl is caller-provided from scheduler config (HeartbeatInterval * MaxMissedHeartbeats).
 const QueryInsertAttempt = `
 	INSERT INTO TASK_ATTEMPTS (attempt_id, task_id, worker_id, lease_id, last_renewed_at, lease_ttl, start_time, status)
-	VALUES ($1, $2, $3, $4, NOW(), 30, NOW(), 'Running')`
+	VALUES ($1, $2, $3, $4, NOW(), $5, NOW(), 'Running')`
 
 // QueryGetJobConfigByTask loads immutable job configuration needed to build
 // a worker-facing task assignment.
@@ -121,6 +129,16 @@ const QueryUpdateTaskStatus = `UPDATE TASKS SET status = $1, current_attempt_id 
 // QueryFailAttempt marks an attempt as Failed with an end timestamp.
 const QueryFailAttempt = `UPDATE TASK_ATTEMPTS SET status = 'Failed', end_time = NOW() WHERE attempt_id = $1`
 
+// QueryFailRunningAttemptsByJob marks all still-running attempts for a job as failed.
+// Used by CancelJob so quota accounting does not retain orphan "Running" attempts.
+const QueryFailRunningAttemptsByJob = `
+	UPDATE TASK_ATTEMPTS a
+	SET status = 'Failed', end_time = NOW()
+	FROM TASKS t
+	WHERE a.task_id = t.task_id
+	  AND t.job_id = $1
+	  AND a.status = 'Running'`
+
 // QuerySelectStaleTasks finds in-progress tasks whose lease has expired.
 // The Manager's Active Reaper uses this to reclaim zombie workers (Section 5.1).
 // Expiry is computed using lease_ttl so correctness does not depend on the caller's timeout value.
@@ -129,7 +147,22 @@ const QuerySelectStaleTasks = `
 	FROM TASKS t
 	JOIN TASK_ATTEMPTS a ON t.current_attempt_id = a.attempt_id
 	WHERE t.status = 'In-Progress' AND a.status = 'Running' AND a.last_renewed_at + a.lease_ttl * INTERVAL '1 second' < NOW()
-	FOR UPDATE OF t`
+	FOR UPDATE OF t SKIP LOCKED`
+
+// QuerySelectRecoverableAttempts returns active attempts that belong to this manager replica.
+// Recovery uses these rows to re-spawn workers with the existing attempt_id fence token.
+const QuerySelectRecoverableAttempts = `
+	SELECT t.task_id, t.current_attempt_id, t.job_id
+	FROM TASKS t
+	WHERE t.status = 'In-Progress'
+	  AND t.current_attempt_id IS NOT NULL
+	  AND EXISTS (
+	    SELECT 1
+	    FROM TASKS map_task
+	    WHERE map_task.job_id = t.job_id
+	      AND map_task.task_type = 'Map'
+	      AND map_task.replica_index = $1
+	  )`
 
 // ---------------------------------------------------------------------------
 // Read-only output queries

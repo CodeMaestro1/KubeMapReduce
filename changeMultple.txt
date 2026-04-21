@@ -1,0 +1,175 @@
+---[START AGENT: Robustness Agent]---
+TIMESTAMP: 2026-04-21T10:27:37.0262747Z
+ISSUE_TITLE: finalizeJob drops cancellation context for DB writes
+DOMAIN: Robustness
+FILE: manager-service\internal\manager\scheduler.go
+LINE_RANGE: 1032-1042
+DESCRIPTION: finalizeJob receives a bounded context from cleanup/reaper paths, but then switches to context.Background() for BeginTx and updateJobStatusTx. This removes timeout/cancellation guarantees during terminal-state writes and can block cleanup goroutines indefinitely when the database is slow or unavailable.
+PROPOSED_FIX: Replace context.Background() with the function's ctx for BeginTx and all DB calls; optionally derive a child timeout if needed. Keep cancellation propagation end-to-end in cleanup/finalization flows.
+BEST_PRACTICE_OR_INSTRUCTION: Defensive reliability requires strict context propagation and per-operation timeout budgeting for external I/O.
+IMPACT_IF_UNFIXED: Jobs can remain stuck in Cleaning, cleanup backlog can grow, and shutdown/recovery behavior becomes non-deterministic under DB pressure.
+---[END AGENT: Robustness Agent]---
+---
+---[START AGENT: Robustness Agent]---
+TIMESTAMP: 2026-04-21T10:27:37.0262747Z
+ISSUE_TITLE: Startup cleanup recovery ignores query errors and may misclassify job terminal state
+DOMAIN: Robustness
+FILE: manager-service\internal\manager\scheduler.go
+LINE_RANGE: 1068-1077
+DESCRIPTION: In StartCleanupReconciler recovery, Scan errors for failedCount and pending are ignored. On transient DB failures, zero-value counters are used, which can incorrectly classify a Cleaning job as Completed (or wrong fallback state), violating state consistency.
+PROPOSED_FIX: Check Scan return values for both queries; on any error, log and re-enqueue for retry without changing terminal classification. Prefer conservative fallback (keep Cleaning or mark Failed only after verified counts).
+BEST_PRACTICE_OR_INSTRUCTION: State-transition code should fail closed and never derive terminal states from unchecked query results.
+IMPACT_IF_UNFIXED: Incorrect terminal states can be persisted, causing data-loss semantics, wrong API status, and unreliable recovery after restart.
+---[END AGENT: Robustness Agent]---
+---
+---[START AGENT: Robustness Agent]---
+TIMESTAMP: 2026-04-21T10:27:37.0262747Z
+ISSUE_TITLE: Scheduler DB paths ignore request context, enabling unbounded blocking
+DOMAIN: Robustness
+FILE: manager-service\internal\manager\scheduler.go
+LINE_RANGE: 148-149, 528-529, 605-606, 676-677, 764-765, 947-948
+DESCRIPTION: Core Scheduler methods create context.Background() internally instead of accepting/using caller context. Graphify marks Scheduler as a high-centrality node, so this pattern impacts Register/Heartbeat/TaskComplete/TaskFailed reliability when DB locks/network stall or clients disconnect.
+PROPOSED_FIX: Thread context.Context through Scheduler public methods and use it for BeginTx/Query/Exec operations. Use bounded timeouts at call sites (gRPC handlers, reaper loops) and propagate cancellations.
+BEST_PRACTICE_OR_INSTRUCTION: High-fanout components must support cancellation to prevent cascading stalls and improve fault containment.
+IMPACT_IF_UNFIXED: Worker RPCs can hang indefinitely, stale operations continue after caller timeout, and system responsiveness degrades during partial outages.
+---[END AGENT: Robustness Agent]---
+---
+---[START AGENT: Fleet Security Agent]---
+TIMESTAMP: 2026-04-21T16:02:05.4111840Z
+ISSUE_TITLE: Unbounded Keycloak response reads in auth flows
+DOMAIN: Security
+FILE: auth-service\pkg\auth\http_helpers.go
+LINE_RANGE: 15-98
+DESCRIPTION: Keycloak/auth HTTP response bodies were previously consumed with io.ReadAll without a hard cap in OAuth, bootstrap, and status-helper paths. A malicious or misconfigured upstream could return very large payloads, causing excessive memory usage and potential denial of service in auth-service.
+PROPOSED_FIX: Introduced shared bounded response reader (1 MiB cap) and routed RequestTokens, RefreshTokens, ensureStatus, getAdminToken, and callJSON through it. The helper now returns an explicit overflow error to prevent silent truncation while preserving useful status/body error context.
+BEST_PRACTICE_OR_INSTRUCTION: All externally sourced HTTP response bodies must be read with strict size limits and explicit overflow errors to enforce resource bounds.
+IMPACT_IF_UNFIXED: auth-service remains vulnerable to memory pressure or crashes from oversized Keycloak responses, degrading authentication availability.
+---[END AGENT: Fleet Security Agent]---
+---[START AGENT: Fleet Security Agent]---
+TIMESTAMP: 2026-04-21T16:02:08.6309233Z
+ISSUE_TITLE: Missing defensive HTTP server timeouts on manager HTTP listeners
+DOMAIN: Security | Robustness | Scalability
+FILE: multiple files
+LINE_RANGE: N/A
+DESCRIPTION:
+Both manager-facing HTTP servers were created without explicit ReadHeaderTimeout, ReadTimeout, WriteTimeout, or IdleTimeout values. Without these limits, slowloris-style clients and stalled connections can hold goroutines/sockets indefinitely, increasing denial-of-service risk and reducing availability under load.
+PROPOSED_FIX:
+`diff
+- srv := &http.Server{Addr: cfg.ServerAddr, Handler: mux}
++ srv := &http.Server{
++   Addr:              cfg.ServerAddr,
++   Handler:           mux,
++   ReadHeaderTimeout: 5 * time.Second,
++   ReadTimeout:       15 * time.Second,
++   WriteTimeout:      30 * time.Second,
++   IdleTimeout:       60 * time.Second,
++ }
+`
+Apply the same timeout block to:
+- manager-service/cmd/api/main.go
+- manager-service/cmd/manager/main.go
+BEST_PRACTICE_OR_INSTRUCTION:
+Copilot instructions: use standard 
+et/http stack defensively; harden HTTP servers with bounded I/O timeouts.
+IMPACT_IF_UNFIXED:
+Attackers or malfunctioning clients can exhaust connections/workers via slow reads/writes, causing latency spikes, degraded health endpoints, and possible service unavailability.
+---[END AGENT: Fleet Security Agent]---
+
+---[START AGENT: Fleet Security Agent]---
+TIMESTAMP: 2026-04-21T16:02:08.6309233Z
+ISSUE_TITLE: Internal job-cancel auth default failed open to loopback fallback
+DOMAIN: Security | Robustness | Scalability
+FILE: multiple files
+LINE_RANGE: N/A
+DESCRIPTION:
+DELETE /internal/jobs/{job_id} previously allowed unauthenticated loopback requests whenever MANAGER_INTERNAL_API_KEY was unset. In production this is an unsafe default because missing secret configuration silently downgraded auth behavior rather than failing closed.
+PROPOSED_FIX:
+`diff
+- func isAuthorizedInternalCancel(r *http.Request, expectedToken string) bool
++ func isAuthorizedInternalCancel(r *http.Request, expectedToken string, allowInsecureLoopback bool) bool
+
+- return isLoopbackRemoteAddr(r.RemoteAddr)
++ return allowInsecureLoopback && isLoopbackRemoteAddr(r.RemoteAddr)
+`
+And wire explicit opt-in config:
+- Add AllowInsecureInternalCancelAuth bool to manager-service/internal/config/config.go
+- Load from ALLOW_INSECURE_INTERNAL_CANCEL_AUTH (default alse)
+- Pass this flag in handler auth check
+- Update tests to assert secure-by-default deny and explicit loopback opt-in behavior
+BEST_PRACTICE_OR_INSTRUCTION:
+Security standard: fail-closed authentication defaults; insecure fallback only via explicit local/dev opt-in.
+IMPACT_IF_UNFIXED:
+Misconfigured deployments (missing internal API key) continue accepting local-origin cancellation requests, enabling unauthorized job termination and operational abuse.
+---[END AGENT: Fleet Security Agent]---
+---
+---[START AGENT: Fleet Robustness Agent]---
+TIMESTAMP: 2026-04-21T16:10:37.6321726Z
+ISSUE_TITLE: Scheduler DB and orchestration paths now preserve caller context
+DOMAIN: Robustness
+FILE: manager-service\internal\manager\scheduler.go; manager-service\internal\grpc\server.go; manager-service\cmd\manager\main.go
+LINE_RANGE: scheduler.go 137-1099; server.go 107-236; main.go 107-132
+DESCRIPTION: Refactored Scheduler public methods that hit DB/external systems to accept context.Context and removed internal context.Background() creation. Updated gRPC handlers to pass request context and manager main loop/cancel endpoint to pass bounded derived contexts, preserving cancellation/timeout propagation while keeping attempt/lease fencing behavior unchanged.
+PROPOSED_FIX: Added ctx parameter to GetNextTask, ScheduleJob, UpsertSystemConfig, CompleteTask, RenewLease, CancelJob, FailTask, FailStaleTasks, GetMapOutputs, GetReduceOutputs, AllMapTasksCompleted, IsJobFinished, GetTaskStatus, GetTaskByID; threaded ctx through BeginTx/Query/Exec and updated all call sites/tests accordingly.
+BEST_PRACTICE_OR_INSTRUCTION: External I/O paths in high-fanout scheduler and RPC handlers must propagate caller context end-to-end with explicit timeout budgets at boundaries.
+IMPACT_IF_UNFIXED: DB stalls and downstream slowness could still ignore request cancellation, causing goroutine buildup and degraded fleet responsiveness.
+---[END AGENT: Fleet Robustness Agent]---
+---
+---[START AGENT: Fleet Robustness Agent]---
+TIMESTAMP: 2026-04-21T16:10:37.6321726Z
+ISSUE_TITLE: Cleanup recovery now handles failed/pending count query errors safely
+DOMAIN: Robustness
+FILE: manager-service\internal\manager\scheduler.go
+LINE_RANGE: 1040-1106
+DESCRIPTION: Startup cleanup recovery no longer ignores QueryRow/Scan failures when deriving terminal state for Cleaning jobs. Added explicit error handling and retry re-enqueue path so terminal state is never inferred from unchecked zero-values.
+PROPOSED_FIX: Introduced determineCleaningTerminalState(ctx, jobID) with explicit failed/pending count error checks; StartCleanupReconciler now logs and re-enqueues unresolved jobs with unknown terminal state, then retries derivation on subsequent reconciliation ticks before calling finalizeJob.
+BEST_PRACTICE_OR_INSTRUCTION: Recovery and state-transition logic must fail closed on data-access errors and only commit terminal states after verified query results.
+IMPACT_IF_UNFIXED: Transient query/scan failures could misclassify Cleaning jobs as Completed/Failed incorrectly and persist inconsistent job outcomes.
+---[END AGENT: Fleet Robustness Agent]---
+---
+---[START AGENT: Fleet Robustness Agent]---
+TIMESTAMP: 2026-04-21T19:16:00Z
+ISSUE_TITLE: finalizeJob now preserves caller context for terminal DB writes
+DOMAIN: Robustness
+FILE: manager-service\internal\manager\scheduler.go
+LINE_RANGE: 1010-1035
+DESCRIPTION: Verified and enforced that finalizeJob keeps the caller-provided context for BeginTx and updateJobStatusTx paths, avoiding context.Background() replacement and preserving cancellation/timeout semantics end-to-end.
+PROPOSED_FIX: Keep finalizeJob transactional DB operations bound to its input ctx and propagate that ctx through status update paths.
+BEST_PRACTICE_OR_INSTRUCTION: External I/O in cleanup/finalization must preserve caller context for deterministic cancellation and bounded retries.
+IMPACT_IF_UNFIXED: Terminal writes could outlive caller cancellation, causing stuck cleanup loops and delayed shutdown under DB pressure.
+---[END AGENT: Fleet Robustness Agent]---
+---
+---[START AGENT: Fleet Robustness Agent]---
+TIMESTAMP: 2026-04-21T19:16:00Z
+ISSUE_TITLE: FailStaleTasks now isolates finalize deadlines per failed job
+DOMAIN: Scalability | Robustness
+FILE: manager-service\internal\manager\scheduler.go; manager-service\internal\manager\scheduler_test.go
+LINE_RANGE: scheduler.go 839-844; scheduler_test.go 920-989
+DESCRIPTION: Removed shared finalize timeout context in FailStaleTasks and switched to per-job finalize contexts to prevent one slow cancellation/finalization from consuming the deadline budget of subsequent failed jobs.
+PROPOSED_FIX: Create a new context.WithTimeout(ctx, 2*time.Minute) inside the failedJobs loop and finalize each job with its own timeout budget.
+BEST_PRACTICE_OR_INSTRUCTION: Multi-item reconciliation loops should isolate per-item deadlines to avoid head-of-line timeout propagation.
+IMPACT_IF_UNFIXED: A single slow finalize can exhaust the shared deadline and cause later job finalizations to fail immediately, reducing stale-task recovery throughput.
+---[END AGENT: Fleet Robustness Agent]---
+---[START AGENT: Fleet Scalability Agent]---
+TIMESTAMP: 2026-04-21T16:21:46.6670295Z
+ISSUE_TITLE: Cleanup reconciler drained sequentially and could starve backlog under burst load
+DOMAIN: Scalability
+FILE: manager-service\internal\manager\scheduler.go
+LINE_RANGE: 1003-1128
+DESCRIPTION: StartCleanupReconciler previously drained pending cleanup jobs and finalized them serially per tick, so slow cancel/update operations could cause cleanup backlog lag and prolonged Cleaning states during bursts.
+PROPOSED_FIX: Added bounded worker-pool reconciliation with cleanupReconcileWorkers and cleanupReconcileBatchSize, plus limited popPendingCleanup(limit) to apply backpressure and process cleanup jobs concurrently without unbounded goroutine growth.
+BEST_PRACTICE_OR_INSTRUCTION: Use bounded parallelism/backpressure for bursty control-plane reconciliation loops to improve throughput while preserving resource safety.
+IMPACT_IF_UNFIXED: Cleanup backlog can grow faster than it drains, leaving jobs stuck in Cleaning and delaying terminal-state convergence.
+---[END AGENT: Fleet Scalability Agent]---
+---
+---[START AGENT: Fleet Scalability Agent]---
+TIMESTAMP: 2026-04-21T16:21:46.6670295Z
+ISSUE_TITLE: GetNextTask serialized all calls on quota lock before task availability checks
+DOMAIN: Scalability
+FILE: manager-service\internal\manager\scheduler.go
+LINE_RANGE: 137-319
+DESCRIPTION: GetNextTask acquired quota lock/count checks at the start of every call, creating unnecessary contention even when no schedulable task existed.
+PROPOSED_FIX: Moved quota serialization/enforcement into tryAssignTask via enforceQuotaTx so lock contention only occurs when a concrete task candidate exists, while preserving transactional advisory-lock correctness and max_concurrent_pods race safety.
+BEST_PRACTICE_OR_INSTRUCTION: Keep critical sections as small and late as possible, and preserve DB-backed fencing for quota correctness.
+IMPACT_IF_UNFIXED: High request rates cause avoidable scheduler lock contention and throughput collapse in assignment paths.
+---[END AGENT: Fleet Scalability Agent]---
+---
