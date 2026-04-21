@@ -149,3 +149,27 @@ PROPOSED_FIX: Create a new context.WithTimeout(ctx, 2*time.Minute) inside the fa
 BEST_PRACTICE_OR_INSTRUCTION: Multi-item reconciliation loops should isolate per-item deadlines to avoid head-of-line timeout propagation.
 IMPACT_IF_UNFIXED: A single slow finalize can exhaust the shared deadline and cause later job finalizations to fail immediately, reducing stale-task recovery throughput.
 ---[END AGENT: Fleet Robustness Agent]---
+---[START AGENT: Fleet Scalability Agent]---
+TIMESTAMP: 2026-04-21T16:21:46.6670295Z
+ISSUE_TITLE: Cleanup reconciler drained sequentially and could starve backlog under burst load
+DOMAIN: Scalability
+FILE: manager-service\internal\manager\scheduler.go
+LINE_RANGE: 1003-1128
+DESCRIPTION: StartCleanupReconciler previously drained pending cleanup jobs and finalized them serially per tick, so slow cancel/update operations could cause cleanup backlog lag and prolonged Cleaning states during bursts.
+PROPOSED_FIX: Added bounded worker-pool reconciliation with cleanupReconcileWorkers and cleanupReconcileBatchSize, plus limited popPendingCleanup(limit) to apply backpressure and process cleanup jobs concurrently without unbounded goroutine growth.
+BEST_PRACTICE_OR_INSTRUCTION: Use bounded parallelism/backpressure for bursty control-plane reconciliation loops to improve throughput while preserving resource safety.
+IMPACT_IF_UNFIXED: Cleanup backlog can grow faster than it drains, leaving jobs stuck in Cleaning and delaying terminal-state convergence.
+---[END AGENT: Fleet Scalability Agent]---
+---
+---[START AGENT: Fleet Scalability Agent]---
+TIMESTAMP: 2026-04-21T16:21:46.6670295Z
+ISSUE_TITLE: GetNextTask serialized all calls on quota lock before task availability checks
+DOMAIN: Scalability
+FILE: manager-service\internal\manager\scheduler.go
+LINE_RANGE: 137-319
+DESCRIPTION: GetNextTask acquired quota lock/count checks at the start of every call, creating unnecessary contention even when no schedulable task existed.
+PROPOSED_FIX: Moved quota serialization/enforcement into tryAssignTask via enforceQuotaTx so lock contention only occurs when a concrete task candidate exists, while preserving transactional advisory-lock correctness and max_concurrent_pods race safety.
+BEST_PRACTICE_OR_INSTRUCTION: Keep critical sections as small and late as possible, and preserve DB-backed fencing for quota correctness.
+IMPACT_IF_UNFIXED: High request rates cause avoidable scheduler lock contention and throughput collapse in assignment paths.
+---[END AGENT: Fleet Scalability Agent]---
+---

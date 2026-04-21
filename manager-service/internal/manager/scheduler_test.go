@@ -1583,7 +1583,6 @@ func TestScheduler_StartCleanupReconciler_BoundedConcurrency(t *testing.T) {
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
 	scheduler.StartCleanupReconciler(ctx, 5*time.Millisecond)
 
 	deadline := time.After(2 * time.Second)
@@ -1617,7 +1616,16 @@ func TestScheduler_StartCleanupReconciler_BoundedConcurrency(t *testing.T) {
 		t.Fatalf("expected concurrent cleanup execution, saw max concurrency %d", maxSeen)
 	}
 
-	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Fatalf("unfulfilled expectations: %s", err)
+	waitUntil := time.Now().Add(2 * time.Second)
+	for {
+		err := mock.ExpectationsWereMet()
+		if err == nil {
+			break
+		}
+		if time.Now().After(waitUntil) {
+			t.Fatalf("unfulfilled expectations: %s", err)
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
+	cancel()
 }
