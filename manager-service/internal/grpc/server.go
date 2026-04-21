@@ -17,8 +17,18 @@ import (
 	pb "kubemapreduce/proto"
 )
 
-// WorkerServer implements the gRPC WorkerService defined in the proto contract.
+// Thresholds for task assignment message size management.
+// When a TaskAssignment exceeds maxTaskAssignmentSizeBytes, the server
+// uploads the data_locations array to MinIO and returns a manifest URI instead.
+// If the manifest payload itself exceeds maxManifestPayloadSizeBytes, the request fails.
 //
+// These are package-level vars (not consts) to allow test injection.
+var (
+	maxTaskAssignmentSizeBytes  = 2 * 1024 * 1024 // 2 MB
+	maxManifestPayloadSizeBytes = 2 * 1024 * 1024 // 2 MB
+	manifestBucketName          = "mapreduce-manifests"
+)
+
 // It acts as the primary communication bridge between the central Manager and
 // the distributed Worker pods. It delegates all state transitions and business
 // logic to the [manager.Scheduler].
@@ -84,7 +94,8 @@ func (s *WorkerServer) Register(ctx context.Context, req *pb.RegisterRequest) (*
 		LeaseId:          task.LeaseID,
 	}
 
-	if task.Type == manager.MapTask {
+	switch task.Type {
+	case manager.MapTask:
 		assignment.Type = pb.TaskType_MAP
 		if selectedSplit, found := findMapSplitForTask(task); found {
 			assignment.ByteStart = selectedSplit.ByteStart
@@ -94,7 +105,7 @@ func (s *WorkerServer) Register(ctx context.Context, req *pb.RegisterRequest) (*
 		for _, split := range task.InputSplits {
 			assignment.DataLocations = append(assignment.DataLocations, split.InputURI)
 		}
-	} else if task.Type == manager.ReduceTask {
+	case manager.ReduceTask:
 		assignment.Type = pb.TaskType_REDUCE
 		assignment.PartitionId = int32(task.ReducePartition)
 		for _, input := range task.ShuffleInputs {
@@ -212,4 +223,58 @@ func (s *WorkerServer) TaskFailed(ctx context.Context, req *pb.TaskFailedRequest
 	}
 
 	return &pb.Ack{Success: true}, nil
+}
+
+// ── Helpers ────────────────────────────────────────────────────────────────
+
+// manifestUploader defines the interface for uploading manifest payloads to shared storage.
+type manifestUploader interface {
+	UploadManifest(ctx context.Context, bucketName, objectName string, payload []byte) (string, error)
+}
+
+// minioManifestUploader implements manifestUploader using a MinIO client.
+type minioManifestUploader struct {
+	client *minio.Client
+}
+
+// UploadManifest uploads a manifest JSON payload to MinIO.
+func (m *minioManifestUploader) UploadManifest(ctx context.Context, bucketName, objectName string, payload []byte) (string, error) {
+	info, err := m.client.PutObject(ctx, bucketName, objectName, bytes.NewReader(payload), int64(len(payload)), minio.PutObjectOptions{})
+	if err != nil {
+		return "", fmt.Errorf("failed to upload manifest: %w", err)
+	}
+	return fmt.Sprintf("s3://%s/%s", info.Bucket, info.Key), nil
+}
+
+// newWorkerServerWithManifestUploader creates a WorkerServer with an explicit manifest uploader.
+// This is primarily used for testing with mock uploaders.
+func newWorkerServerWithManifestUploader(scheduler *manager.Scheduler, minioClient *minio.Client, uploader manifestUploader) *WorkerServer {
+	return &WorkerServer{
+		scheduler:   scheduler,
+		minioClient: minioClient,
+		uploader:    uploader,
+	}
+}
+
+// splitInfo holds byte range and checksum information for a task input split.
+type splitInfo struct {
+	ByteStart     int64
+	ByteEnd       int64
+	SplitChecksum string
+}
+
+// findMapSplitForTask selects the first input split from a map task.
+// For simplicity, this returns the first split if available.
+// In a more sophisticated implementation, this could implement locality-aware scheduling.
+func findMapSplitForTask(task *manager.Task) (*splitInfo, bool) {
+	if len(task.InputSplits) == 0 {
+		return nil, false
+	}
+	// Select the first split
+	split := task.InputSplits[0]
+	return &splitInfo{
+		ByteStart:     split.ByteStart,
+		ByteEnd:       split.ByteEnd,
+		SplitChecksum: split.SplitChecksum,
+	}, true
 }

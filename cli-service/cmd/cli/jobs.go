@@ -294,31 +294,48 @@ func cmdJobsStatus(args []string) {
 
 	printResponse(resp)
 }
-	fs := flag.NewFlagSet("jobs status", flag.ExitOnError)
-	jobID := fs.String("id", "", "job ID to query (required)")
-	_ = fs.Parse(args)
 
-	if *jobID == "" {
-		fmt.Fprintln(os.Stderr, "usage: kubemapreduce jobs status --id <job-id>")
-		os.Exit(1)
+// ── jobs helpers ───────────────────────────────────────────
+
+// jobRequestPath constructs a safe API path for a job request.
+// It URL-escapes the jobID to prevent path traversal attacks and appends the given suffix.
+// Example: jobRequestPath("../jobs/abc 123", "/results") → "/jobs/..%2Fjobs%2Fabc%20123/results"
+func jobRequestPath(jobID, suffix string) string {
+	escaped := url.PathEscape(jobID)
+	return fmt.Sprintf("/jobs/%s%s", escaped, suffix)
+}
+
+// safeJobResultFilename sanitizes a job ID to create a safe filesystem filename.
+// It removes path separators and special characters that could cause traversal attacks,
+// then appends ".json". If the input is empty or whitespace, it returns "job.json".
+// Example: safeJobResultFilename("../windows\\system32:evil") → "windows_system32_evil.json"
+func safeJobResultFilename(jobID string) string {
+	normalized := strings.TrimSpace(jobID)
+	if normalized == "" {
+		return "job.json"
 	}
 
-	normalizedJobID := strings.TrimSpace(*jobID)
-	if normalizedJobID == "" {
-		fmt.Fprintln(os.Stderr, "usage: kubemapreduce jobs status --id <job-id>")
-		os.Exit(1)
+	// Replace dangerous characters: /, \, :, etc. with underscore
+	dangerous := []string{"/", "\\", ":", "..", ".", "~"}
+	for _, char := range dangerous {
+		normalized = strings.ReplaceAll(normalized, char, "_")
 	}
 
-	token, serverURL := getValidToken()
-	resp := doAuthRequestExpect(
-		http.MethodGet,
-		serverURL+jobRequestPath(normalizedJobID, ""),
-		token,
-		nil,
-		http.StatusOK,
-		"job status failed",
-	)
-	defer resp.Body.Close()
+	// Remove any remaining non-alphanumeric characters except underscore and hyphen
+	var safe strings.Builder
+	for _, ch := range normalized {
+		if (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9') || ch == '_' || ch == '-' {
+			safe.WriteRune(ch)
+		} else {
+			safe.WriteRune('_')
+		}
+	}
 
-	printResponse(resp)
+	result := safe.String()
+	// Trim leading/trailing underscores that may have resulted from sanitization
+	result = strings.Trim(result, "_")
+	if result == "" {
+		result = "job"
+	}
+	return result + ".json"
 }

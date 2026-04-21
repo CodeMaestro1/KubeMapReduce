@@ -73,6 +73,22 @@ func cmdTokenInspect() {
 
 // ── helpers ────────────────────────────────────────────────
 
+// loadTokensAndClaims loads stored tokens and decodes their claims.
+// If loading or decoding fails, it logs a fatal error with one of the provided messages.
+func loadTokensAndClaims(notLoggedInMsg, decodeFailMsg string) (*auth.StoredTokens, map[string]any) {
+	tokens, err := loadStoredTokens()
+	if err != nil {
+		log.Fatal(notLoggedInMsg)
+	}
+
+	claims, err := decodeTokenClaims(tokens.AccessToken)
+	if err != nil {
+		log.Fatalf("%s: %v", decodeFailMsg, err)
+	}
+
+	return tokens, claims
+}
+
 // decodeTokenClaims decodes the JWT payload without verification.
 //
 // This function performs a manual base64 decoding of the JWT's second part.

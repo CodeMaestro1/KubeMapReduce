@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"net/url"
@@ -155,6 +156,69 @@ func cmdAdminConfigureNodes(args []string) {
 	}
 }
 
+// ── admin configure-nodes helpers ─────────────────────────
+
+// runAdminConfigureNodes is the implementation of the admin configure-nodes command.
+// It accepts optional doAuthRequest override for testing purposes.
+func runAdminConfigureNodes(args []string, doAuthReq func(method, url string, bearerToken string, body []byte) (*http.Response, error)) error {
+	token, serverURL := getValidToken()
+	requireAdminRole(token)
+	fs := flag.NewFlagSet("admin configure-nodes", flag.ExitOnError)
+	maxPods := fs.Int("max-pods", 0, "Maximum concurrent pods (required, > 0)")
+	cpuLimit := fs.String("cpu", "", "CPU limit per worker pod (e.g., 500m)")
+	memoryLimit := fs.String("memory", "", "Memory limit per worker pod (e.g., 1Gi)")
+	_ = fs.Parse(args)
+
+	if *maxPods < 1 {
+		return fmt.Errorf("--max-pods is required and must be > 0")
+	}
+
+	payload, err := json.Marshal(map[string]interface{}{
+		"maxConcurrentPods": *maxPods,
+		"cpuLimit":          strings.TrimSpace(*cpuLimit),
+		"memoryLimit":       strings.TrimSpace(*memoryLimit),
+	})
+	if err != nil {
+		return fmt.Errorf("failed to build configure-nodes request: %v", err)
+	}
+
+	resp, err := doAuthReq(http.MethodPost, serverURL+"/admin/configure-nodes", token, payload)
+	if err != nil {
+		return fmt.Errorf("configure-nodes request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return fmt.Errorf("failed to read response: %v", err)
+	}
+
+	if statusErr := configureNodesStatusError(resp.StatusCode, string(body)); statusErr != nil {
+		return statusErr
+	}
+
+	fmt.Printf("Node configuration updated successfully.\n")
+	return nil
+}
+
+// configureNodesStatusError evaluates the HTTP response status from a configure-nodes request
+// and returns an appropriate error, or nil if the response was successful.
+//
+// HTTP 202 (Accepted) is treated as a success and returns nil.
+// HTTP 501 (Not Implemented) returns a helpful error mentioning backend integration status.
+// Other HTTP statuses return an error including the status code and response body.
+func configureNodesStatusError(status int, body string) error {
+	if status == http.StatusAccepted {
+		return nil
+	}
+
+	if status == http.StatusNotImplemented {
+		return fmt.Errorf("HTTP 501 Not Implemented: node configuration backend integration is not implemented yet (pending backend implementation)")
+	}
+
+	return fmt.Errorf("HTTP %d: %s", status, body)
+}
+
 // ── admin worker-config ────────────────────────────────────
 
 // cmdAdminWorkerConfig updates the configuration for worker pods.
@@ -164,38 +228,6 @@ func cmdAdminConfigureNodes(args []string) {
 // administrators can tune the system's performance and resource utilization
 // based on current workload demands.
 func cmdAdminWorkerConfig(args []string) {
-	token, serverURL := getValidToken()
-	requireAdminRole(token)
-	fs := flag.NewFlagSet("admin worker-config", flag.ExitOnError)
-	replicas := fs.Int("replicas", 0, "Number of worker replicas (required, > 0)")
-	maxJobs := fs.Int("max-jobs", 0, "Max jobs per node (required, > 0)")
-	_ = fs.Parse(args)
-
-	if *replicas < 1 || *maxJobs < 1 {
-		log.Fatal("--replicas and --max-jobs are required and must be > 0")
-	}
-
-	payload, err := json.Marshal(map[string]int{
-		"workerReplicas": *replicas,
-		"maxJobsPerNode": *maxJobs,
-	})
-	if err != nil {
-		// Defensive check: avoid issuing requests with partially built JSON bodies.
-		log.Fatalf("failed to build worker-config request: %v", err)
-	}
-
-	resp := doAuthRequestExpect(
-		http.MethodPut,
-		serverURL+"/admin/workers/config",
-		token,
-		payload,
-		http.StatusAccepted,
-		"worker config update failed",
-	)
-	defer resp.Body.Close()
-
-	printResponse(resp)
-}
 	token, serverURL := getValidToken()
 	requireAdminRole(token)
 	fs := flag.NewFlagSet("admin worker-config", flag.ExitOnError)
