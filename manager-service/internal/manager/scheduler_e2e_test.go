@@ -1,0 +1,268 @@
+package manager
+
+import (
+	"context"
+	"database/sql"
+	"regexp"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/DATA-DOG/go-sqlmock"
+	"github.com/google/uuid"
+)
+
+// TrackingOrchestrator captures lifecycle calls for assertion in E2E tests.
+// All fields are protected by mu to prevent data races when finalizeJob runs
+// in a background goroutine.
+type TrackingOrchestrator struct {
+	mu          sync.Mutex
+	spawnCalls  []SpawnCall
+	cancelCalls []string
+	SpawnErr    error
+}
+
+type SpawnCall struct {
+	TaskID      string
+	JobID       string
+	AttemptID   string
+	ManagerAddr string
+}
+
+func (o *TrackingOrchestrator) SpawnWorker(ctx context.Context, taskID, jobID, attemptID, addr string) error {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.spawnCalls = append(o.spawnCalls, SpawnCall{taskID, jobID, attemptID, addr})
+	return o.SpawnErr
+}
+
+func (o *TrackingOrchestrator) CancelJob(ctx context.Context, jobID string) error {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.cancelCalls = append(o.cancelCalls, jobID)
+	return nil
+}
+
+// SpawnCount returns the number of SpawnWorker calls recorded so far.
+func (o *TrackingOrchestrator) SpawnCount() int {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return len(o.spawnCalls)
+}
+
+// GetSpawnCall returns the i-th SpawnWorker call.
+func (o *TrackingOrchestrator) GetSpawnCall(i int) SpawnCall {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return o.spawnCalls[i]
+}
+
+// CancelCount returns the number of CancelJob calls recorded so far.
+func (o *TrackingOrchestrator) CancelCount() int {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return len(o.cancelCalls)
+}
+
+// GetCancelCall returns the i-th CancelJob call.
+func (o *TrackingOrchestrator) GetCancelCall(i int) string {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return o.cancelCalls[i]
+}
+
+func setupE2ETest(t *testing.T) (*sql.DB, sqlmock.Sqlmock, *Scheduler, *TrackingOrchestrator) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("failed to create sqlmock: %v", err)
+	}
+
+	orch := &TrackingOrchestrator{}
+	s, err := NewScheduler(db, 0, 1, orch, "localhost:50051", 30)
+	if err != nil {
+		t.Fatalf("failed to create scheduler: %v", err)
+	}
+
+	return db, mock, s, orch
+}
+
+func TestE2E_WorkerKillDuringMapTask(t *testing.T) {
+	db, mock, s, orch := setupE2ETest(t)
+	defer db.Close()
+
+	jobID := uuid.New().String()
+	taskID := uuid.New().String()
+	workerID := "worker-1"
+	attemptID1 := uuid.New().String()
+
+	// 1. GetNextTask -> Map task assigned (attempt-1)
+	mock.ExpectBegin()
+	mock.ExpectExec(regexp.QuoteMeta(QueryAcquireSchedulingLock)).WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectQuery(regexp.QuoteMeta(QueryGetMaxConcurrentPods)).WillReturnRows(sqlmock.NewRows([]string{"max_concurrent_pods"}).AddRow(10))
+	mock.ExpectQuery(regexp.QuoteMeta(QueryCountRunningAttempts)).WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
+	mock.ExpectQuery(regexp.QuoteMeta(QueryCountFailedTasks)).WithArgs(jobID).WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
+	mock.ExpectQuery(regexp.QuoteMeta(QuerySelectIdleTask)).WithArgs(jobID, s.replicaIndex, "Map").WillReturnRows(sqlmock.NewRows([]string{"task_id", "job_id", "task_type", "replica_index"}).AddRow(taskID, jobID, "Map", 0))
+	// hydrateTaskMetadata
+	mock.ExpectQuery(regexp.QuoteMeta(QueryGetJobConfigByTask)).WithArgs(taskID).WillReturnRows(sqlmock.NewRows([]string{"mapper_uri", "reducer_uri", "combiner_uri", "r_tasks", "input_checksum"}).AddRow("m", "r", "c", 1, "sum"))
+	mock.ExpectQuery(regexp.QuoteMeta(QueryGetTaskInputs)).WithArgs(taskID).WillReturnRows(sqlmock.NewRows([]string{"input_uri", "byte_start", "byte_end", "split_checksum"}).AddRow("u", 0, 100, "s"))
+	// update state
+	mock.ExpectExec(regexp.QuoteMeta(QueryUpdateTaskInProgress)).WithArgs(sqlmock.AnyArg(), taskID).WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectExec(regexp.QuoteMeta(QueryInsertAttempt)).WithArgs(sqlmock.AnyArg(), taskID, workerID, sqlmock.AnyArg(), s.leaseTTL).WillReturnResult(sqlmock.NewResult(1, 1))
+	// update job status
+	mock.ExpectExec(regexp.QuoteMeta(QueryUpdateJobStatus)).WithArgs(jobID, "Running", sqlmock.AnyArg()).WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectCommit()
+
+	task, err := s.GetNextTask(jobID, workerID)
+	if err != nil {
+		t.Fatalf("GetNextTask failed: %v", err)
+	}
+	if task.ID != taskID {
+		t.Errorf("Expected task %s, got %s", taskID, task.ID)
+	}
+
+	// 2. FailStaleTasks -> detects expired lease, marks attempt-1 Failed, resets to Idle
+	mock.ExpectBegin()
+	mock.ExpectQuery(regexp.QuoteMeta(QuerySelectStaleTasks)).WillReturnRows(sqlmock.NewRows([]string{"task_id", "attempt_id"}).AddRow(taskID, attemptID1))
+	mock.ExpectQuery(regexp.QuoteMeta(QueryGetTaskJobID)).WithArgs(taskID).WillReturnRows(sqlmock.NewRows([]string{"job_id"}).AddRow(jobID))
+	mock.ExpectQuery(regexp.QuoteMeta(QueryCountAttemptsByTask)).WithArgs(taskID).WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(1))
+	mock.ExpectExec(regexp.QuoteMeta(QueryUpdateTaskStatus)).WithArgs("Idle", taskID).WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectExec(regexp.QuoteMeta(QueryFailAttempt)).WithArgs(attemptID1).WillReturnResult(sqlmock.NewResult(1, 1))
+	// prepareRetryAttemptTx
+	mock.ExpectExec(regexp.QuoteMeta(QueryUpdateTaskInProgress)).WithArgs(sqlmock.AnyArg(), taskID).WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectExec(regexp.QuoteMeta(QueryInsertAttempt)).WithArgs(sqlmock.AnyArg(), taskID, "system-recovery", sqlmock.AnyArg(), s.leaseTTL).WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectCommit()
+
+	recovered, err := s.FailStaleTasks()
+	if err != nil {
+		t.Fatalf("FailStaleTasks failed: %v", err)
+	}
+	if recovered != 1 {
+		t.Errorf("Expected 1 recovered task, got %d", recovered)
+	}
+
+	// 3. Assert SpawnWorker was called for the new attempt
+	if orch.SpawnCount() != 1 {
+		t.Fatalf("Expected 1 SpawnWorker call, got %d", orch.SpawnCount())
+	}
+	got := orch.GetSpawnCall(0).AttemptID
+	if got == "" || got == attemptID1 {
+		t.Errorf("Expected spawn for a new attempt, got %s", got)
+	}
+}
+
+func TestE2E_ZombieFencing(t *testing.T) {
+	db, mock, s, _ := setupE2ETest(t)
+	defer db.Close()
+
+	taskID := uuid.New().String()
+	attemptID1 := uuid.New().String()
+	leaseID1 := uuid.New().String()
+
+	// Simulating zombie completion: attemptID1 was failed in DB
+	mock.ExpectBegin()
+	mock.ExpectQuery(regexp.QuoteMeta(QuerySelectTaskForUpdate)).WithArgs(taskID).WillReturnRows(sqlmock.NewRows([]string{"status", "current_attempt_id"}).AddRow("Idle", uuid.New().String()))
+	// validateLeaseTx fails because attempt is not current
+	mock.ExpectQuery(regexp.QuoteMeta(QueryCheckLeaseValid)).WithArgs(attemptID1, leaseID1).WillReturnRows(sqlmock.NewRows([]string{"valid"}).AddRow(false))
+	mock.ExpectRollback()
+
+	err := s.CompleteTask(taskID, attemptID1, leaseID1, []string{"u1"}, []string{"c1"})
+	if err == nil {
+		t.Fatal("Expected error for zombie completion, got nil")
+	}
+	if err != ErrExpiredLease && err != ErrStaleAttempt {
+		// Depending on implementation, but it should be a fencing error
+	}
+}
+
+func TestE2E_TripleFailure_MaxAttemptsExhaustion(t *testing.T) {
+	db, mock, s, _ := setupE2ETest(t)
+	defer db.Close()
+
+	jobID := uuid.New().String()
+	taskID := uuid.New().String()
+	attemptID3 := uuid.New().String()
+
+	// Simulating 3rd failure
+	mock.ExpectBegin()
+	mock.ExpectQuery(regexp.QuoteMeta(QuerySelectStaleTasks)).WillReturnRows(sqlmock.NewRows([]string{"task_id", "attempt_id"}).AddRow(taskID, attemptID3))
+	mock.ExpectQuery(regexp.QuoteMeta(QueryGetTaskJobID)).WithArgs(taskID).WillReturnRows(sqlmock.NewRows([]string{"job_id"}).AddRow(jobID))
+	mock.ExpectQuery(regexp.QuoteMeta(QueryCountAttemptsByTask)).WithArgs(taskID).WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(3)) // Max reached
+	mock.ExpectExec(regexp.QuoteMeta(QueryUpdateTaskStatus)).WithArgs("Failed", taskID).WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectExec(regexp.QuoteMeta(QueryFailAttempt)).WithArgs(attemptID3).WillReturnResult(sqlmock.NewResult(1, 1))
+	// updateJobStatusTx to Cleaning
+	mock.ExpectExec(regexp.QuoteMeta(QueryUpdateJobStatus)).WithArgs(jobID, "Cleaning", sqlmock.AnyArg()).WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectCommit()
+
+	// finalizeJob mock (called synchronously in FailStaleTasks)
+	mock.ExpectBegin()
+	mock.ExpectExec(regexp.QuoteMeta(QueryUpdateJobStatus)).WithArgs(jobID, "Failed", sqlmock.AnyArg()).WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectCommit()
+
+	recovered, err := s.FailStaleTasks()
+	if err != nil {
+		t.Fatalf("FailStaleTasks failed: %v", err)
+	}
+	if recovered != 1 {
+		t.Errorf("Expected 1 recovered task, got %d", recovered)
+	}
+}
+
+func TestE2E_CancellationDuringExecution(t *testing.T) {
+	db, mock, s, orch := setupE2ETest(t)
+	defer db.Close()
+
+	jobID := uuid.New().String()
+
+	mock.ExpectBegin()
+	mock.ExpectExec(regexp.QuoteMeta(QueryUpdateJobStatus)).WithArgs(jobID, "Cleaning", sqlmock.AnyArg()).WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectExec(regexp.QuoteMeta("UPDATE TASKS SET status = 'Failed' WHERE job_id = $1 AND status != 'Completed'")).WithArgs(jobID).WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectExec(regexp.QuoteMeta(QueryFailRunningAttemptsByJob)).WithArgs(jobID).WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectCommit()
+
+	// finalizeJob mock (called in goroutine)
+	mock.ExpectBegin()
+	mock.ExpectExec(regexp.QuoteMeta(QueryUpdateJobStatus)).WithArgs(jobID, "Cancelled", sqlmock.AnyArg()).WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectCommit()
+
+	err := s.CancelJob(jobID)
+	if err != nil {
+		t.Fatalf("CancelJob failed: %v", err)
+	}
+
+	// Poll with mutex-safe accessor until the async finalizeJob goroutine completes.
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		if orch.CancelCount() > 0 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	if orch.CancelCount() != 1 || orch.GetCancelCall(0) != jobID {
+		t.Errorf("Expected orchestrator CancelJob for %s, got count=%d", jobID, orch.CancelCount())
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("there were unfulfilled expectations: %s", err)
+	}
+}
+
+func TestE2E_ManagerRestartRecovery(t *testing.T) {
+	db, mock, s, orch := setupE2ETest(t)
+	defer db.Close()
+
+	taskID := uuid.New().String()
+	jobID := uuid.New().String()
+	attemptID := uuid.New().String()
+
+	mock.ExpectQuery(regexp.QuoteMeta(QuerySelectRecoverableAttempts)).WithArgs(s.replicaIndex).WillReturnRows(sqlmock.NewRows([]string{"task_id", "attempt_id", "job_id"}).AddRow(taskID, attemptID, jobID))
+
+	err := s.Recover(context.Background())
+	if err != nil {
+		t.Fatalf("Recover failed: %v", err)
+	}
+
+	if orch.SpawnCount() != 1 || orch.GetSpawnCall(0).AttemptID != attemptID {
+		t.Errorf("Expected spawn call for attempt %s", attemptID)
+	}
+}

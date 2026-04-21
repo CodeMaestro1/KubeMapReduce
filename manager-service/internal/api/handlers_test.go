@@ -10,6 +10,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 func newTestHandlers() *Handlers {
@@ -714,6 +716,120 @@ func TestHandleJobsList_ReturnsNewestFirst(t *testing.T) {
 	if jobs[0].Filename != "third.csv" || jobs[1].Filename != "second.csv" || jobs[2].Filename != "first.csv" {
 		t.Fatalf("expected newest-first ordering [third, second, first], got [%s, %s, %s]",
 			jobs[0].Filename, jobs[1].Filename, jobs[2].Filename)
+	}
+}
+
+func TestHandleJobsList_CapsLimitAtMax(t *testing.T) {
+	h := newTestHandlers()
+	now := time.Now().UTC()
+	for i := 0; i < maxListLimit+10; i++ {
+		_ = h.store.CreateJob(context.Background(), JobRecord{JobID: uuid.NewString(), Status: "Pending", CreatedAt: now.Add(time.Duration(i) * time.Second)})
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/jobs?limit=9999", nil)
+	rec := httptest.NewRecorder()
+	h.HandleJobsList(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+	var jobs []models.JobStatusResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &jobs); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(jobs) != maxListLimit {
+		t.Fatalf("expected limit capped at %d, got %d", maxListLimit, len(jobs))
+	}
+}
+
+func TestHandleJobsList_DefaultLimitWhenOmitted(t *testing.T) {
+	h := newTestHandlers()
+	now := time.Now().UTC()
+	for i := 0; i < defaultListLimit+10; i++ {
+		_ = h.store.CreateJob(context.Background(), JobRecord{JobID: uuid.NewString(), Status: "Pending", CreatedAt: now.Add(time.Duration(i) * time.Second)})
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/jobs", nil)
+	rec := httptest.NewRecorder()
+	h.HandleJobsList(rec, req)
+
+	var jobs []models.JobStatusResponse
+	_ = json.Unmarshal(rec.Body.Bytes(), &jobs)
+	if len(jobs) != defaultListLimit {
+		t.Fatalf("expected default limit %d, got %d", defaultListLimit, len(jobs))
+	}
+}
+
+func TestHandleJobsList_RejectsNegativeLimit(t *testing.T) {
+	h := newTestHandlers()
+	req := httptest.NewRequest(http.MethodGet, "/jobs?limit=-1", nil)
+	rec := httptest.NewRecorder()
+	h.HandleJobsList(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for negative limit, got %d", rec.Code)
+	}
+}
+
+func TestHandleJobsList_RejectsNegativeOffset(t *testing.T) {
+	h := newTestHandlers()
+	req := httptest.NewRequest(http.MethodGet, "/jobs?offset=-1", nil)
+	rec := httptest.NewRecorder()
+	h.HandleJobsList(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for negative offset, got %d", rec.Code)
+	}
+}
+
+func TestHandleJobsList_RejectsNonNumericLimit(t *testing.T) {
+	h := newTestHandlers()
+	req := httptest.NewRequest(http.MethodGet, "/jobs?limit=abc", nil)
+	rec := httptest.NewRecorder()
+	h.HandleJobsList(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for non-numeric limit, got %d", rec.Code)
+	}
+}
+
+func TestHandleJobsList_OffsetBeyondRangeReturnsEmpty(t *testing.T) {
+	h := newTestHandlers()
+	_ = h.store.CreateJob(context.Background(), JobRecord{JobID: "j1", Status: "Pending", CreatedAt: time.Now()})
+
+	req := httptest.NewRequest(http.MethodGet, "/jobs?offset=100", nil)
+	rec := httptest.NewRecorder()
+	h.HandleJobsList(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+	if strings.TrimSpace(rec.Body.String()) != "[]" {
+		t.Fatalf("expected empty array, got %q", rec.Body.String())
+	}
+}
+
+func TestHandleJobsList_StableOrderingAcrossPages(t *testing.T) {
+	h := newTestHandlers()
+	now := time.Now().UTC()
+	// Job 1 is oldest, Job 3 is newest
+	_ = h.store.CreateJob(context.Background(), JobRecord{JobID: "j1", Filename: "1.csv", CreatedAt: now})
+	_ = h.store.CreateJob(context.Background(), JobRecord{JobID: "j2", Filename: "2.csv", CreatedAt: now.Add(time.Second)})
+	_ = h.store.CreateJob(context.Background(), JobRecord{JobID: "j3", Filename: "3.csv", CreatedAt: now.Add(2 * time.Second)})
+
+	// Page 1: newest (j3)
+	req1 := httptest.NewRequest(http.MethodGet, "/jobs?limit=1&offset=0", nil)
+	rec1 := httptest.NewRecorder()
+	h.HandleJobsList(rec1, req1)
+	var p1 []models.JobStatusResponse
+	_ = json.Unmarshal(rec1.Body.Bytes(), &p1)
+
+	// Page 2: second newest (j2)
+	req2 := httptest.NewRequest(http.MethodGet, "/jobs?limit=1&offset=1", nil)
+	rec2 := httptest.NewRecorder()
+	h.HandleJobsList(rec2, req2)
+	var p2 []models.JobStatusResponse
+	_ = json.Unmarshal(rec2.Body.Bytes(), &p2)
+
+	if p1[0].JobID != "j3" || p2[0].JobID != "j2" {
+		t.Fatalf("unstable ordering: page 1 got %s, page 2 got %s", p1[0].JobID, p2[0].JobID)
 	}
 }
 

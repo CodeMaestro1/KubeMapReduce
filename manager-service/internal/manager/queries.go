@@ -11,6 +11,11 @@ package manager
 // Used by GetNextTask for Resource Quota Enforcement (Section 4.3 of the Design Document).
 const QueryGetMaxConcurrentPods = `SELECT max_concurrent_pods FROM SYSTEM_CONFIG WHERE config_id = 1`
 
+// QueryAcquireSchedulingLock acquires a transaction-scoped advisory lock
+// to serialize quota decisions across concurrent manager replicas.
+// Uses an arbitrary but fixed namespace (42) for scheduling decisions.
+const QueryAcquireSchedulingLock = `SELECT pg_advisory_xact_lock(42)`
+
 // QueryCountRunningAttempts counts globally active worker attempts.
 // Compared against max_concurrent_pods to enforce cluster-wide scheduling limits.
 const QueryCountRunningAttempts = `SELECT COUNT(*) FROM TASK_ATTEMPTS WHERE status = 'Running'`
@@ -123,20 +128,6 @@ const QueryUpdateTaskStatus = `UPDATE TASKS SET status = $1, current_attempt_id 
 
 // QueryFailAttempt marks an attempt as Failed with an end timestamp.
 const QueryFailAttempt = `UPDATE TASK_ATTEMPTS SET status = 'Failed', end_time = NOW() WHERE attempt_id = $1`
-
-// QueryFailOrphanExpiredAttempts closes expired running attempts that are no longer
-// referenced by TASKS.current_attempt_id. This prevents stale orphan attempts from
-// leaking quota accounting when a binding is lost.
-const QueryFailOrphanExpiredAttempts = `
-	UPDATE TASK_ATTEMPTS a
-	SET status = 'Failed', end_time = NOW()
-	WHERE a.status = 'Running'
-	  AND a.last_renewed_at + a.lease_ttl * INTERVAL '1 second' < NOW()
-	  AND NOT EXISTS (
-	    SELECT 1
-	    FROM TASKS t
-	    WHERE t.current_attempt_id = a.attempt_id
-	  )`
 
 // QueryFailRunningAttemptsByJob marks all still-running attempts for a job as failed.
 // Used by CancelJob so quota accounting does not retain orphan "Running" attempts.
