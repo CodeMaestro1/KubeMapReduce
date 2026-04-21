@@ -170,4 +170,4 @@ fabric.properties
 
 # End of https://www.toptal.com/developers/gitignore/api/goland,go
 
-graphify-outmanager-service/manager
+graphify-out/
