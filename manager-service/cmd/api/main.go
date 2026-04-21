@@ -64,8 +64,12 @@ func main() {
 	api.RegisterRoutes(mux, handlers, validator)
 
 	srv := &http.Server{
-		Addr:    cfg.ServerAddr,
-		Handler: mux,
+		Addr:              cfg.ServerAddr,
+		Handler:           mux,
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       15 * time.Second,
+		WriteTimeout:      30 * time.Second,
+		IdleTimeout:       60 * time.Second,
 	}
 
 	errCh := make(chan error, 1)

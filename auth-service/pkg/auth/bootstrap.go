@@ -189,8 +189,13 @@ func (b *keycloakBootstrapper) getAdminToken(ctx context.Context) (string, error
 		return "", err
 	}
 
+	body, err := readBoundedResponseBody(resp.Body)
+	if err != nil {
+		return "", fmt.Errorf("failed to read admin token response: %w", err)
+	}
+
 	var tr tokenResponse
-	if err := json.NewDecoder(resp.Body).Decode(&tr); err != nil {
+	if err := json.Unmarshal(body, &tr); err != nil {
 		return "", err
 	}
 	if tr.AccessToken == "" {
@@ -480,9 +485,9 @@ func (b *keycloakBootstrapper) callJSON(ctx context.Context, method string, path
 	}
 	defer resp.Body.Close()
 
-	respBody, readErr := io.ReadAll(resp.Body)
+	respBody, readErr := readBoundedResponseBody(resp.Body)
 	if readErr != nil {
-		return resp.StatusCode, nil, readErr
+		return resp.StatusCode, nil, fmt.Errorf("failed to read response body: %w", readErr)
 	}
 
 	return resp.StatusCode, respBody, nil

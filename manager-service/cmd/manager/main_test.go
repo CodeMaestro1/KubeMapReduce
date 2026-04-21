@@ -50,22 +50,30 @@ func TestIsAuthorizedInternalCancel_WithToken(t *testing.T) {
 	req := httptest.NewRequest("DELETE", "/internal/jobs/job-1", nil)
 	req.Header.Set("X-Internal-Token", "secret")
 	req.RemoteAddr = "10.10.10.10:4567"
-	if !isAuthorizedInternalCancel(req, "secret") {
+	if !isAuthorizedInternalCancel(req, "secret", false) {
 		t.Fatalf("expected request with matching token to be authorized")
 	}
 }
 
-func TestIsAuthorizedInternalCancel_WithoutTokenRequiresLoopback(t *testing.T) {
+func TestIsAuthorizedInternalCancel_WithoutTokenDeniedByDefault(t *testing.T) {
 	localReq := httptest.NewRequest("DELETE", "/internal/jobs/job-1", nil)
 	localReq.RemoteAddr = "127.0.0.1:4000"
-	if !isAuthorizedInternalCancel(localReq, "") {
-		t.Fatalf("expected loopback request to be authorized when token is unset")
+	if isAuthorizedInternalCancel(localReq, "", false) {
+		t.Fatalf("expected loopback request to be denied when token is unset and insecure fallback is disabled")
+	}
+}
+
+func TestIsAuthorizedInternalCancel_WithoutTokenAllowsLoopbackWhenExplicitlyEnabled(t *testing.T) {
+	localReq := httptest.NewRequest("DELETE", "/internal/jobs/job-1", nil)
+	localReq.RemoteAddr = "127.0.0.1:4000"
+	if !isAuthorizedInternalCancel(localReq, "", true) {
+		t.Fatalf("expected loopback request to be authorized when insecure fallback is explicitly enabled")
 	}
 
 	remoteReq := httptest.NewRequest("DELETE", "/internal/jobs/job-1", nil)
 	remoteReq.RemoteAddr = "10.0.0.1:4000"
-	if isAuthorizedInternalCancel(remoteReq, "") {
-		t.Fatalf("expected non-loopback request to be denied when token is unset")
+	if isAuthorizedInternalCancel(remoteReq, "", true) {
+		t.Fatalf("expected non-loopback request to be denied even when insecure fallback is enabled")
 	}
 }
 

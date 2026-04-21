@@ -116,7 +116,7 @@ func main() {
 	// 4. Start HTTP Server for Health & Readiness
 	mux := http.NewServeMux()
 	mux.HandleFunc("DELETE /internal/jobs/{job_id}", func(w http.ResponseWriter, r *http.Request) {
-		if !isAuthorizedInternalCancel(r, cfg.InternalAPIKey) {
+		if !isAuthorizedInternalCancel(r, cfg.InternalAPIKey, cfg.AllowInsecureInternalCancelAuth) {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
@@ -146,8 +146,12 @@ func main() {
 	})
 
 	httpSrv := &http.Server{
-		Addr:    cfg.ServerAddr,
-		Handler: mux,
+		Addr:              cfg.ServerAddr,
+		Handler:           mux,
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       15 * time.Second,
+		WriteTimeout:      30 * time.Second,
+		IdleTimeout:       60 * time.Second,
 	}
 	go func() {
 		log.Printf("HTTP health server running on %s", cfg.ServerAddr)
@@ -266,12 +270,12 @@ func resolveManagerAddr(hostname, headlessService, namespace, port string) strin
 	return net.JoinHostPort(podName+"."+headlessService+"."+namespace+".svc.cluster.local", port)
 }
 
-func isAuthorizedInternalCancel(r *http.Request, expectedToken string) bool {
+func isAuthorizedInternalCancel(r *http.Request, expectedToken string, allowInsecureLoopback bool) bool {
 	expectedToken = strings.TrimSpace(expectedToken)
 	if expectedToken != "" {
 		return r.Header.Get("X-Internal-Token") == expectedToken
 	}
-	return isLoopbackRemoteAddr(r.RemoteAddr)
+	return allowInsecureLoopback && isLoopbackRemoteAddr(r.RemoteAddr)
 }
 
 func isLoopbackRemoteAddr(remoteAddr string) bool {

@@ -288,6 +288,29 @@ func TestGetAdminTokenReturnsErrorForNonOKStatus(t *testing.T) {
 	}
 }
 
+func TestGetAdminTokenReturnsErrorForOversizedErrorBody(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(strings.Repeat("x", maxAuthResponseBytes+1)))
+	}))
+	defer server.Close()
+
+	b := &keycloakBootstrapper{
+		baseURL:       server.URL,
+		adminUsername: "admin",
+		adminPassword: "wrong",
+		httpClient:    server.Client(),
+	}
+
+	_, err := b.getAdminToken(context.Background())
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "response body exceeds limit") {
+		t.Fatalf("expected bounded read error, got %v", err)
+	}
+}
+
 func TestGetAdminTokenReturnsErrorWhenAccessTokenMissing(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -415,6 +438,27 @@ func TestCallJSONRetriesAndReturnsServiceUnavailable(t *testing.T) {
 	}
 	if got := atomic.LoadInt32(&requestCount); got != 3 {
 		t.Fatalf("expected 3 attempts, got %d", got)
+	}
+}
+
+func TestCallJSONReturnsErrorForOversizedBody(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(strings.Repeat("y", maxAuthResponseBytes+1)))
+	}))
+	defer server.Close()
+
+	b := &keycloakBootstrapper{
+		baseURL:    server.URL,
+		httpClient: server.Client(),
+	}
+
+	_, _, err := b.callJSON(context.Background(), http.MethodGet, "/too-large", nil)
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "response body exceeds limit") {
+		t.Fatalf("expected bounded read error, got %v", err)
 	}
 }
 

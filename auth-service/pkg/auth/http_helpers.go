@@ -15,6 +15,7 @@ import (
 const (
 	defaultRetryAttempts  = 3
 	defaultRetryBaseDelay = 200 * time.Millisecond
+	maxAuthResponseBytes  = 1 << 20 // 1 MiB
 )
 
 // isRetryableStatus returns true for HTTP status codes that indicate a
@@ -71,12 +72,27 @@ func ensureStatus(resp *http.Response, expectedStatus int, operation string) err
 		return nil
 	}
 
-	body, err := io.ReadAll(resp.Body)
+	body, err := readBoundedResponseBody(resp.Body)
 	if err != nil {
 		return fmt.Errorf("failed to %s: status %d (failed to read response body: %v)", operation, resp.StatusCode, err)
 	}
 
 	return fmt.Errorf("failed to %s: status %d: %s", operation, resp.StatusCode, string(body))
+}
+
+// readBoundedResponseBody reads up to maxAuthResponseBytes from an HTTP response
+// body and returns an explicit error if the limit is exceeded.
+func readBoundedResponseBody(body io.Reader) ([]byte, error) {
+	limited := io.LimitReader(body, maxAuthResponseBytes+1)
+	data, err := io.ReadAll(limited)
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(data)) > maxAuthResponseBytes {
+		return nil, fmt.Errorf("response body exceeds limit (%d bytes)", maxAuthResponseBytes)
+	}
+
+	return data, nil
 }
 
 // ensureCallStatus checks a pre-read response body against an expected status.

@@ -1,0 +1,103 @@
+---[START AGENT: Robustness Agent]---
+TIMESTAMP: 2026-04-21T10:27:37.0262747Z
+ISSUE_TITLE: finalizeJob drops cancellation context for DB writes
+DOMAIN: Robustness
+FILE: manager-service\internal\manager\scheduler.go
+LINE_RANGE: 1032-1042
+DESCRIPTION: finalizeJob receives a bounded context from cleanup/reaper paths, but then switches to context.Background() for BeginTx and updateJobStatusTx. This removes timeout/cancellation guarantees during terminal-state writes and can block cleanup goroutines indefinitely when the database is slow or unavailable.
+PROPOSED_FIX: Replace context.Background() with the function's ctx for BeginTx and all DB calls; optionally derive a child timeout if needed. Keep cancellation propagation end-to-end in cleanup/finalization flows.
+BEST_PRACTICE_OR_INSTRUCTION: Defensive reliability requires strict context propagation and per-operation timeout budgeting for external I/O.
+IMPACT_IF_UNFIXED: Jobs can remain stuck in Cleaning, cleanup backlog can grow, and shutdown/recovery behavior becomes non-deterministic under DB pressure.
+---[END AGENT: Robustness Agent]---
+---
+---[START AGENT: Robustness Agent]---
+TIMESTAMP: 2026-04-21T10:27:37.0262747Z
+ISSUE_TITLE: Startup cleanup recovery ignores query errors and may misclassify job terminal state
+DOMAIN: Robustness
+FILE: manager-service\internal\manager\scheduler.go
+LINE_RANGE: 1068-1077
+DESCRIPTION: In StartCleanupReconciler recovery, Scan errors for failedCount and pending are ignored. On transient DB failures, zero-value counters are used, which can incorrectly classify a Cleaning job as Completed (or wrong fallback state), violating state consistency.
+PROPOSED_FIX: Check Scan return values for both queries; on any error, log and re-enqueue for retry without changing terminal classification. Prefer conservative fallback (keep Cleaning or mark Failed only after verified counts).
+BEST_PRACTICE_OR_INSTRUCTION: State-transition code should fail closed and never derive terminal states from unchecked query results.
+IMPACT_IF_UNFIXED: Incorrect terminal states can be persisted, causing data-loss semantics, wrong API status, and unreliable recovery after restart.
+---[END AGENT: Robustness Agent]---
+---
+---[START AGENT: Robustness Agent]---
+TIMESTAMP: 2026-04-21T10:27:37.0262747Z
+ISSUE_TITLE: Scheduler DB paths ignore request context, enabling unbounded blocking
+DOMAIN: Robustness
+FILE: manager-service\internal\manager\scheduler.go
+LINE_RANGE: 148-149, 528-529, 605-606, 676-677, 764-765, 947-948
+DESCRIPTION: Core Scheduler methods create context.Background() internally instead of accepting/using caller context. Graphify marks Scheduler as a high-centrality node, so this pattern impacts Register/Heartbeat/TaskComplete/TaskFailed reliability when DB locks/network stall or clients disconnect.
+PROPOSED_FIX: Thread context.Context through Scheduler public methods and use it for BeginTx/Query/Exec operations. Use bounded timeouts at call sites (gRPC handlers, reaper loops) and propagate cancellations.
+BEST_PRACTICE_OR_INSTRUCTION: High-fanout components must support cancellation to prevent cascading stalls and improve fault containment.
+IMPACT_IF_UNFIXED: Worker RPCs can hang indefinitely, stale operations continue after caller timeout, and system responsiveness degrades during partial outages.
+---[END AGENT: Robustness Agent]---
+---
+---[START AGENT: Fleet Security Agent]---
+TIMESTAMP: 2026-04-21T16:02:05.4111840Z
+ISSUE_TITLE: Unbounded Keycloak response reads in auth flows
+DOMAIN: Security
+FILE: auth-service\pkg\auth\http_helpers.go
+LINE_RANGE: 15-98
+DESCRIPTION: Keycloak/auth HTTP response bodies were previously consumed with io.ReadAll without a hard cap in OAuth, bootstrap, and status-helper paths. A malicious or misconfigured upstream could return very large payloads, causing excessive memory usage and potential denial of service in auth-service.
+PROPOSED_FIX: Introduced shared bounded response reader (1 MiB cap) and routed RequestTokens, RefreshTokens, ensureStatus, getAdminToken, and callJSON through it. The helper now returns an explicit overflow error to prevent silent truncation while preserving useful status/body error context.
+BEST_PRACTICE_OR_INSTRUCTION: All externally sourced HTTP response bodies must be read with strict size limits and explicit overflow errors to enforce resource bounds.
+IMPACT_IF_UNFIXED: auth-service remains vulnerable to memory pressure or crashes from oversized Keycloak responses, degrading authentication availability.
+---[END AGENT: Fleet Security Agent]---
+---[START AGENT: Fleet Security Agent]---
+TIMESTAMP: 2026-04-21T16:02:08.6309233Z
+ISSUE_TITLE: Missing defensive HTTP server timeouts on manager HTTP listeners
+DOMAIN: Security | Robustness | Scalability
+FILE: multiple files
+LINE_RANGE: N/A
+DESCRIPTION:
+Both manager-facing HTTP servers were created without explicit ReadHeaderTimeout, ReadTimeout, WriteTimeout, or IdleTimeout values. Without these limits, slowloris-style clients and stalled connections can hold goroutines/sockets indefinitely, increasing denial-of-service risk and reducing availability under load.
+PROPOSED_FIX:
+`diff
+- srv := &http.Server{Addr: cfg.ServerAddr, Handler: mux}
++ srv := &http.Server{
++   Addr:              cfg.ServerAddr,
++   Handler:           mux,
++   ReadHeaderTimeout: 5 * time.Second,
++   ReadTimeout:       15 * time.Second,
++   WriteTimeout:      30 * time.Second,
++   IdleTimeout:       60 * time.Second,
++ }
+`
+Apply the same timeout block to:
+- manager-service/cmd/api/main.go
+- manager-service/cmd/manager/main.go
+BEST_PRACTICE_OR_INSTRUCTION:
+Copilot instructions: use standard 
+et/http stack defensively; harden HTTP servers with bounded I/O timeouts.
+IMPACT_IF_UNFIXED:
+Attackers or malfunctioning clients can exhaust connections/workers via slow reads/writes, causing latency spikes, degraded health endpoints, and possible service unavailability.
+---[END AGENT: Fleet Security Agent]---
+
+---[START AGENT: Fleet Security Agent]---
+TIMESTAMP: 2026-04-21T16:02:08.6309233Z
+ISSUE_TITLE: Internal job-cancel auth default failed open to loopback fallback
+DOMAIN: Security | Robustness | Scalability
+FILE: multiple files
+LINE_RANGE: N/A
+DESCRIPTION:
+DELETE /internal/jobs/{job_id} previously allowed unauthenticated loopback requests whenever MANAGER_INTERNAL_API_KEY was unset. In production this is an unsafe default because missing secret configuration silently downgraded auth behavior rather than failing closed.
+PROPOSED_FIX:
+`diff
+- func isAuthorizedInternalCancel(r *http.Request, expectedToken string) bool
++ func isAuthorizedInternalCancel(r *http.Request, expectedToken string, allowInsecureLoopback bool) bool
+
+- return isLoopbackRemoteAddr(r.RemoteAddr)
++ return allowInsecureLoopback && isLoopbackRemoteAddr(r.RemoteAddr)
+`
+And wire explicit opt-in config:
+- Add AllowInsecureInternalCancelAuth bool to manager-service/internal/config/config.go
+- Load from ALLOW_INSECURE_INTERNAL_CANCEL_AUTH (default alse)
+- Pass this flag in handler auth check
+- Update tests to assert secure-by-default deny and explicit loopback opt-in behavior
+BEST_PRACTICE_OR_INSTRUCTION:
+Security standard: fail-closed authentication defaults; insecure fallback only via explicit local/dev opt-in.
+IMPACT_IF_UNFIXED:
+Misconfigured deployments (missing internal API key) continue accepting local-origin cancellation requests, enabling unauthorized job termination and operational abuse.
+---[END AGENT: Fleet Security Agent]---
