@@ -14,6 +14,10 @@ import (
 )
 
 const MaxTaskAttempts = 3
+const (
+	cleanupReconcileWorkers   = 4
+	cleanupReconcileBatchSize = 64
+)
 
 var (
 	ErrNoIdleTasks            = errors.New("no idle tasks available right now, please wait")
@@ -151,29 +155,7 @@ func (s *Scheduler) GetNextTask(ctx context.Context, jobID string, workerID stri
 	}
 	defer tx.Rollback()
 
-	// 0. Quota Serialization
-	// Acquire a transaction-scoped advisory lock to prevent oversubscription
-	// races when multiple managers evaluate quota concurrently.
-	// This is the "Resource Quota Enforcement" pattern from Section 4.3.
-	if _, err := tx.ExecContext(ctx, QueryAcquireSchedulingLock); err != nil {
-		return nil, err
-	}
-
-	// 1. Quota Enforcement
-	var maxPods, activePods int
-	err = tx.QueryRowContext(ctx, QueryGetMaxConcurrentPods).Scan(&maxPods)
-	if err != nil {
-		return nil, err
-	}
-	err = tx.QueryRowContext(ctx, QueryCountRunningAttempts).Scan(&activePods)
-	if err != nil {
-		return nil, err
-	}
-	if activePods >= maxPods {
-		return nil, ErrQuotaExceeded
-	}
-
-	// 2. Check for failed job tasks
+	// 1. Check for failed job tasks
 	var failedCount int
 	err = tx.QueryRowContext(ctx, QueryCountFailedTasks, jobID).Scan(&failedCount)
 	if err != nil {
@@ -183,7 +165,7 @@ func (s *Scheduler) GetNextTask(ctx context.Context, jobID string, workerID stri
 		return nil, ErrJobFailed
 	}
 
-	// 3. Try to schedule Map tasks first
+	// 2. Try to schedule Map tasks first
 	task, err := s.tryAssignTask(ctx, tx, jobID, workerID, "Map")
 	if err == nil {
 		if err := s.updateJobStatusTx(ctx, tx, jobID, "Running"); err != nil {
@@ -198,7 +180,7 @@ func (s *Scheduler) GetNextTask(ctx context.Context, jobID string, workerID stri
 		return nil, err
 	}
 
-	// 4. Check if Map phase is completed
+	// 3. Check if Map phase is completed
 	var pendingMapTasks int
 	err = tx.QueryRowContext(ctx, QueryCountPendingTasksByType, jobID, "Map").Scan(&pendingMapTasks)
 	if err != nil {
@@ -208,7 +190,7 @@ func (s *Scheduler) GetNextTask(ctx context.Context, jobID string, workerID stri
 		return nil, ErrNoIdleTasks
 	}
 
-	// 5. Try to schedule Reduce tasks
+	// 4. Try to schedule Reduce tasks
 	task, err = s.tryAssignTask(ctx, tx, jobID, workerID, "Reduce")
 	if err == nil {
 		if err := s.updateJobStatusTx(ctx, tx, jobID, "Running"); err != nil {
@@ -223,7 +205,7 @@ func (s *Scheduler) GetNextTask(ctx context.Context, jobID string, workerID stri
 		return nil, err
 	}
 
-	// 6. Check if Reduce phase is completed
+	// 5. Check if Reduce phase is completed
 	var pendingReduceTasks int
 	err = tx.QueryRowContext(ctx, QueryCountPendingTasksByType, jobID, "Reduce").Scan(&pendingReduceTasks)
 	if err != nil {
@@ -284,6 +266,9 @@ func (s *Scheduler) tryAssignTask(ctx context.Context, tx *sql.Tx, requestedJobI
 	if err := s.hydrateTaskMetadata(ctx, tx, &t); err != nil {
 		return nil, err
 	}
+	if err := s.enforceQuotaTx(ctx, tx); err != nil {
+		return nil, err
+	}
 
 	_, err = tx.ExecContext(ctx, QueryUpdateTaskInProgress, attemptID, taskID)
 	if err != nil {
@@ -302,6 +287,27 @@ func (s *Scheduler) tryAssignTask(ctx context.Context, tx *sql.Tx, requestedJobI
 	}
 
 	return &t, nil
+}
+
+func (s *Scheduler) enforceQuotaTx(ctx context.Context, tx *sql.Tx) error {
+	if _, err := tx.ExecContext(ctx, QueryAcquireSchedulingLock); err != nil {
+		return err
+	}
+
+	var maxPods int
+	if err := tx.QueryRowContext(ctx, QueryGetMaxConcurrentPods).Scan(&maxPods); err != nil {
+		return err
+	}
+
+	var activePods int
+	if err := tx.QueryRowContext(ctx, QueryCountRunningAttempts).Scan(&activePods); err != nil {
+		return err
+	}
+
+	if activePods >= maxPods {
+		return ErrQuotaExceeded
+	}
+	return nil
 }
 
 func (s *Scheduler) hydrateTaskMetadata(ctx context.Context, q taskMetadataQuerier, t *Task) error {
@@ -836,10 +842,10 @@ func (s *Scheduler) FailStaleTasks(ctx context.Context) (int, error) {
 		return 0, err
 	}
 
-	cancelCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
-	defer cancel()
 	for jobID := range failedJobs {
-		s.finalizeJob(cancelCtx, jobID, "Failed")
+		finalizeCtx, finalizeCancel := context.WithTimeout(ctx, 2*time.Minute)
+		s.finalizeJob(finalizeCtx, jobID, "Failed")
+		finalizeCancel()
 	}
 
 	for _, rec := range respawnTasks {
@@ -994,16 +1000,24 @@ func (s *Scheduler) enqueueCleanup(jobID, terminalState string) {
 	s.cleanupMu.Unlock()
 }
 
-func (s *Scheduler) popPendingCleanup() map[string]string {
+func (s *Scheduler) popPendingCleanup(limit int) map[string]string {
 	s.cleanupMu.Lock()
 	defer s.cleanupMu.Unlock()
 	if len(s.pendingCleanup) == 0 {
 		return nil
 	}
-	jobs := make(map[string]string, len(s.pendingCleanup))
+	if limit <= 0 || limit > len(s.pendingCleanup) {
+		limit = len(s.pendingCleanup)
+	}
+	jobs := make(map[string]string, limit)
+	popped := 0
 	for jobID, terminalState := range s.pendingCleanup {
 		jobs[jobID] = terminalState
 		delete(s.pendingCleanup, jobID)
+		popped++
+		if popped >= limit {
+			break
+		}
 	}
 	return jobs
 }
@@ -1075,21 +1089,35 @@ func (s *Scheduler) StartCleanupReconciler(ctx context.Context, interval time.Du
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				for jobID, terminalState := range s.popPendingCleanup() {
-					retryCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-					if strings.TrimSpace(terminalState) == "" {
-						var deriveErr error
-						terminalState, deriveErr = s.determineCleaningTerminalState(retryCtx, jobID)
-						if deriveErr != nil {
-							log.Printf("Warning: retrying cleanup for job %s after terminal-state recovery error: %v", jobID, deriveErr)
-							s.enqueueCleanup(jobID, "")
-							cancel()
-							continue
-						}
-					}
-					s.finalizeJob(retryCtx, jobID, terminalState)
-					cancel()
+				jobs := s.popPendingCleanup(cleanupReconcileBatchSize)
+				if len(jobs) == 0 {
+					continue
 				}
+
+				sem := make(chan struct{}, cleanupReconcileWorkers)
+				var wg sync.WaitGroup
+				for jobID, terminalState := range jobs {
+					wg.Add(1)
+					sem <- struct{}{}
+					go func(jobID, terminalState string) {
+						defer wg.Done()
+						defer func() { <-sem }()
+
+						retryCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+						defer cancel()
+						if strings.TrimSpace(terminalState) == "" {
+							var deriveErr error
+							terminalState, deriveErr = s.determineCleaningTerminalState(retryCtx, jobID)
+							if deriveErr != nil {
+								log.Printf("Warning: retrying cleanup for job %s after terminal-state recovery error: %v", jobID, deriveErr)
+								s.enqueueCleanup(jobID, "")
+								return
+							}
+						}
+						s.finalizeJob(retryCtx, jobID, terminalState)
+					}(jobID, terminalState)
+				}
+				wg.Wait()
 			}
 		}
 	}()

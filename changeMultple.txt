@@ -125,3 +125,27 @@ PROPOSED_FIX: Introduced determineCleaningTerminalState(ctx, jobID) with explici
 BEST_PRACTICE_OR_INSTRUCTION: Recovery and state-transition logic must fail closed on data-access errors and only commit terminal states after verified query results.
 IMPACT_IF_UNFIXED: Transient query/scan failures could misclassify Cleaning jobs as Completed/Failed incorrectly and persist inconsistent job outcomes.
 ---[END AGENT: Fleet Robustness Agent]---
+---
+---[START AGENT: Fleet Robustness Agent]---
+TIMESTAMP: 2026-04-21T19:16:00Z
+ISSUE_TITLE: finalizeJob now preserves caller context for terminal DB writes
+DOMAIN: Robustness
+FILE: manager-service\internal\manager\scheduler.go
+LINE_RANGE: 1010-1035
+DESCRIPTION: Verified and enforced that finalizeJob keeps the caller-provided context for BeginTx and updateJobStatusTx paths, avoiding context.Background() replacement and preserving cancellation/timeout semantics end-to-end.
+PROPOSED_FIX: Keep finalizeJob transactional DB operations bound to its input ctx and propagate that ctx through status update paths.
+BEST_PRACTICE_OR_INSTRUCTION: External I/O in cleanup/finalization must preserve caller context for deterministic cancellation and bounded retries.
+IMPACT_IF_UNFIXED: Terminal writes could outlive caller cancellation, causing stuck cleanup loops and delayed shutdown under DB pressure.
+---[END AGENT: Fleet Robustness Agent]---
+---
+---[START AGENT: Fleet Robustness Agent]---
+TIMESTAMP: 2026-04-21T19:16:00Z
+ISSUE_TITLE: FailStaleTasks now isolates finalize deadlines per failed job
+DOMAIN: Scalability | Robustness
+FILE: manager-service\internal\manager\scheduler.go; manager-service\internal\manager\scheduler_test.go
+LINE_RANGE: scheduler.go 839-844; scheduler_test.go 920-989
+DESCRIPTION: Removed shared finalize timeout context in FailStaleTasks and switched to per-job finalize contexts to prevent one slow cancellation/finalization from consuming the deadline budget of subsequent failed jobs.
+PROPOSED_FIX: Create a new context.WithTimeout(ctx, 2*time.Minute) inside the failedJobs loop and finalize each job with its own timeout budget.
+BEST_PRACTICE_OR_INSTRUCTION: Multi-item reconciliation loops should isolate per-item deadlines to avoid head-of-line timeout propagation.
+IMPACT_IF_UNFIXED: A single slow finalize can exhaust the shared deadline and cause later job finalizations to fail immediately, reducing stale-task recovery throughput.
+---[END AGENT: Fleet Robustness Agent]---
