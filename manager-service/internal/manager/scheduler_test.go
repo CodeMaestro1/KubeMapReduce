@@ -744,6 +744,8 @@ func TestScheduler_FailStaleTasks_NoStaleTasks(t *testing.T) {
 	mock.ExpectBegin()
 	mock.ExpectQuery(regexp.QuoteMeta(QuerySelectStaleTasks)).
 		WillReturnRows(sqlmock.NewRows([]string{"task_id", "attempt_id"}))
+	mock.ExpectExec(regexp.QuoteMeta(QueryFailOrphanExpiredAttempts)).
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectCommit()
 
 	recovered, err := scheduler.FailStaleTasks()
@@ -790,6 +792,8 @@ func TestScheduler_FailStaleTasks_Success(t *testing.T) {
 		WithArgs(sqlmock.AnyArg(), taskID, "system-recovery", sqlmock.AnyArg(), sqlmock.AnyArg()).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
+	mock.ExpectExec(regexp.QuoteMeta(QueryFailOrphanExpiredAttempts)).
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectCommit()
 
 	recovered, err := scheduler.FailStaleTasks()
@@ -833,6 +837,8 @@ func TestScheduler_FailStaleTasks_MarksJobFailedAtMaxAttempts(t *testing.T) {
 		WithArgs(jobID, "Failed", sqlmock.AnyArg()).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
+	mock.ExpectExec(regexp.QuoteMeta(QueryFailOrphanExpiredAttempts)).
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectCommit()
 
 	recovered, err := scheduler.FailStaleTasks()
@@ -893,6 +899,8 @@ func TestScheduler_FailStaleTasks_DeduplicatesJobCancellation(t *testing.T) {
 		WithArgs(jobID, "Failed", sqlmock.AnyArg()).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
+	mock.ExpectExec(regexp.QuoteMeta(QueryFailOrphanExpiredAttempts)).
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectCommit()
 
 	recovered, err := scheduler.FailStaleTasks()

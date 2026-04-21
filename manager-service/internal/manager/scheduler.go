@@ -14,6 +14,11 @@ import (
 )
 
 const MaxTaskAttempts = 3
+const (
+	getNextTaskTimeout   = 10 * time.Second
+	recoverTimeout       = 2 * time.Minute
+	failStaleTaskTimeout = 30 * time.Second
+)
 
 var (
 	ErrNoIdleTasks            = errors.New("no idle tasks available right now, please wait")
@@ -72,7 +77,13 @@ func NewScheduler(db *sql.DB, replicaIndex int, totalReplicas int, orchestrator 
 // Recover reconciles active attempts assigned to this replica and re-spawns workers.
 // It should be called on startup to resume orchestration after a crash.
 func (s *Scheduler) Recover(ctx context.Context) error {
-	rows, err := s.db.QueryContext(ctx, QuerySelectRecoverableAttempts, s.replicaIndex)
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	recoverCtx, recoverCancel := context.WithTimeout(ctx, recoverTimeout)
+	defer recoverCancel()
+
+	rows, err := s.db.QueryContext(recoverCtx, QuerySelectRecoverableAttempts, s.replicaIndex)
 	if err != nil {
 		return fmt.Errorf("failed to query recoverable attempts: %w", err)
 	}
@@ -97,8 +108,12 @@ func (s *Scheduler) Recover(ctx context.Context) error {
 
 	const recoverSpawnTimeout = 20 * time.Second
 	spawnFailures := 0
-	for _, rec := range attemptsToSpawn {
-		spawnCtx, cancel := context.WithTimeout(ctx, recoverSpawnTimeout)
+	for i, rec := range attemptsToSpawn {
+		if recoverCtx.Err() != nil {
+			log.Printf("Recovery deadline reached after %d/%d attempts; deferring remaining tasks to reaper", i, len(attemptsToSpawn))
+			break
+		}
+		spawnCtx, cancel := context.WithTimeout(recoverCtx, recoverSpawnTimeout)
 		err := s.orchestrator.SpawnWorker(spawnCtx, rec.taskID, rec.jobID, rec.attemptID, s.managerAddr)
 		cancel()
 		if err != nil {
@@ -145,7 +160,8 @@ func (s *Scheduler) GetNextTask(jobID string, workerID string) (*Task, error) {
 		return nil, ErrEmptyWorkerID
 	}
 
-	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(context.Background(), getNextTaskTimeout)
+	defer cancel()
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, err
@@ -753,7 +769,8 @@ func (s *Scheduler) FailTask(taskID string, attemptID string, leaseID string, re
 }
 
 func (s *Scheduler) FailStaleTasks() (int, error) {
-	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(context.Background(), failStaleTaskTimeout)
+	defer cancel()
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return 0, err
@@ -829,6 +846,10 @@ func (s *Scheduler) FailStaleTasks() (int, error) {
 			respawnTasks = append(respawnTasks, retrySpawn{taskID: rec.taskID, attemptID: retryAttemptID, jobID: jobID})
 		}
 		recoveredCount++
+	}
+
+	if _, err := tx.ExecContext(ctx, QueryFailOrphanExpiredAttempts); err != nil {
+		return 0, fmt.Errorf("failing orphan expired attempts: %w", err)
 	}
 
 	if err := tx.Commit(); err != nil {

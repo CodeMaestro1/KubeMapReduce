@@ -124,6 +124,20 @@ const QueryUpdateTaskStatus = `UPDATE TASKS SET status = $1, current_attempt_id 
 // QueryFailAttempt marks an attempt as Failed with an end timestamp.
 const QueryFailAttempt = `UPDATE TASK_ATTEMPTS SET status = 'Failed', end_time = NOW() WHERE attempt_id = $1`
 
+// QueryFailOrphanExpiredAttempts closes expired running attempts that are no longer
+// referenced by TASKS.current_attempt_id. This prevents stale orphan attempts from
+// leaking quota accounting when a binding is lost.
+const QueryFailOrphanExpiredAttempts = `
+	UPDATE TASK_ATTEMPTS a
+	SET status = 'Failed', end_time = NOW()
+	WHERE a.status = 'Running'
+	  AND a.last_renewed_at + a.lease_ttl * INTERVAL '1 second' < NOW()
+	  AND NOT EXISTS (
+	    SELECT 1
+	    FROM TASKS t
+	    WHERE t.current_attempt_id = a.attempt_id
+	  )`
+
 // QueryFailRunningAttemptsByJob marks all still-running attempts for a job as failed.
 // Used by CancelJob so quota accounting does not retain orphan "Running" attempts.
 const QueryFailRunningAttemptsByJob = `

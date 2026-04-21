@@ -57,3 +57,15 @@ Fix: Added `limit`/`offset` pagination with validation and a server-side cap for
 [#15] Scheduler quota path held a global config row lock
 Source: copilot-instructions.md
 Fix: Reverted quota config read to the documented pattern (read `SYSTEM_CONFIG.max_concurrent_pods` + running attempts) without `FOR UPDATE`, reducing lock contention and improving assignment throughput under concurrent schedulers.
+
+[#16] Task assignment transactions could hang indefinitely under DB latency
+Source: Best practice (Bounded operation timeouts)
+Fix: Added a bounded context timeout to `Scheduler.GetNextTask` so assignment transactions fail fast instead of holding open DB resources indefinitely when the database is slow or unresponsive.
+
+[#17] Scheduler recovery path had no overall deadline for startup reconciliation
+Source: Best practice (Startup deadline budgeting)
+Fix: Added a global timeout to `Scheduler.Recover` and deadline-aware spawn loop behavior so startup recovery remains bounded and defers remaining work to the stale-task reaper instead of running unbounded.
+
+[#18] Expired orphan attempts could remain `Running` and leak global quota
+Source: Best practice (Lease lifecycle consistency)
+Fix: Added `QueryFailOrphanExpiredAttempts` and executed it during `FailStaleTasks` transactions to close expired running attempts no longer referenced by `TASKS.current_attempt_id`, preventing quota leakage from stale orphan records.
