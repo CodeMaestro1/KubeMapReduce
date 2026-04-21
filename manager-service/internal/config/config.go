@@ -53,9 +53,9 @@ type Config struct {
 	WorkerRPCToken                  string
 
 	// gRPC security and reflection settings.
-	GRPCTLSCertFile      string
-	GRPCTLSKeyFile       string
-	EnableGRPCReflection bool
+	GRPCTLSCertFile        string
+	GRPCTLSKeyFile         string
+	EnableGRPCReflection   bool
 	AllowInsecureWorkerRPC bool
 }
 

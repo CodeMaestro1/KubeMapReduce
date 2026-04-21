@@ -26,8 +26,8 @@ var ErrInvalidJobID = errors.New("invalid job id")
 
 // JobStore abstracts persistent job storage for the API handlers.
 //
-// This interface allows the API layer to remain agnostic of the underlying 
-// storage technology. In production, a [PostgresJobStore] is used for durability; 
+// This interface allows the API layer to remain agnostic of the underlying
+// storage technology. In production, a [PostgresJobStore] is used for durability;
 // for unit tests, a [MemoryJobStore] provides fast, isolated execution.
 type JobStore interface {
 	// CreateJob persists a new job record.
@@ -65,7 +65,7 @@ const (
 
 // PostgresJobStore implements JobStore backed by DDS/PostgreSQL tables.
 //
-// It is the primary production implementation, ensuring that all API instances 
+// It is the primary production implementation, ensuring that all API instances
 // share a consistent view of job statuses.
 type PostgresJobStore struct {
 	db *sql.DB
@@ -79,7 +79,7 @@ func NewPostgresJobStore(db *sql.DB) *PostgresJobStore {
 // CreateJob inserts a new job and its configuration into the DDS within a
 // single transaction, ensuring atomicity across the JOBS and JOB_CONFIGS tables.
 //
-// This atomicity is critical: it prevents a "partial" job where the metadata 
+// This atomicity is critical: it prevents a "partial" job where the metadata
 // exists but the configuration required for scheduling is missing.
 func (s *PostgresJobStore) CreateJob(ctx context.Context, rec JobRecord) error {
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -151,8 +151,8 @@ func (s *PostgresJobStore) ListJobs(ctx context.Context, limit, offset int) ([]J
 
 // MemoryJobStore implements JobStore with in-memory storage.
 //
-// It is used for unit tests to provide fast execution and isolation between 
-// test cases. It simulates TTL and capacity limits to match historical 
+// It is used for unit tests to provide fast execution and isolation between
+// test cases. It simulates TTL and capacity limits to match historical
 // behavior of older non-persistent versions of the API.
 type MemoryJobStore struct {
 	mu            sync.Mutex

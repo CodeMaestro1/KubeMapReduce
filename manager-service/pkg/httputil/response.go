@@ -29,7 +29,7 @@ func WriteJSON(w http.ResponseWriter, status int, payload any) error {
 
 // WriteError sends a plain-text error message with the specified HTTP status code.
 //
-// This is used for simple error signaling where a structured JSON error 
+// This is used for simple error signaling where a structured JSON error
 // body is not required, such as during initial request parsing failures.
 func WriteError(w http.ResponseWriter, status int, message string) {
 	http.Error(w, message, status)

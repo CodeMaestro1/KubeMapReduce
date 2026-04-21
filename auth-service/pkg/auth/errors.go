@@ -15,7 +15,7 @@ type ServiceUnavailableError struct {
 	// Operation describes what was being attempted (e.g. "get admin token").
 	Operation string
 	// Err is the underlying cause of the failure.
-	Err       error
+	Err error
 }
 
 // Error returns a formatted error string.

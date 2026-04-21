@@ -12,7 +12,7 @@ const (
 	// MapInterface defines the expected function signature for Mapper tasks.
 	//
 	// This string is used to ensure the Worker node loads a compatible function.
-	MapInterface    = "map(key,value)->[]KeyValue"
+	MapInterface = "map(key,value)->[]KeyValue"
 	// ReduceInterface defines the expected function signature for Reducer tasks.
 	//
 	// This signature is also used for Combiner tasks, as they perform a local reduction.
@@ -40,7 +40,7 @@ func ValidateJobSubmission(req models.JobSubmissionRequest) error {
 
 	clean := filepath.Clean(req.Filename)
 	// Enforce that filename is a simple basename (no directories) and not a traversal token.
-	// This prevents path traversal attacks where a user might try to read /etc/passwd or 
+	// This prevents path traversal attacks where a user might try to read /etc/passwd or
 	// write to sensitive system directories via the MapReduce input/output paths.
 	if clean == "." || clean == ".." || filepath.IsAbs(clean) || filepath.Base(clean) != clean {
 		return NewBadRequestError("filename is invalid")

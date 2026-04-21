@@ -8,9 +8,9 @@ import (
 
 // RegisterRoutes wires up the HTTP handlers to their respective URL patterns.
 //
-// It separates routes into public endpoints (root, health) and authenticated 
-// endpoints protected by [auth.RequireAnyRole] or [auth.RequireRole] 
-// middlewares. The routing uses the standard library's [http.ServeMux] but 
+// It separates routes into public endpoints (root, health) and authenticated
+// endpoints protected by [auth.RequireAnyRole] or [auth.RequireRole]
+// middlewares. The routing uses the standard library's [http.ServeMux] but
 // leverages the 1.22+ pattern matching features (e.g., "GET /jobs/{job_id}").
 func RegisterRoutes(mux *http.ServeMux, h *Handlers, validator *auth.JWTValidator) {
 	// Public routes
