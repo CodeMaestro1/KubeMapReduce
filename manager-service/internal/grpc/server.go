@@ -104,7 +104,7 @@ func (s *WorkerServer) Register(ctx context.Context, req *pb.RegisterRequest) (*
 		return nil, status.Error(codes.InvalidArgument, "attempt_id is required")
 	}
 
-	task, err := s.scheduler.GetTaskByID(req.TaskId)
+	task, err := s.scheduler.GetTaskByID(ctx, req.TaskId)
 	if err != nil {
 		if errors.Is(err, manager.ErrTaskNotFound) {
 			return nil, status.Errorf(codes.NotFound, "task %s not found", req.TaskId)
@@ -192,7 +192,7 @@ func (s *WorkerServer) Heartbeat(ctx context.Context, req *pb.HeartbeatRequest) 
 		return nil, status.Error(codes.InvalidArgument, "task_id, attempt_id, and lease_id are required")
 	}
 
-	err := s.scheduler.RenewLease(req.TaskId, req.AttemptId, req.LeaseId)
+	err := s.scheduler.RenewLease(ctx, req.TaskId, req.AttemptId, req.LeaseId)
 	if err != nil {
 		if errors.Is(err, manager.ErrTaskNotFound) {
 			return &pb.HeartbeatResponse{Action: pb.HeartbeatResponse_TERMINATE}, nil
@@ -211,7 +211,7 @@ func (s *WorkerServer) TaskComplete(ctx context.Context, req *pb.TaskCompleteReq
 		return nil, status.Error(codes.InvalidArgument, "task_id, attempt_id, and lease_id are required")
 	}
 
-	err := s.scheduler.CompleteTask(req.TaskId, req.AttemptId, req.LeaseId, req.OutputLocations, req.OutputChecksums)
+	err := s.scheduler.CompleteTask(ctx, req.TaskId, req.AttemptId, req.LeaseId, req.OutputLocations, req.OutputChecksums)
 	if err != nil {
 		if errors.Is(err, manager.ErrStaleAttempt) || errors.Is(err, manager.ErrExpiredLease) || errors.Is(err, manager.ErrInvalidStateTransition) {
 			return nil, status.Errorf(codes.PermissionDenied, "commit rejected: %v", err)
@@ -233,7 +233,7 @@ func (s *WorkerServer) TaskFailed(ctx context.Context, req *pb.TaskFailedRequest
 		return nil, status.Error(codes.InvalidArgument, "task_id, attempt_id, and lease_id are required")
 	}
 
-	err := s.scheduler.FailTask(req.TaskId, req.AttemptId, req.LeaseId, req.ErrorMessage)
+	err := s.scheduler.FailTask(ctx, req.TaskId, req.AttemptId, req.LeaseId, req.ErrorMessage)
 	if err != nil {
 		if errors.Is(err, manager.ErrStaleAttempt) || errors.Is(err, manager.ErrExpiredLease) || errors.Is(err, manager.ErrInvalidStateTransition) {
 			return nil, status.Errorf(codes.PermissionDenied, "fail task rejected: %v", err)

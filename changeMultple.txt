@@ -101,3 +101,27 @@ Security standard: fail-closed authentication defaults; insecure fallback only v
 IMPACT_IF_UNFIXED:
 Misconfigured deployments (missing internal API key) continue accepting local-origin cancellation requests, enabling unauthorized job termination and operational abuse.
 ---[END AGENT: Fleet Security Agent]---
+---
+---[START AGENT: Fleet Robustness Agent]---
+TIMESTAMP: 2026-04-21T16:10:37.6321726Z
+ISSUE_TITLE: Scheduler DB and orchestration paths now preserve caller context
+DOMAIN: Robustness
+FILE: manager-service\internal\manager\scheduler.go; manager-service\internal\grpc\server.go; manager-service\cmd\manager\main.go
+LINE_RANGE: scheduler.go 137-1099; server.go 107-236; main.go 107-132
+DESCRIPTION: Refactored Scheduler public methods that hit DB/external systems to accept context.Context and removed internal context.Background() creation. Updated gRPC handlers to pass request context and manager main loop/cancel endpoint to pass bounded derived contexts, preserving cancellation/timeout propagation while keeping attempt/lease fencing behavior unchanged.
+PROPOSED_FIX: Added ctx parameter to GetNextTask, ScheduleJob, UpsertSystemConfig, CompleteTask, RenewLease, CancelJob, FailTask, FailStaleTasks, GetMapOutputs, GetReduceOutputs, AllMapTasksCompleted, IsJobFinished, GetTaskStatus, GetTaskByID; threaded ctx through BeginTx/Query/Exec and updated all call sites/tests accordingly.
+BEST_PRACTICE_OR_INSTRUCTION: External I/O paths in high-fanout scheduler and RPC handlers must propagate caller context end-to-end with explicit timeout budgets at boundaries.
+IMPACT_IF_UNFIXED: DB stalls and downstream slowness could still ignore request cancellation, causing goroutine buildup and degraded fleet responsiveness.
+---[END AGENT: Fleet Robustness Agent]---
+---
+---[START AGENT: Fleet Robustness Agent]---
+TIMESTAMP: 2026-04-21T16:10:37.6321726Z
+ISSUE_TITLE: Cleanup recovery now handles failed/pending count query errors safely
+DOMAIN: Robustness
+FILE: manager-service\internal\manager\scheduler.go
+LINE_RANGE: 1040-1106
+DESCRIPTION: Startup cleanup recovery no longer ignores QueryRow/Scan failures when deriving terminal state for Cleaning jobs. Added explicit error handling and retry re-enqueue path so terminal state is never inferred from unchecked zero-values.
+PROPOSED_FIX: Introduced determineCleaningTerminalState(ctx, jobID) with explicit failed/pending count error checks; StartCleanupReconciler now logs and re-enqueues unresolved jobs with unknown terminal state, then retries derivation on subsequent reconciliation ticks before calling finalizeJob.
+BEST_PRACTICE_OR_INSTRUCTION: Recovery and state-transition logic must fail closed on data-access errors and only commit terminal states after verified query results.
+IMPACT_IF_UNFIXED: Transient query/scan failures could misclassify Cleaning jobs as Completed/Failed incorrectly and persist inconsistent job outcomes.
+---[END AGENT: Fleet Robustness Agent]---

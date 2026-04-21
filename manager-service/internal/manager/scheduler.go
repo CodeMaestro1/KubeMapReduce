@@ -134,7 +134,7 @@ func (s *Scheduler) prepareRetryAttemptTx(ctx context.Context, tx *sql.Tx, taskI
 	return attemptID.String(), nil
 }
 
-func (s *Scheduler) GetNextTask(jobID string, workerID string) (*Task, error) {
+func (s *Scheduler) GetNextTask(ctx context.Context, jobID string, workerID string) (*Task, error) {
 	if jobID == "" {
 		return nil, ErrEmptyJobID
 	}
@@ -145,7 +145,6 @@ func (s *Scheduler) GetNextTask(jobID string, workerID string) (*Task, error) {
 		return nil, ErrEmptyWorkerID
 	}
 
-	ctx := context.Background()
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, err
@@ -369,8 +368,7 @@ func (s *Scheduler) hydrateTaskMetadata(ctx context.Context, q taskMetadataQueri
 	return nil
 }
 
-func (s *Scheduler) ScheduleJob(req ScheduleJobRequest) error {
-	ctx := context.Background()
+func (s *Scheduler) ScheduleJob(ctx context.Context, req ScheduleJobRequest) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -491,8 +489,7 @@ func (s *Scheduler) ScheduleJob(req ScheduleJobRequest) error {
 	return nil
 }
 
-func (s *Scheduler) UpsertSystemConfig(req SystemConfigUpdate) error {
-	ctx := context.Background()
+func (s *Scheduler) UpsertSystemConfig(ctx context.Context, req SystemConfigUpdate) error {
 	_, err := s.db.ExecContext(ctx, QueryUpsertSystemConfig, req.MaxConcurrentPods, req.CPULimit, req.MemoryLimit, time.Now())
 	return err
 }
@@ -514,7 +511,7 @@ func (s *Scheduler) validateLeaseTx(ctx context.Context, tx *sql.Tx, attemptID s
 	return nil
 }
 
-func (s *Scheduler) CompleteTask(taskID string, attemptID string, leaseID string, outputURIs []string, outputChecksums []string) error {
+func (s *Scheduler) CompleteTask(ctx context.Context, taskID string, attemptID string, leaseID string, outputURIs []string, outputChecksums []string) error {
 	if len(outputURIs) != len(outputChecksums) {
 		return ErrOutputMismatch
 	}
@@ -525,7 +522,6 @@ func (s *Scheduler) CompleteTask(taskID string, attemptID string, leaseID string
 	safeChecksums := make([]string, len(outputChecksums))
 	copy(safeChecksums, outputChecksums)
 
-	ctx := context.Background()
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -592,7 +588,7 @@ func (s *Scheduler) CompleteTask(taskID string, attemptID string, leaseID string
 
 	if jobCompleted {
 		go func() {
-			cancelCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+			cancelCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Minute)
 			defer cancel()
 			s.finalizeJob(cancelCtx, jobID, "Completed")
 		}()
@@ -601,8 +597,7 @@ func (s *Scheduler) CompleteTask(taskID string, attemptID string, leaseID string
 	return nil
 }
 
-func (s *Scheduler) RenewLease(taskID string, attemptID string, leaseID string) error {
-	ctx := context.Background()
+func (s *Scheduler) RenewLease(ctx context.Context, taskID string, attemptID string, leaseID string) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -638,8 +633,7 @@ func (s *Scheduler) RenewLease(taskID string, attemptID string, leaseID string) 
 	return tx.Commit()
 }
 
-func (s *Scheduler) CancelJob(jobID string) error {
-	ctx := context.Background()
+func (s *Scheduler) CancelJob(ctx context.Context, jobID string) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -664,7 +658,7 @@ func (s *Scheduler) CancelJob(jobID string) error {
 	}
 
 	go func() {
-		cancelCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		cancelCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Minute)
 		defer cancel()
 		s.finalizeJob(cancelCtx, jobID, "Cancelled")
 	}()
@@ -672,8 +666,7 @@ func (s *Scheduler) CancelJob(jobID string) error {
 	return nil
 }
 
-func (s *Scheduler) FailTask(taskID string, attemptID string, leaseID string, reason string) error {
-	ctx := context.Background()
+func (s *Scheduler) FailTask(ctx context.Context, taskID string, attemptID string, leaseID string, reason string) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -745,12 +738,12 @@ func (s *Scheduler) FailTask(taskID string, attemptID string, leaseID string, re
 
 	if newState == "Failed" {
 		go func() {
-			cancelCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+			cancelCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Minute)
 			defer cancel()
 			s.finalizeJob(cancelCtx, jobID, "Failed")
 		}()
 	} else if newState == "Idle" {
-		spawnCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		spawnCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
 		defer cancel()
 		if err := s.orchestrator.SpawnWorker(spawnCtx, taskID, jobID, retryAttemptID, s.managerAddr); err != nil {
 			log.Printf("Failed to respawn worker for failed task %s (attempt %s): %v", taskID, retryAttemptID, err)
@@ -760,8 +753,7 @@ func (s *Scheduler) FailTask(taskID string, attemptID string, leaseID string, re
 	return nil
 }
 
-func (s *Scheduler) FailStaleTasks() (int, error) {
-	ctx := context.Background()
+func (s *Scheduler) FailStaleTasks(ctx context.Context) (int, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return 0, err
@@ -844,14 +836,14 @@ func (s *Scheduler) FailStaleTasks() (int, error) {
 		return 0, err
 	}
 
-	cancelCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	cancelCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
 	defer cancel()
 	for jobID := range failedJobs {
 		s.finalizeJob(cancelCtx, jobID, "Failed")
 	}
 
 	for _, rec := range respawnTasks {
-		spawnCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		spawnCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 		if err := s.orchestrator.SpawnWorker(spawnCtx, rec.taskID, rec.jobID, rec.attemptID, s.managerAddr); err != nil {
 			log.Printf("Failed to respawn worker for stale task %s (attempt %s): %v", rec.taskID, rec.attemptID, err)
 		}
@@ -861,8 +853,7 @@ func (s *Scheduler) FailStaleTasks() (int, error) {
 	return recoveredCount, nil
 }
 
-func (s *Scheduler) GetMapOutputs(jobID string) ([]string, error) {
-	ctx := context.Background()
+func (s *Scheduler) GetMapOutputs(ctx context.Context, jobID string) ([]string, error) {
 	rows, err := s.db.QueryContext(ctx, QueryGetMapOutputs, jobID)
 	if err != nil {
 		return nil, err
@@ -883,8 +874,7 @@ func (s *Scheduler) GetMapOutputs(jobID string) ([]string, error) {
 	return outputs, nil
 }
 
-func (s *Scheduler) GetReduceOutputs(jobID string) ([]string, error) {
-	ctx := context.Background()
+func (s *Scheduler) GetReduceOutputs(ctx context.Context, jobID string) ([]string, error) {
 	rows, err := s.db.QueryContext(ctx, QueryGetReduceOutputs, jobID)
 	if err != nil {
 		return nil, err
@@ -905,22 +895,19 @@ func (s *Scheduler) GetReduceOutputs(jobID string) ([]string, error) {
 	return outputs, nil
 }
 
-func (s *Scheduler) AllMapTasksCompleted(jobID string) bool {
-	ctx := context.Background()
+func (s *Scheduler) AllMapTasksCompleted(ctx context.Context, jobID string) bool {
 	var pending int
 	err := s.db.QueryRowContext(ctx, QueryCountPendingMapTasks, jobID).Scan(&pending)
 	return err == nil && pending == 0
 }
 
-func (s *Scheduler) IsJobFinished(jobID string) bool {
-	ctx := context.Background()
+func (s *Scheduler) IsJobFinished(ctx context.Context, jobID string) bool {
 	var pending int
 	err := s.db.QueryRowContext(ctx, QueryCountAllPendingTasks, jobID).Scan(&pending)
 	return err == nil && pending == 0
 }
 
-func (s *Scheduler) GetTaskStatus(taskID string) (TaskState, error) {
-	ctx := context.Background()
+func (s *Scheduler) GetTaskStatus(ctx context.Context, taskID string) (TaskState, error) {
 	var status string
 	err := s.db.QueryRowContext(ctx, QueryGetTaskStatus, taskID).Scan(&status)
 	if err != nil {
@@ -943,8 +930,7 @@ func (s *Scheduler) GetTaskStatus(taskID string) (TaskState, error) {
 	}
 }
 
-func (s *Scheduler) GetTaskByID(taskID string) (*Task, error) {
-	ctx := context.Background()
+func (s *Scheduler) GetTaskByID(ctx context.Context, taskID string) (*Task, error) {
 	var t Task
 	var jobID uuid.UUID
 	var dbType string
@@ -1029,8 +1015,7 @@ func (s *Scheduler) finalizeJob(ctx context.Context, jobID, terminalState string
 		return
 	}
 
-	ctxBg := context.Background()
-	tx, err := s.db.BeginTx(ctxBg, nil)
+	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		log.Printf("Failed to begin tx for terminal status update of job %s: %v", jobID, err)
 		s.enqueueCleanup(jobID, terminalState)
@@ -1038,7 +1023,7 @@ func (s *Scheduler) finalizeJob(ctx context.Context, jobID, terminalState string
 	}
 	defer tx.Rollback()
 
-	if err := s.updateJobStatusTx(ctxBg, tx, jobID, terminalState); err != nil {
+	if err := s.updateJobStatusTx(ctx, tx, jobID, terminalState); err != nil {
 		log.Printf("Failed to update terminal status of job %s: %v", jobID, err)
 		s.enqueueCleanup(jobID, terminalState)
 		return
@@ -1063,22 +1048,20 @@ func (s *Scheduler) StartCleanupReconciler(ctx context.Context, interval time.Du
 		defer rows.Close()
 		for rows.Next() {
 			var jobID string
-			if err := rows.Scan(&jobID); err == nil {
-				var failedCount int
-				s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM TASKS WHERE job_id = $1 AND status = 'Failed'", jobID).Scan(&failedCount)
-
-				terminalState := "Completed"
-				if failedCount > 0 {
-					terminalState = "Failed" // fallback to Failed for Cancelled/Failed if tasks failed
-				} else {
-					var pending int
-					s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM TASKS WHERE job_id = $1 AND status != 'Completed'", jobID).Scan(&pending)
-					if pending > 0 {
-						terminalState = "Failed"
-					}
-				}
-				s.enqueueCleanup(jobID, terminalState)
+			if err := rows.Scan(&jobID); err != nil {
+				log.Printf("Warning: failed to scan Cleaning job row during recovery: %v", err)
+				continue
 			}
+			terminalState, deriveErr := s.determineCleaningTerminalState(ctx, jobID)
+			if deriveErr != nil {
+				log.Printf("Warning: failed to determine terminal state for Cleaning job %s during recovery: %v", jobID, deriveErr)
+				s.enqueueCleanup(jobID, "")
+				continue
+			}
+			s.enqueueCleanup(jobID, terminalState)
+		}
+		if err := rows.Err(); err != nil {
+			log.Printf("Warning: failed iterating Cleaning jobs during recovery: %v", err)
 		}
 	} else {
 		log.Printf("Warning: failed to recover Cleaning jobs: %v", err)
@@ -1094,10 +1077,39 @@ func (s *Scheduler) StartCleanupReconciler(ctx context.Context, interval time.Du
 			case <-ticker.C:
 				for jobID, terminalState := range s.popPendingCleanup() {
 					retryCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+					if strings.TrimSpace(terminalState) == "" {
+						var deriveErr error
+						terminalState, deriveErr = s.determineCleaningTerminalState(retryCtx, jobID)
+						if deriveErr != nil {
+							log.Printf("Warning: retrying cleanup for job %s after terminal-state recovery error: %v", jobID, deriveErr)
+							s.enqueueCleanup(jobID, "")
+							cancel()
+							continue
+						}
+					}
 					s.finalizeJob(retryCtx, jobID, terminalState)
 					cancel()
 				}
 			}
 		}
 	}()
+}
+
+func (s *Scheduler) determineCleaningTerminalState(ctx context.Context, jobID string) (string, error) {
+	var failedCount int
+	if err := s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM TASKS WHERE job_id = $1 AND status = 'Failed'", jobID).Scan(&failedCount); err != nil {
+		return "", fmt.Errorf("query failed task count for job %s: %w", jobID, err)
+	}
+	if failedCount > 0 {
+		return "Failed", nil
+	}
+
+	var pending int
+	if err := s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM TASKS WHERE job_id = $1 AND status != 'Completed'", jobID).Scan(&pending); err != nil {
+		return "", fmt.Errorf("query pending task count for job %s: %w", jobID, err)
+	}
+	if pending > 0 {
+		return "Failed", nil
+	}
+	return "Completed", nil
 }

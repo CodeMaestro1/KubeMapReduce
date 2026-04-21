@@ -112,7 +112,7 @@ func TestE2E_WorkerKillDuringMapTask(t *testing.T) {
 	mock.ExpectExec(regexp.QuoteMeta(QueryUpdateJobStatus)).WithArgs(jobID, "Running", sqlmock.AnyArg()).WillReturnResult(sqlmock.NewResult(1, 1))
 	mock.ExpectCommit()
 
-	task, err := s.GetNextTask(jobID, workerID)
+	task, err := s.GetNextTask(context.Background(), jobID, workerID)
 	if err != nil {
 		t.Fatalf("GetNextTask failed: %v", err)
 	}
@@ -132,7 +132,7 @@ func TestE2E_WorkerKillDuringMapTask(t *testing.T) {
 	mock.ExpectExec(regexp.QuoteMeta(QueryInsertAttempt)).WithArgs(sqlmock.AnyArg(), taskID, "system-recovery", sqlmock.AnyArg(), s.leaseTTL).WillReturnResult(sqlmock.NewResult(1, 1))
 	mock.ExpectCommit()
 
-	recovered, err := s.FailStaleTasks()
+	recovered, err := s.FailStaleTasks(context.Background())
 	if err != nil {
 		t.Fatalf("FailStaleTasks failed: %v", err)
 	}
@@ -165,7 +165,7 @@ func TestE2E_ZombieFencing(t *testing.T) {
 	mock.ExpectQuery(regexp.QuoteMeta(QueryCheckLeaseValid)).WithArgs(attemptID1, leaseID1).WillReturnRows(sqlmock.NewRows([]string{"valid"}).AddRow(false))
 	mock.ExpectRollback()
 
-	err := s.CompleteTask(taskID, attemptID1, leaseID1, []string{"u1"}, []string{"c1"})
+	err := s.CompleteTask(context.Background(), taskID, attemptID1, leaseID1, []string{"u1"}, []string{"c1"})
 	if err == nil {
 		t.Fatal("Expected error for zombie completion, got nil")
 	}
@@ -198,7 +198,7 @@ func TestE2E_TripleFailure_MaxAttemptsExhaustion(t *testing.T) {
 	mock.ExpectExec(regexp.QuoteMeta(QueryUpdateJobStatus)).WithArgs(jobID, "Failed", sqlmock.AnyArg()).WillReturnResult(sqlmock.NewResult(1, 1))
 	mock.ExpectCommit()
 
-	recovered, err := s.FailStaleTasks()
+	recovered, err := s.FailStaleTasks(context.Background())
 	if err != nil {
 		t.Fatalf("FailStaleTasks failed: %v", err)
 	}
@@ -224,7 +224,7 @@ func TestE2E_CancellationDuringExecution(t *testing.T) {
 	mock.ExpectExec(regexp.QuoteMeta(QueryUpdateJobStatus)).WithArgs(jobID, "Cancelled", sqlmock.AnyArg()).WillReturnResult(sqlmock.NewResult(1, 1))
 	mock.ExpectCommit()
 
-	err := s.CancelJob(jobID)
+	err := s.CancelJob(context.Background(), jobID)
 	if err != nil {
 		t.Fatalf("CancelJob failed: %v", err)
 	}

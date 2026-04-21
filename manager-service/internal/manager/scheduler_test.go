@@ -134,7 +134,7 @@ func TestScheduler_GetNextTask_QuotaExceeded(t *testing.T) {
 		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(10))
 	mock.ExpectRollback()
 
-	_, err := scheduler.GetNextTask(jobID, "worker-1")
+	_, err := scheduler.GetNextTask(context.Background(), jobID, "worker-1")
 	if !errors.Is(err, ErrQuotaExceeded) {
 		t.Errorf("expected ErrQuotaExceeded, got %v", err)
 	}
@@ -161,7 +161,7 @@ func TestScheduler_GetNextTask_JobFailed(t *testing.T) {
 		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(1))
 	mock.ExpectRollback()
 
-	_, err := scheduler.GetNextTask(jobID, "worker-1")
+	_, err := scheduler.GetNextTask(context.Background(), jobID, "worker-1")
 	if !errors.Is(err, ErrJobFailed) {
 		t.Errorf("expected ErrJobFailed, got %v", err)
 	}
@@ -205,7 +205,7 @@ func TestScheduler_GetNextTask_MapSuccess(t *testing.T) {
 
 	mock.ExpectCommit()
 
-	task, err := scheduler.GetNextTask(jobID.String(), "worker-1")
+	task, err := scheduler.GetNextTask(context.Background(), jobID.String(), "worker-1")
 	if err != nil {
 		t.Fatalf("expected task, got err: %v", err)
 	}
@@ -279,7 +279,7 @@ func TestScheduler_GetNextTask_NoMapIdle_ReduceSuccess(t *testing.T) {
 
 	mock.ExpectCommit()
 
-	task, err := scheduler.GetNextTask(jobID.String(), "worker-1")
+	task, err := scheduler.GetNextTask(context.Background(), jobID.String(), "worker-1")
 	if err != nil {
 		t.Fatalf("expected task, got err: %v", err)
 	}
@@ -332,7 +332,7 @@ func TestScheduler_GetNextTask_JobCompleted(t *testing.T) {
 
 	mock.ExpectRollback()
 
-	_, err := scheduler.GetNextTask(jobID, "worker-1")
+	_, err := scheduler.GetNextTask(context.Background(), jobID, "worker-1")
 	if !errors.Is(err, ErrJobCompleted) {
 		t.Errorf("expected ErrJobCompleted, got %v", err)
 	}
@@ -342,7 +342,7 @@ func TestScheduler_GetNextTask_EmptyWorkerID(t *testing.T) {
 	db, _, scheduler := setupMockDB(t)
 	defer db.Close()
 
-	_, err := scheduler.GetNextTask(uuid.NewString(), "")
+	_, err := scheduler.GetNextTask(context.Background(), uuid.NewString(), "")
 	if !errors.Is(err, ErrEmptyWorkerID) {
 		t.Errorf("expected ErrEmptyWorkerID, got %v", err)
 	}
@@ -352,7 +352,7 @@ func TestScheduler_GetNextTask_EmptyJobID(t *testing.T) {
 	db, _, scheduler := setupMockDB(t)
 	defer db.Close()
 
-	_, err := scheduler.GetNextTask("", "worker-1")
+	_, err := scheduler.GetNextTask(context.Background(), "", "worker-1")
 	if !errors.Is(err, ErrEmptyJobID) {
 		t.Errorf("expected ErrEmptyJobID, got %v", err)
 	}
@@ -362,7 +362,7 @@ func TestScheduler_GetNextTask_InvalidJobID(t *testing.T) {
 	db, _, scheduler := setupMockDB(t)
 	defer db.Close()
 
-	_, err := scheduler.GetNextTask("not-a-uuid", "worker-1")
+	_, err := scheduler.GetNextTask(context.Background(), "not-a-uuid", "worker-1")
 	if err == nil {
 		t.Fatal("expected error for invalid job ID format")
 	}
@@ -408,7 +408,7 @@ func TestScheduler_CompleteTask_Success(t *testing.T) {
 
 	mock.ExpectCommit()
 
-	err := scheduler.CompleteTask(taskID, attemptID, "mock-lease", []string{"s3://output1"}, []string{"hash1"})
+	err := scheduler.CompleteTask(context.Background(), taskID, attemptID, "mock-lease", []string{"s3://output1"}, []string{"hash1"})
 	if err != nil {
 		t.Errorf("unexpected error: %v", err)
 	}
@@ -418,7 +418,7 @@ func TestScheduler_CompleteTask_LengthMismatch(t *testing.T) {
 	db, _, scheduler := setupMockDB(t)
 	defer db.Close()
 
-	err := scheduler.CompleteTask(uuid.NewString(), uuid.NewString(), "mock-lease", []string{"uri1"}, []string{"hash1", "hash2"})
+	err := scheduler.CompleteTask(context.Background(), uuid.NewString(), uuid.NewString(), "mock-lease", []string{"uri1"}, []string{"hash1", "hash2"})
 	if !errors.Is(err, ErrOutputMismatch) {
 		t.Errorf("expected output mismatch, got %v", err)
 	}
@@ -437,7 +437,7 @@ func TestScheduler_CompleteTask_AlreadyCompleted(t *testing.T) {
 		WillReturnRows(sqlmock.NewRows([]string{"status", "current_attempt_id"}).AddRow("Completed", attemptID))
 	mock.ExpectRollback()
 
-	err := scheduler.CompleteTask(taskID, attemptID, "mock-lease", nil, nil)
+	err := scheduler.CompleteTask(context.Background(), taskID, attemptID, "mock-lease", nil, nil)
 	if !errors.Is(err, ErrInvalidStateTransition) {
 		t.Errorf("expected invalid state transition for already completed, got %v", err)
 	}
@@ -457,7 +457,7 @@ func TestScheduler_CompleteTask_StaleAttempt(t *testing.T) {
 		WillReturnRows(sqlmock.NewRows([]string{"status", "current_attempt_id"}).AddRow("In-Progress", attemptID))
 	mock.ExpectRollback()
 
-	err := scheduler.CompleteTask(taskID, staleAttemptID, "mock-lease", nil, nil)
+	err := scheduler.CompleteTask(context.Background(), taskID, staleAttemptID, "mock-lease", nil, nil)
 	if !errors.Is(err, ErrStaleAttempt) {
 		t.Errorf("expected ErrStaleAttempt, got %v", err)
 	}
@@ -475,7 +475,7 @@ func TestScheduler_CompleteTask_NotFound(t *testing.T) {
 		WillReturnError(sql.ErrNoRows)
 	mock.ExpectRollback()
 
-	if err := scheduler.CompleteTask(taskID, uuid.NewString(), "mock-lease", nil, nil); !errors.Is(err, ErrTaskNotFound) {
+	if err := scheduler.CompleteTask(context.Background(), taskID, uuid.NewString(), "mock-lease", nil, nil); !errors.Is(err, ErrTaskNotFound) {
 		t.Fatalf("expected ErrTaskNotFound, got: %v", err)
 	}
 }
@@ -516,7 +516,7 @@ func TestScheduler_FailTask_MaxAttempts(t *testing.T) {
 
 	mock.ExpectCommit()
 
-	err := scheduler.FailTask(taskID, attemptID, leaseID, "crash")
+	err := scheduler.FailTask(context.Background(), taskID, attemptID, leaseID, "crash")
 	if err != nil {
 		t.Errorf("unexpected error: %v", err)
 	}
@@ -562,7 +562,7 @@ func TestScheduler_FailTask_RetryableSuccess(t *testing.T) {
 
 	mock.ExpectCommit()
 
-	err := scheduler.FailTask(taskID, attemptID, leaseID, "worker exited")
+	err := scheduler.FailTask(context.Background(), taskID, attemptID, leaseID, "worker exited")
 	if err != nil {
 		t.Errorf("unexpected error: %v", err)
 	}
@@ -586,7 +586,7 @@ func TestScheduler_FailTask_DBClockExpiredEvenIfAppWouldThinkValid(t *testing.T)
 	expectLeaseValidation(mock, attemptID, leaseID, false)
 	mock.ExpectRollback()
 
-	err := scheduler.FailTask(taskID, attemptID, leaseID, "late failure")
+	err := scheduler.FailTask(context.Background(), taskID, attemptID, leaseID, "late failure")
 	if !errors.Is(err, ErrExpiredLease) {
 		t.Fatalf("expected ErrExpiredLease got %v", err)
 	}
@@ -611,7 +611,7 @@ func TestScheduler_RenewLease_Success(t *testing.T) {
 
 	mock.ExpectCommit()
 
-	err := scheduler.RenewLease(taskID, attemptID, leaseID)
+	err := scheduler.RenewLease(context.Background(), taskID, attemptID, leaseID)
 	if err != nil {
 		t.Errorf("unexpected error: %v", err)
 	}
@@ -640,7 +640,7 @@ func TestScheduler_RenewLease_DBClockValidEvenIfAppWouldThinkExpired(t *testing.
 
 	mock.ExpectCommit()
 
-	err := scheduler.RenewLease(taskID, attemptID, leaseID)
+	err := scheduler.RenewLease(context.Background(), taskID, attemptID, leaseID)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -661,7 +661,7 @@ func TestScheduler_RenewLease_Expired(t *testing.T) {
 	expectLeaseValidation(mock, attemptID, leaseID, false)
 	mock.ExpectRollback()
 
-	err := scheduler.RenewLease(taskID, attemptID, leaseID)
+	err := scheduler.RenewLease(context.Background(), taskID, attemptID, leaseID)
 	if !errors.Is(err, ErrExpiredLease) {
 		t.Fatalf("expected ErrExpiredLease got %v", err)
 	}
@@ -681,7 +681,7 @@ func TestScheduler_RenewLease_Mismatched(t *testing.T) {
 	expectLeaseValidation(mock, attemptID, leaseID, false)
 	mock.ExpectRollback()
 
-	err := scheduler.RenewLease(taskID, attemptID, leaseID)
+	err := scheduler.RenewLease(context.Background(), taskID, attemptID, leaseID)
 	if !errors.Is(err, ErrExpiredLease) {
 		t.Fatalf("expected ErrExpiredLease got %v", err)
 	}
@@ -756,7 +756,7 @@ func TestScheduler_FailStaleTasks_NoStaleTasks(t *testing.T) {
 		WillReturnRows(sqlmock.NewRows([]string{"task_id", "attempt_id"}))
 	mock.ExpectCommit()
 
-	recovered, err := scheduler.FailStaleTasks()
+	recovered, err := scheduler.FailStaleTasks(context.Background())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -802,7 +802,7 @@ func TestScheduler_FailStaleTasks_Success(t *testing.T) {
 
 	mock.ExpectCommit()
 
-	recovered, err := scheduler.FailStaleTasks()
+	recovered, err := scheduler.FailStaleTasks(context.Background())
 	if err != nil {
 		t.Errorf("unexpected error: %v", err)
 	}
@@ -845,7 +845,7 @@ func TestScheduler_FailStaleTasks_MarksJobFailedAtMaxAttempts(t *testing.T) {
 
 	mock.ExpectCommit()
 
-	recovered, err := scheduler.FailStaleTasks()
+	recovered, err := scheduler.FailStaleTasks(context.Background())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -905,7 +905,7 @@ func TestScheduler_FailStaleTasks_DeduplicatesJobCancellation(t *testing.T) {
 
 	mock.ExpectCommit()
 
-	recovered, err := scheduler.FailStaleTasks()
+	recovered, err := scheduler.FailStaleTasks(context.Background())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -945,7 +945,7 @@ func TestScheduler_GetTaskByID_WithAttempt(t *testing.T) {
 		WillReturnRows(sqlmock.NewRows([]string{"worker_id", "lease_id", "start_time", "last_renewed_at"}).
 			AddRow("worker-1", "lease123", time.Now(), time.Now()))
 
-	task, err := scheduler.GetTaskByID(taskID)
+	task, err := scheduler.GetTaskByID(context.Background(), taskID)
 	if err != nil {
 		t.Errorf("unexpected error: %v", err)
 	}
@@ -981,7 +981,7 @@ func TestScheduler_AllMapTasksCompleted_Negative(t *testing.T) {
 		WithArgs(jobID).
 		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(1))
 
-	if scheduler.AllMapTasksCompleted(jobID) {
+	if scheduler.AllMapTasksCompleted(context.Background(), jobID) {
 		t.Errorf("expected false")
 	}
 }
@@ -995,7 +995,7 @@ func TestScheduler_IsJobFinished_Negative(t *testing.T) {
 		WithArgs(jobID).
 		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(5))
 
-	if scheduler.IsJobFinished(jobID) {
+	if scheduler.IsJobFinished(context.Background(), jobID) {
 		t.Errorf("expected false")
 	}
 }
@@ -1009,7 +1009,7 @@ func TestScheduler_GetMapOutputs(t *testing.T) {
 		WithArgs(jobID).
 		WillReturnRows(sqlmock.NewRows([]string{"output_uri"}).AddRow("s3://map-out-1").AddRow("s3://map-out-2"))
 
-	outputs, err := scheduler.GetMapOutputs(jobID)
+	outputs, err := scheduler.GetMapOutputs(context.Background(), jobID)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1027,7 +1027,7 @@ func TestScheduler_GetReduceOutputs(t *testing.T) {
 		WithArgs(jobID).
 		WillReturnRows(sqlmock.NewRows([]string{"output_uri"}).AddRow("s3://reduce-out-1"))
 
-	outputs, err := scheduler.GetReduceOutputs(jobID)
+	outputs, err := scheduler.GetReduceOutputs(context.Background(), jobID)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1046,7 +1046,7 @@ func TestScheduler_GetTaskStatus(t *testing.T) {
 		WithArgs(taskID).
 		WillReturnRows(sqlmock.NewRows([]string{"status"}).AddRow("In-Progress"))
 
-	status, err := scheduler.GetTaskStatus(taskID)
+	status, err := scheduler.GetTaskStatus(context.Background(), taskID)
 	if err != nil {
 		t.Errorf("unexpected error: %v", err)
 	}
@@ -1058,7 +1058,7 @@ func TestScheduler_GetTaskStatus(t *testing.T) {
 		WithArgs(taskID).
 		WillReturnError(sql.ErrNoRows)
 
-	_, err = scheduler.GetTaskStatus(taskID)
+	_, err = scheduler.GetTaskStatus(context.Background(), taskID)
 	if !errors.Is(err, ErrTaskNotFound) {
 		t.Errorf("expected ErrTaskNotFound, got %v", err)
 	}
@@ -1079,7 +1079,7 @@ func TestScheduler_CompleteTask_LeaseExpired(t *testing.T) {
 	expectLeaseValidation(mock, attemptID, leaseID, false)
 	mock.ExpectRollback()
 
-	err := scheduler.CompleteTask(taskID, attemptID, leaseID, nil, nil)
+	err := scheduler.CompleteTask(context.Background(), taskID, attemptID, leaseID, nil, nil)
 	if !errors.Is(err, ErrExpiredLease) {
 		t.Fatalf("expected ErrExpiredLease got %v", err)
 	}
@@ -1102,7 +1102,7 @@ func TestScheduler_CompleteTask_DBClockExpiredEvenIfAppWouldThinkValid(t *testin
 	expectLeaseValidation(mock, attemptID, leaseID, false)
 	mock.ExpectRollback()
 
-	err := scheduler.CompleteTask(taskID, attemptID, leaseID, nil, nil)
+	err := scheduler.CompleteTask(context.Background(), taskID, attemptID, leaseID, nil, nil)
 	if !errors.Is(err, ErrExpiredLease) {
 		t.Fatalf("expected ErrExpiredLease got %v", err)
 	}
@@ -1112,7 +1112,7 @@ func TestScheduler_CompleteTask_AsymmetricArrays(t *testing.T) {
 	db, _, scheduler := setupMockDB(t)
 	defer db.Close()
 
-	err := scheduler.CompleteTask(uuid.New().String(), uuid.New().String(), "lease-1", []string{}, []string{"hash1"})
+	err := scheduler.CompleteTask(context.Background(), uuid.New().String(), uuid.New().String(), "lease-1", []string{}, []string{"hash1"})
 	if !errors.Is(err, ErrOutputMismatch) {
 		t.Errorf("expected ErrOutputMismatch for asymmetric arrays, got %v", err)
 	}
@@ -1158,7 +1158,7 @@ func TestScheduler_CompleteTask_NoMutation(t *testing.T) {
 		WillReturnResult(sqlmock.NewResult(1, 1))
 	mock.ExpectCommit()
 
-	err := scheduler.CompleteTask(taskID, attemptID, leaseID, origURIs, origChecksums)
+	err := scheduler.CompleteTask(context.Background(), taskID, attemptID, leaseID, origURIs, origChecksums)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1237,7 +1237,7 @@ func TestScheduler_ScheduleJob_PersistsDDSRecords(t *testing.T) {
 		WillReturnResult(sqlmock.NewResult(1, 1))
 	mock.ExpectCommit()
 
-	if err := scheduler.ScheduleJob(req); err != nil {
+	if err := scheduler.ScheduleJob(context.Background(), req); err != nil {
 		t.Fatalf("expected schedule success, got %v", err)
 	}
 }
@@ -1246,7 +1246,7 @@ func TestScheduler_ScheduleJob_RejectsInvalidRequest(t *testing.T) {
 	db, _, scheduler := setupMockDB(t)
 	defer db.Close()
 
-	err := scheduler.ScheduleJob(ScheduleJobRequest{
+	err := scheduler.ScheduleJob(context.Background(), ScheduleJobRequest{
 		JobID:         "not-a-uuid",
 		UserID:        uuid.NewString(),
 		InputURI:      "s3://inputs/job-1/data.jsonl",
@@ -1269,7 +1269,7 @@ func TestScheduler_UpsertSystemConfig(t *testing.T) {
 		WithArgs(20, "500m", "1Gi", sqlmock.AnyArg()).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
-	if err := scheduler.UpsertSystemConfig(SystemConfigUpdate{
+	if err := scheduler.UpsertSystemConfig(context.Background(), SystemConfigUpdate{
 		MaxConcurrentPods: 20,
 		CPULimit:          "500m",
 		MemoryLimit:       "1Gi",
@@ -1296,7 +1296,7 @@ func TestScheduler_CancelJob_Success(t *testing.T) {
 		WillReturnResult(sqlmock.NewResult(1, 2))
 	mock.ExpectCommit()
 
-	err := scheduler.CancelJob(jobID)
+	err := scheduler.CancelJob(context.Background(), jobID)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1340,7 +1340,7 @@ func TestScheduler_CompleteTask_JobCompleted_TriggersCleanup(t *testing.T) {
 		WillReturnResult(sqlmock.NewResult(1, 1))
 	mock.ExpectCommit()
 
-	err := scheduler.CompleteTask(taskID, attemptID, leaseID,
+	err := scheduler.CompleteTask(context.Background(), taskID, attemptID, leaseID,
 		[]string{"s3://output/file.txt"}, []string{"sha256-output"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -1380,7 +1380,7 @@ func TestScheduler_GetNextTask_ConcurrentQuotaSafety(t *testing.T) {
 	mock.ExpectExec(regexp.QuoteMeta(QueryUpdateJobStatus)).WillReturnResult(sqlmock.NewResult(1, 1))
 	mock.ExpectCommit()
 
-	_, err := scheduler.GetNextTask(jobID, "worker-1")
+	_, err := scheduler.GetNextTask(context.Background(), jobID, "worker-1")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1415,7 +1415,7 @@ func TestScheduler_GetNextTask_NoStarvation_MapBeforeReduce(t *testing.T) {
 		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(5)) // But 5 map tasks are still IN-PROGRESS
 	mock.ExpectRollback()
 
-	_, err := scheduler.GetNextTask(jobID, "worker-1")
+	_, err := scheduler.GetNextTask(context.Background(), jobID, "worker-1")
 	if !errors.Is(err, ErrNoIdleTasks) {
 		t.Errorf("expected ErrNoIdleTasks due to Map phase incomplete, got %v", err)
 	}

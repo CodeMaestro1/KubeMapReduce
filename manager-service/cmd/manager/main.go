@@ -103,7 +103,9 @@ func main() {
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				recovered, err := scheduler.FailStaleTasks()
+				reaperCtx, reaperCancel := context.WithTimeout(ctx, 30*time.Second)
+				recovered, err := scheduler.FailStaleTasks(reaperCtx)
+				reaperCancel()
 				if err != nil {
 					log.Printf("reaper error: %v", err)
 				} else if recovered > 0 {
@@ -125,7 +127,9 @@ func main() {
 			http.Error(w, "missing job_id", http.StatusBadRequest)
 			return
 		}
-		if err := scheduler.CancelJob(jobID); err != nil {
+		cancelCtx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+		defer cancel()
+		if err := scheduler.CancelJob(cancelCtx, jobID); err != nil {
 			log.Printf("failed to cancel job %s: %v", jobID, err)
 			http.Error(w, "failed to cancel job", http.StatusInternalServerError)
 			return
