@@ -9,27 +9,41 @@ import (
 	"os"
 )
 
-// Record represents a single JSONL key-value pair.
+// Record represents a single JSONL key-value pair processed during the shuffle phase.
+//
+// The [Key] is used as the primary sorting and partitioning criterion.
 type Record struct {
 	Key   string `json:"key"`
 	Value string `json:"value"`
 }
 
-// MergeConfig holds tunable parameters for the multi-pass merge.
+// MergeConfig holds tunable parameters for the multi-pass external merge operation.
+//
+// These limits prevent the Manager from exhausting file descriptors or memory
+// when merging intermediate data from thousands of mapper tasks.
 type MergeConfig struct {
-	BatchSize int    // Max concurrent open streams per pass
-	TempDir   string // Directory for intermediate spill files
+	// BatchSize is the maximum number of concurrent open streams per merge pass.
+	BatchSize int
+	// TempDir is the directory where intermediate spill files are stored.
+	TempDir string
 }
 
-// MergeStats holds metrics about the merge operation.
+// MergeStats provides observability into the complexity of a shuffle operation.
 type MergeStats struct {
-	TotalPasses     int   // Number of merge passes executed
-	PeakOpenStreams int   // Maximum concurrent streams in any single pass
-	SpillCount      int   // Number of intermediate spill files created
-	TotalRecords    int64 // Total records written to final output
+	// TotalPasses is the number of recursive merge rounds executed.
+	TotalPasses int
+	// PeakOpenStreams is the maximum number of file descriptors held simultaneously.
+	PeakOpenStreams int
+	// SpillCount is the number of temporary files created on disk.
+	SpillCount int
+	// TotalRecords is the count of key-value pairs written to the final output.
+	TotalRecords int64
 }
 
-// DefaultMergeConfig returns a config with safe production defaults.
+// DefaultMergeConfig returns a configuration with safe defaults for production clusters.
+//
+// The BatchSize of 500 is chosen to stay well below the typical 1024 soft limit for
+// file descriptors on Linux containers.
 func DefaultMergeConfig() MergeConfig {
 	return MergeConfig{
 		BatchSize: 500,
@@ -37,9 +51,15 @@ func DefaultMergeConfig() MergeConfig {
 	}
 }
 
-// MergeInputs performs a bounded multi-pass external merge sort on
-// pre-sorted JSONL input streams. It writes the fully merged, sorted
-// output to the provided writer.
+// MergeInputs performs a bounded multi-pass external merge sort on pre-sorted
+// JSONL input streams.
+//
+// This function implements a standard k-way merge using a min-heap. If the number
+// of input streams exceeds [MergeConfig.BatchSize], it recursively spills partial
+// results to disk to stay within resource limits.
+//
+// Callers must ensure that all input readers provide data that is already sorted
+// by [Record.Key].
 func MergeInputs(readers []io.Reader, w io.Writer, cfg MergeConfig) (MergeStats, error) {
 	if len(readers) == 0 {
 		return MergeStats{}, nil

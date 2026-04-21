@@ -9,7 +9,11 @@ import (
 	"time"
 )
 
-// StoredTokens holds the tokens persisted to disk by the CLI after login.
+// StoredTokens represents the token state persisted to the local filesystem.
+//
+// This allows the CLI to remain authenticated across different command
+// invocations. The refresh token is used to obtain new access tokens when the
+// current one expires, reducing the frequency of interactive logins.
 type StoredTokens struct {
 	AccessToken  string `json:"access_token"`
 	RefreshToken string `json:"refresh_token"`
@@ -17,17 +21,20 @@ type StoredTokens struct {
 	ServerURL    string `json:"server_url"`
 }
 
-// IsAccessExpired returns true when the access token has expired (or will
-// expire within the next 30 seconds).
+// IsAccessExpired checks if the access token has expired.
+//
+// It returns true if the token is already expired or if it will expire
+// within a 30-second buffer. This buffer prevents race conditions between the
+// CLI check and the Manager's validation.
 func (t *StoredTokens) IsAccessExpired() bool {
 	return time.Now().Unix() >= t.ExpiresAt-30
 }
 
-// TokenStorePath returns the platform-appropriate path for the credentials
-// file:
+// TokenStorePath returns the platform-appropriate path for the credentials file.
 //
-//	Windows: %APPDATA%\kubemapreduce\credentials.json
-//	Other:   $XDG_CONFIG_HOME/kubemapreduce/credentials.json (defaults to ~/.config)
+// On Windows, it uses %APPDATA%\kubemapreduce\credentials.json.
+// On Unix-like systems, it follows the XDG Base Directory Specification,
+// defaulting to ~/.config/kubemapreduce/credentials.json.
 func TokenStorePath() (string, error) {
 	var configDir string
 
@@ -54,8 +61,11 @@ func TokenStorePath() (string, error) {
 	return filepath.Join(configDir, "kubemapreduce", "credentials.json"), nil
 }
 
-// SaveTokens persists tokens to the credentials file with restricted
-// permissions (0600).
+// SaveTokens persists [StoredTokens] to the credentials file with restricted
+// (0600) permissions.
+//
+// Restricted permissions are critical as the file contains long-lived
+// refresh tokens.
 func SaveTokens(tokens *StoredTokens) error {
 	path, err := TokenStorePath()
 	if err != nil {
@@ -78,8 +88,10 @@ func SaveTokens(tokens *StoredTokens) error {
 	return nil
 }
 
-// LoadTokens reads the stored tokens from disk. Returns an error if the
-// credentials file does not exist (i.e. the user has not logged in).
+// LoadTokens reads the stored tokens from disk.
+//
+// If the file is missing, it returns a descriptive error instructing the
+// user to login.
 func LoadTokens() (*StoredTokens, error) {
 	path, err := TokenStorePath()
 	if err != nil {
@@ -102,7 +114,8 @@ func LoadTokens() (*StoredTokens, error) {
 	return &tokens, nil
 }
 
-// ClearTokens removes the credentials file from disk.
+// ClearTokens removes the credentials file from disk, effectively logging
+// the user out.
 func ClearTokens() error {
 	path, err := TokenStorePath()
 	if err != nil {

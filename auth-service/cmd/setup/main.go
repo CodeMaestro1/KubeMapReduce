@@ -14,6 +14,14 @@ import (
 	"golang.org/x/term"
 )
 
+// main bootstraps the Keycloak environment for KubeMapReduce.
+//
+// The bootstrapping sequence follows these steps:
+//  1. Parse command-line flags and environment variables for Keycloak connection and realm settings.
+//  2. Initialize a context with a 60-second timeout to bound the setup process.
+//  3. Call [auth.BootstrapKeycloakWithContext] to create the realm, OIDC client, roles (ADMIN/USER), and audience mappers.
+//  4. (Optional) If a username is provided via flags, create an initial user with the specified role and password.
+//  5. Exit upon completion or failure.
 func main() {
 	log.SetFlags(0)
 	log.SetPrefix("setup: ")

@@ -16,6 +16,12 @@ import (
 
 // ── login ──────────────────────────────────────────────────
 
+// cmdLogin authenticates a user against Keycloak and stores the resulting tokens.
+//
+// It prompts for a username (if not provided) and password, then exchanges these
+// credentials for a JWT access token and refresh token. These tokens are persisted
+// to a local configuration file (typically in the user's home directory),
+// enabling subsequent commands to be authenticated without further user interaction.
 func cmdLogin(args []string) {
 	fs := flag.NewFlagSet("login", flag.ExitOnError)
 	username := fs.String("username", "", "Username (prompted if empty)")
@@ -74,6 +80,10 @@ func cmdLogin(args []string) {
 
 // ── logout ─────────────────────────────────────────────────
 
+// cmdLogout clears the stored authentication tokens from the local system.
+//
+// This effectively logs the user out of the CLI by removing the credentials
+// that [getValidToken] would otherwise use to authenticate requests.
 func cmdLogout() {
 	if err := auth.ClearTokens(); err != nil {
 		log.Fatalf("logout failed: %v", err)
@@ -83,6 +93,11 @@ func cmdLogout() {
 
 // ── health ─────────────────────────────────────────────────
 
+// cmdHealth performs a connectivity and status check against the API server.
+//
+// This command is used to verify that the CLI can communicate with the backend
+// and that the backend itself is operational. It does not require authentication,
+// making it a useful first-step diagnostic tool.
 func cmdHealth() {
 	ctx, cancel := cliRequestContext()
 	defer cancel()

@@ -19,6 +19,17 @@ import (
 	"kubemapreduce/manager-service/internal/config"
 )
 
+// main bootstraps the UI Service API server.
+//
+// The bootstrapping sequence follows these steps:
+//  1. Load configuration from environment variables via [config.Load].
+//  2. Initialize the JWT Validator using Keycloak's JWKS endpoint to secure all routes.
+//  3. (Optional) Initialize the Keycloak Admin Client if credentials are provided, enabling user management.
+//  4. Connect to the PostgreSQL database for job metadata storage.
+//  5. Initialize the Job Store and HTTP handlers.
+//  6. Register routes and start the HTTP server with production-grade timeouts.
+//  7. Listen for termination signals (SIGINT, SIGTERM) to initiate a graceful shutdown,
+//     allowing in-flight requests 15 seconds to complete before forcing exit.
 func main() {
 	cfg, err := config.Load()
 	if err != nil {

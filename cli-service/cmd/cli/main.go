@@ -6,6 +6,12 @@ import (
 	"os"
 )
 
+// main is the entry point for the KubeMapReduce CLI.
+//
+// It handles command-line argument parsing and dispatches execution to specific
+// command handlers. This centralized dispatch pattern ensures that the CLI
+// remains a thin wrapper over the underlying API services while providing a
+// consistent user experience for both standard users and administrators.
 func main() {
 	log.SetFlags(0)
 	log.SetPrefix("kubemapreduce: ")
@@ -69,6 +75,10 @@ func main() {
 	}
 }
 
+// printUsage outputs the help text for the CLI to standard output.
+//
+// This is used as the default fallback when the user provides no arguments or
+// an unknown command, ensuring the CLI is self-documenting for new users.
 func printUsage() {
 	fmt.Print(`KubeMapReduce CLI
 

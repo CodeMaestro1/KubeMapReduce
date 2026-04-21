@@ -1,6 +1,9 @@
 // Package manager provides named SQL query constants for the MapReduce scheduler.
+//
 // Centralizing queries here prevents duplication, makes maintenance easier,
 // and ensures the scheduler's DDS interactions are auditable at a glance.
+// These queries implement the core logic for task lifecycle management,
+// lease-based fencing, and quota enforcement.
 package manager
 
 // ---------------------------------------------------------------------------
@@ -190,6 +193,7 @@ const QueryGetReduceOutputs = `
 // Supports the UI Service's CQRS-style read path for the jobs status CLI command.
 const QueryGetTaskStatus = `SELECT status FROM TASKS WHERE task_id = $1`
 
+// QueryGetTaskJobID retrieves the job ID associated with a task ID.
 const QueryGetTaskJobID = `SELECT job_id FROM TASKS WHERE task_id = $1`
 
 // QueryGetTaskByID retrieves full task metadata including the current attempt binding.
@@ -207,24 +211,30 @@ const QueryCountPendingMapTasks = `SELECT COUNT(*) FROM TASKS WHERE job_id = $1 
 // Job lifecycle and bootstrap queries
 // ---------------------------------------------------------------------------
 
+// QueryInsertJob creates a new job record.
 const QueryInsertJob = `
 	INSERT INTO JOBS (job_id, user_id, status, created_at, updated_at)
 	VALUES ($1, $2, 'Pending', $3, $4)`
 
+// QueryInsertJobConfig persists immutable job configuration.
 const QueryInsertJobConfig = `
 	INSERT INTO JOB_CONFIGS (job_id, input_uri, mapper_uri, reducer_uri, combiner_uri, m_tasks, r_tasks, input_checksum)
 	VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`
 
+// QueryInsertTask creates a new task record.
 const QueryInsertTask = `
 	INSERT INTO TASKS (task_id, job_id, current_attempt_id, task_type, status, replica_index)
 	VALUES ($1, $2, NULL, $3, 'Idle', $4)`
 
+// QueryInsertTaskInput links an input split to a task.
 const QueryInsertTaskInput = `
 	INSERT INTO TASK_INPUTS (task_id, input_uri, byte_start, byte_end, split_checksum)
 	VALUES ($1, $2, $3, $4, $5)`
 
+// QueryUpdateJobStatus transitions a job to a new lifecycle state.
 const QueryUpdateJobStatus = `UPDATE JOBS SET status = $2, updated_at = $3 WHERE job_id = $1`
 
+// QueryUpsertSystemConfig updates global cluster configuration.
 const QueryUpsertSystemConfig = `
 	INSERT INTO SYSTEM_CONFIG (config_id, max_concurrent_pods, cpu_limit, memory_limit, updated_at)
 	VALUES (1, $1, $2, $3, $4)

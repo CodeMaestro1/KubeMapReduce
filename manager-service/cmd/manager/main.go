@@ -32,6 +32,17 @@ import (
 	pb "kubemapreduce/proto"
 )
 
+// main bootstraps the MapReduce Manager Service.
+//
+// The bootstrapping sequence follows these steps:
+//  1. Load configuration and connect to the PostgreSQL database (DDS).
+//  2. Resolve the replica index from the hostname (StatefulSet ordinal) for task partitioning.
+//  3. Initialize the Kubernetes Orchestrator (or a mock if running locally).
+//  4. Initialize the Scheduler and recover any interrupted tasks from the database.
+//  5. Start background maintenance loops: Cleanup Reconciler and the Active Reaper (stale task cleanup).
+//  6. Start the HTTP server for health/readiness probes and internal job cancellation.
+//  7. Start the gRPC server for Worker communication (Register, Heartbeat, etc.) with optional TLS and token auth.
+//  8. Handle graceful shutdown by stopping background loops and draining gRPC/HTTP connections.
 func main() {
 	cfg, err := config.Load()
 	if err != nil {

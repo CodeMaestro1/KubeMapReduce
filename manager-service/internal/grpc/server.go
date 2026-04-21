@@ -17,6 +17,11 @@ import (
 	pb "kubemapreduce/proto"
 )
 
+// WorkerServer implements the gRPC WorkerService defined in the proto contract.
+//
+// It acts as the primary communication bridge between the central Manager and
+// the distributed Worker pods. It delegates all state transitions and business
+// logic to the [manager.Scheduler].
 type WorkerServer struct {
 	pb.UnimplementedWorkerServiceServer
 	scheduler   *manager.Scheduler
@@ -24,44 +29,12 @@ type WorkerServer struct {
 	uploader    manifestUploader
 }
 
-// manifestBucketName stores serialized data_locations manifests for oversized assignments.
-// These objects are short-lived retry metadata and should be managed via bucket lifecycle policy.
-const manifestBucketName = "mapreduce-manifests"
-
-var maxTaskAssignmentSizeBytes = 2 * 1024 * 1024
-var maxManifestPayloadSizeBytes = 2 * 1024 * 1024
-
-type manifestUploader interface {
-	UploadManifest(ctx context.Context, bucketName, objectName string, payload []byte) (string, error)
-}
-
-type minioManifestUploader struct {
-	client *minio.Client
-}
-
-func (m *minioManifestUploader) UploadManifest(ctx context.Context, bucketName, objectName string, payload []byte) (string, error) {
-	exists, err := m.client.BucketExists(ctx, bucketName)
-	if err != nil {
-		return "", err
-	}
-	if !exists {
-		if err := m.client.MakeBucket(ctx, bucketName, minio.MakeBucketOptions{}); err != nil {
-			exists, checkErr := m.client.BucketExists(ctx, bucketName)
-			if checkErr != nil || !exists {
-				return "", err
-			}
-		}
-	}
-
-	_, err = m.client.PutObject(ctx, bucketName, objectName, bytes.NewReader(payload), int64(len(payload)), minio.PutObjectOptions{
-		ContentType: "application/json",
-	})
-	if err != nil {
-		return "", err
-	}
-	return fmt.Sprintf("s3://%s/%s", bucketName, objectName), nil
-}
-
+// NewWorkerServer creates a new instance of the gRPC server.
+//
+// If a [minio.Client] is provided, the server enables "manifest fallback" for
+// oversized [pb.TaskAssignment] messages. This is necessary because gRPC has a
+// default message size limit (typically 4MB), and a task with thousands of
+// input splits could exceed this.
 func NewWorkerServer(scheduler *manager.Scheduler, minioClient *minio.Client) *WorkerServer {
 	var uploader manifestUploader
 	if minioClient != nil {
@@ -70,32 +43,11 @@ func NewWorkerServer(scheduler *manager.Scheduler, minioClient *minio.Client) *W
 	return newWorkerServerWithManifestUploader(scheduler, minioClient, uploader)
 }
 
-func newWorkerServerWithManifestUploader(scheduler *manager.Scheduler, minioClient *minio.Client, uploader manifestUploader) *WorkerServer {
-	return &WorkerServer{
-		scheduler:   scheduler,
-		minioClient: minioClient,
-		uploader:    uploader,
-	}
-}
-
-func findMapSplitForTask(task *manager.Task) (manager.TaskInputSplit, bool) {
-	if len(task.InputSplits) == 0 {
-		return manager.TaskInputSplit{}, false
-	}
-
-	for _, split := range task.InputSplits {
-		if split.ByteStart == task.ByteStart && split.ByteEnd == task.ByteEnd {
-			return split, true
-		}
-	}
-
-	if task.ByteStart == 0 && task.ByteEnd == 0 && len(task.InputSplits) == 1 {
-		return task.InputSplits[0], true
-	}
-
-	return manager.TaskInputSplit{}, false
-}
-
+// Register is called by a Worker immediately after startup to claim its assignment.
+//
+// The Manager validates that the [pb.RegisterRequest.AttemptId] matches the
+// current attempt in the DDS. If it doesn't, the request is rejected as a
+// "zombie" worker.
 func (s *WorkerServer) Register(ctx context.Context, req *pb.RegisterRequest) (*pb.TaskAssignment, error) {
 	if req.TaskId == "" {
 		return nil, status.Error(codes.InvalidArgument, "task_id is required")
@@ -187,6 +139,11 @@ func (s *WorkerServer) Register(ctx context.Context, req *pb.RegisterRequest) (*
 	return assignment, nil
 }
 
+// Heartbeat is called periodically by Workers to renew their lease on a task.
+//
+// If the heartbeat fails (e.g. [manager.ErrStaleAttempt]), the response instructs
+// the worker to [pb.HeartbeatResponse_TERMINATE] immediately, preventing further
+// wasted computation.
 func (s *WorkerServer) Heartbeat(ctx context.Context, req *pb.HeartbeatRequest) (*pb.HeartbeatResponse, error) {
 	if req.TaskId == "" || req.AttemptId == "" || req.LeaseId == "" {
 		return nil, status.Error(codes.InvalidArgument, "task_id, attempt_id, and lease_id are required")
@@ -206,6 +163,11 @@ func (s *WorkerServer) Heartbeat(ctx context.Context, req *pb.HeartbeatRequest) 
 	return &pb.HeartbeatResponse{Action: pb.HeartbeatResponse_CONTINUE}, nil
 }
 
+// TaskComplete is called by a Worker after it has successfully finished its work
+// and uploaded results to shared storage.
+//
+// This call triggers a transactional commit in the DDS, updating the task status
+// to "Completed" and recording the output URIs.
 func (s *WorkerServer) TaskComplete(ctx context.Context, req *pb.TaskCompleteRequest) (*pb.Ack, error) {
 	if req.TaskId == "" || req.AttemptId == "" || req.LeaseId == "" {
 		return nil, status.Error(codes.InvalidArgument, "task_id, attempt_id, and lease_id are required")
@@ -228,6 +190,11 @@ func (s *WorkerServer) TaskComplete(ctx context.Context, req *pb.TaskCompleteReq
 	return &pb.Ack{Success: true}, nil
 }
 
+// TaskFailed is called by a Worker if it encounters an unrecoverable error
+// during execution.
+//
+// The Manager records the error message and resets the task to "Idle" (if
+// retries are available) or "Failed" (if the limit is reached).
 func (s *WorkerServer) TaskFailed(ctx context.Context, req *pb.TaskFailedRequest) (*pb.Ack, error) {
 	if req.TaskId == "" || req.AttemptId == "" || req.LeaseId == "" {
 		return nil, status.Error(codes.InvalidArgument, "task_id, attempt_id, and lease_id are required")

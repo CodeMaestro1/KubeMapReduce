@@ -18,8 +18,11 @@ import (
 )
 
 // Handlers holds HTTP handler state for the API server.
-// Job storage is delegated to a JobStore implementation, which is backed
-// by PostgreSQL in production for replica-safe, persistent state.
+//
+// This centralizes state management for all REST endpoints, including the 
+// Keycloak admin client for user management and a [JobStore] for persisting 
+// job metadata. Using a struct-based handler pattern allows for easy 
+// dependency injection, making the API layer highly testable with mocks.
 type Handlers struct {
 	adminClient *auth.KeycloakAdminClient
 	store       JobStore
@@ -34,6 +37,10 @@ const (
 )
 
 // NewHandlers creates production-ready Handlers backed by the given JobStore.
+//
+// Callers must provide a valid [JobStore] implementation. In production, this
+// is typically a [PostgresJobStore] to ensure that job state persists across
+// manager restarts and is visible to all replicas.
 func NewHandlers(adminClient *auth.KeycloakAdminClient, store JobStore) *Handlers {
 	return &Handlers{
 		adminClient: adminClient,
@@ -53,6 +60,10 @@ func newHandlersWithOptions(adminClient *auth.KeycloakAdminClient, store JobStor
 	}
 }
 
+// HandleRoot provides a basic discovery endpoint for the API.
+//
+// It serves as a heartbeat for the CLI and a way to verify the API's base URL.
+// Returns 404 for any sub-paths to prevent accidental masking of other routes.
 func (h *Handlers) HandleRoot(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Path != "/" {
 		http.NotFound(w, r)
@@ -73,6 +84,11 @@ func (h *Handlers) HandleRoot(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// HandleHealth provides an unauthenticated endpoint for monitoring tools.
+//
+// It returns a simple 200 OK status to indicate the web server is processing
+// requests. This is distinct from deep health checks that might probe the
+// database or Keycloak.
 func (h *Handlers) HandleHealth(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -84,6 +100,13 @@ func (h *Handlers) HandleHealth(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// HandleJobsSubmit processes new MapReduce job requests.
+//
+// This handler validates the job specification and persists it to the [JobStore]
+// with a "Pending" status. It implements a metadata-only submission pattern: 
+// the actual input and code files are expected to be reachable via the provided 
+// URIs. Returns 202 Accepted, reflecting that the job has been queued for 
+// scheduling but hasn't necessarily started execution.
 func (h *Handlers) HandleJobsSubmit(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -130,6 +153,11 @@ func (h *Handlers) HandleJobsSubmit(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// HandleJobsList retrieves a paginated list of all MapReduce jobs.
+//
+// It supports `limit` and `offset` query parameters to allow the CLI to 
+// efficiently browse large job histories. The output is sorted by creation 
+// time in descending order to prioritize recent activity.
 func (h *Handlers) HandleJobsList(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -189,6 +217,11 @@ func parsePagination(r *http.Request) (int, int, error) {
 	return limit, offset, nil
 }
 
+// HandleJobsGet retrieves detailed status for a single job by ID.
+//
+// This is the primary polling endpoint for CLI status checks. It returns the 
+// current phase and metadata for the job. Returns 404 if the job_id does 
+// not exist in the [JobStore].
 func (h *Handlers) HandleJobsGet(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -233,6 +266,11 @@ func (h *Handlers) HandleJobsGet(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// HandleJobsDownload provides access to the final results of a completed job.
+//
+// Note: This endpoint is currently a placeholder and returns 501 Not Implemented,
+// as the result aggregation and streaming logic from shared storage is 
+// pending backend integration.
 func (h *Handlers) HandleJobsDownload(w http.ResponseWriter, r *http.Request) {
 	jobID := r.PathValue("job_id")
 	if jobID == "" {
@@ -267,6 +305,12 @@ func (h *Handlers) HandleJobsDownload(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// HandleConfigureNodes updates resource limits for the MapReduce cluster nodes.
+//
+// This is an administrative endpoint used to fine-tune the maximum pod density 
+// and resource quotas (CPU/Memory) across the compute fleet. It currently 
+// returns 501 Not Implemented as the integration with the cluster scheduler 
+// is still in progress.
 func (h *Handlers) HandleConfigureNodes(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPut {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -302,6 +346,11 @@ func (h *Handlers) HandleConfigureNodes(w http.ResponseWriter, r *http.Request) 
 	}
 }
 
+// HandleWorkerConfig updates the global configuration for Worker pods.
+//
+// Admins use this to control the parallelism of the system (replicas) and 
+// task-packing density. This endpoint returns 202 Accepted to signal that the 
+// new configuration has been received and will be applied to future jobs.
 func (h *Handlers) HandleWorkerConfig(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPut {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -354,6 +403,11 @@ func jobMessage(status string) string {
 
 // ── Admin user management ──────────────────────────────────
 
+// HandleAdminCreateUser provisions a new user in the Keycloak identity provider.
+//
+// This handler acts as a proxy to the [auth.KeycloakAdminClient]. It ensures 
+// that all users created via the API adhere to the system's role structure 
+// (e.g., USER vs ADMIN). Returns 201 Created on success.
 func (h *Handlers) HandleAdminCreateUser(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -403,6 +457,11 @@ func (h *Handlers) HandleAdminCreateUser(w http.ResponseWriter, r *http.Request)
 	}
 }
 
+// HandleAdminDeleteUser removes a user from Keycloak.
+//
+// It performs a "hard delete" of the user identity. This is an idempotent 
+// operation: deleting a non-existent user will return success (via the 
+// underlying client behavior) or a specific error if the auth service fails.
 func (h *Handlers) HandleAdminDeleteUser(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodDelete {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)

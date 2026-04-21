@@ -7,36 +7,63 @@ import (
 	"strings"
 )
 
+// Config holds all environment-sourced configuration for the Manager Service.
+//
+// This central struct ensures that all external dependencies (Keycloak, Postgres,
+// MinIO) and internal tunables (Lease TTL, Heartbeat intervals) are validated
+// and typed before the service starts.
 type Config struct {
-	KeycloakBaseURL     string
-	Realm               string
-	JWKSURL             string
-	Issuer              string
-	Audience            string
-	ServerAddr          string
-	AdminUsername       string
-	AdminPassword       string
-	DatabaseDSN         string
-	GRPCAddr            string
-	TotalReplicas       int
-	HeartbeatInterval   int
+	// Keycloak configuration for user authentication and admin operations.
+	KeycloakBaseURL string
+	Realm           string
+	JWKSURL         string
+	Issuer          string
+	Audience        string
+	AdminUsername   string
+	AdminPassword   string
+
+	// Server addresses for REST and gRPC interfaces.
+	ServerAddr string
+	GRPCAddr   string
+
+	// Persistence layer connection string.
+	DatabaseDSN string
+
+	// Distributed scheduling parameters.
+	// TotalReplicas matches the K8s StatefulSet replica count for hashing logic.
+	TotalReplicas int
+	// HeartbeatInterval defines how often workers must check in.
+	HeartbeatInterval int
+	// MaxMissedHeartbeats is the tolerance before a worker is marked as failed.
 	MaxMissedHeartbeats int
-	LeaseTTL            int
-	MinioEndpoint       string
+	// LeaseTTL is calculated as HeartbeatInterval * MaxMissedHeartbeats.
+	LeaseTTL int
+
+	// Object storage configuration for input and intermediate data.
+	MinioEndpoint string
 	// MinioAccessKey and MinioSecretKey are expected to be injected via environment
-	// variables (typically from Kubernetes Secrets) when manifest fallback is enabled.
-	MinioAccessKey                  string
-	MinioSecretKey                  string
-	MinioUseSSL                     bool
+	// variables (typically from Kubernetes Secrets).
+	MinioAccessKey string
+	MinioSecretKey string
+	MinioUseSSL    bool
+
+	// Security tokens for internal and worker communication.
 	InternalAPIKey                  string
 	AllowInsecureInternalCancelAuth bool
 	WorkerRPCToken                  string
-	GRPCTLSCertFile                 string
-	GRPCTLSKeyFile                  string
-	EnableGRPCReflection            bool
-	AllowInsecureWorkerRPC          bool
+
+	// gRPC security and reflection settings.
+	GRPCTLSCertFile      string
+	GRPCTLSKeyFile       string
+	EnableGRPCReflection bool
+	AllowInsecureWorkerRPC bool
 }
 
+// Load populates the [Config] struct from environment variables.
+//
+// It applies sensible defaults for local development but expects specific
+// overrides in production (e.g. via Helm chart env sections). Returns an error
+// if critical numeric values are malformed.
 func Load() (*Config, error) {
 	keycloakBaseURL := getEnv("KEYCLOAK_BASE_URL", "http://localhost:8080")
 	realm := getEnv("KEYCLOAK_REALM", "mapreduce")

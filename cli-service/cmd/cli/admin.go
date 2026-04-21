@@ -21,7 +21,10 @@ var adminRequireAdminRole = requireAdminRole
 // ── admin helpers ──────────────────────────────────────────
 
 // requireAdminRole checks that the supplied access token carries the ADMIN realm role.
-// The caller should obtain the token via getValidToken() to avoid a redundant disk read.
+//
+// The caller should obtain the token via [getValidToken] to avoid a redundant disk read.
+// This check is performed client-side to provide immediate feedback to the user,
+// although the API server will also perform its own validation to ensure security.
 func requireAdminRole(accessToken string) {
 	claims, err := decodeTokenClaims(accessToken)
 	if err != nil {
@@ -39,6 +42,11 @@ func requireAdminRole(accessToken string) {
 // ── admin create-user ──────────────────────────────────────
 // Routes through the API server, which proxies to Keycloak.
 
+// cmdAdminCreateUser creates a new user in the system.
+//
+// This command routes through the API server, which in turn proxies the request
+// to Keycloak. It handles password prompting and role assignment (ADMIN or USER),
+// ensuring that administrative actions are centralized and audited.
 func cmdAdminCreateUser(args []string) {
 	token, serverURL := getValidToken()
 	requireAdminRole(token)
@@ -104,6 +112,10 @@ func cmdAdminCreateUser(args []string) {
 // ── admin delete-user ──────────────────────────────────────
 // Routes through the API server, which proxies to Keycloak.
 
+// cmdAdminDeleteUser removes a user from the system.
+//
+// Like user creation, this command proxies through the API server to Keycloak.
+// It requires the ADMIN role to prevent unauthorized user management.
 func cmdAdminDeleteUser(args []string) {
 	token, serverURL := getValidToken()
 	requireAdminRole(token)
@@ -131,6 +143,11 @@ func cmdAdminDeleteUser(args []string) {
 
 // ── admin configure-nodes ─────────────────────────────────
 
+// cmdAdminConfigureNodes updates resource limits across all compute nodes.
+//
+// This command allows administrators to dynamically adjust the capacity of the
+// MapReduce cluster. Changes are propagated to the Manager service, which
+// updates its internal scheduling constraints to match the new limits.
 func cmdAdminConfigureNodes(args []string) {
 	if err := runAdminConfigureNodes(args, adminConfigureNodesDoAuthRequest); err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -138,85 +155,47 @@ func cmdAdminConfigureNodes(args []string) {
 	}
 }
 
-func runAdminConfigureNodes(args []string, requestFn func(string, string, string, []byte) (*http.Response, error)) error {
-	token, serverURL := adminGetValidToken()
-	adminRequireAdminRole(token)
-	fs := flag.NewFlagSet("admin configure-nodes", flag.ExitOnError)
-	maxPods := fs.Int("max-pods", 0, "Maximum pods per node (required, > 0)")
-	cpuLimit := fs.String("cpu-limit", "", "CPU limit per pod, e.g. 500m (required)")
-	memoryLimit := fs.String("memory-limit", "", "Memory limit per pod, e.g. 1Gi (required)")
+// ── admin worker-config ────────────────────────────────────
+
+// cmdAdminWorkerConfig updates the configuration for worker pods.
+//
+// This command controls the scale and density of the worker fleet. By adjusting
+// the number of replicas and the maximum number of concurrent jobs per node,
+// administrators can tune the system's performance and resource utilization
+// based on current workload demands.
+func cmdAdminWorkerConfig(args []string) {
+	token, serverURL := getValidToken()
+	requireAdminRole(token)
+	fs := flag.NewFlagSet("admin worker-config", flag.ExitOnError)
+	replicas := fs.Int("replicas", 0, "Number of worker replicas (required, > 0)")
+	maxJobs := fs.Int("max-jobs", 0, "Max jobs per node (required, > 0)")
 	_ = fs.Parse(args)
 
-	if *maxPods < 1 {
-		return fmt.Errorf("--max-pods is required and must be > 0")
-	}
-	if strings.TrimSpace(*cpuLimit) == "" {
-		return fmt.Errorf("--cpu-limit is required")
-	}
-	if strings.TrimSpace(*memoryLimit) == "" {
-		return fmt.Errorf("--memory-limit is required")
+	if *replicas < 1 || *maxJobs < 1 {
+		log.Fatal("--replicas and --max-jobs are required and must be > 0")
 	}
 
-	payload, err := json.Marshal(map[string]interface{}{
-		"maxPods":     *maxPods,
-		"cpuLimit":    strings.TrimSpace(*cpuLimit),
-		"memoryLimit": strings.TrimSpace(*memoryLimit),
+	payload, err := json.Marshal(map[string]int{
+		"workerReplicas": *replicas,
+		"maxJobsPerNode": *maxJobs,
 	})
 	if err != nil {
-		// Defensive check: surface payload-construction failures instead of sending bad data.
-		return fmt.Errorf("failed to build configure-nodes request: %w", err)
+		// Defensive check: avoid issuing requests with partially built JSON bodies.
+		log.Fatalf("failed to build worker-config request: %v", err)
 	}
 
-	resp, err := requestFn(
+	resp := doAuthRequestExpect(
 		http.MethodPut,
-		serverURL+"/admin/nodes/config",
+		serverURL+"/admin/workers/config",
 		token,
 		payload,
+		http.StatusAccepted,
+		"worker config update failed",
 	)
-	if err != nil {
-		return fmt.Errorf("request failed: %w", err)
-	}
-
-	if resp.StatusCode != http.StatusAccepted {
-		defer resp.Body.Close()
-		respBody, readErr := readResponseBody(resp.Body)
-		if readErr != nil {
-			return fmt.Errorf("failed to read configure-nodes error response: %w", readErr)
-		}
-		if statusErr := configureNodesStatusError(resp.StatusCode, string(respBody)); statusErr != nil {
-			return statusErr
-		}
-	}
 	defer resp.Body.Close()
 
 	printResponse(resp)
-	return nil
 }
-
-func configureNodesStatusError(statusCode int, responseBody string) error {
-	if statusCode == http.StatusAccepted {
-		return nil
-	}
-
-	body := strings.TrimSpace(responseBody)
-
-	if statusCode == http.StatusNotImplemented {
-		if body == "" {
-			body = "no additional details"
-		}
-		return fmt.Errorf("configure-nodes endpoint is not implemented by the API (HTTP 501): %s. Hint: this endpoint is pending backend implementation", body)
-	}
-
-	if body == "" {
-		body = http.StatusText(statusCode)
-	}
-
-	return fmt.Errorf("configure nodes failed (HTTP %d): %s", statusCode, body)
-}
-
-// ── admin worker-config ────────────────────────────────────
-
-func cmdAdminWorkerConfig(args []string) {
 	token, serverURL := getValidToken()
 	requireAdminRole(token)
 	fs := flag.NewFlagSet("admin worker-config", flag.ExitOnError)

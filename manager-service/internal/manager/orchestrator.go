@@ -14,17 +14,40 @@ import (
 	"k8s.io/client-go/kubernetes"
 )
 
+// WorkerOrchestrator defines the interface for managing the lifecycle of physical worker processes.
+//
+// This abstraction allows the Manager to remain agnostic of the underlying execution platform
+// (e.g., Kubernetes, local Docker, or bare processes), facilitating easier testing and
+// future-proofing against platform migrations.
 type WorkerOrchestrator interface {
+	// SpawnWorker initiates a new worker process for a specific task attempt.
+	//
+	// Callers must provide a unique attemptID which acts as the fencing token in the gRPC layer.
+	// The orchestrator is responsible for ensuring environment variables are correctly set so
+	// the worker can dial back to the managerAddr and identify itself.
 	SpawnWorker(ctx context.Context, taskID string, jobID string, attemptID string, managerAddr string) error
+
+	// CancelJob terminates all active worker processes associated with a specific job.
+	//
+	// This is used during job cancellation or failure to immediately reclaim cluster resources.
+	// Implementation should be idempotent and handle cases where some workers might already be dead.
 	CancelJob(ctx context.Context, jobID string) error
 }
 
+// KubeOrchestrator implements WorkerOrchestrator using Kubernetes Jobs.
+//
+// Each worker is wrapped in a K8s Job with a restartPolicy of Never. This ensures that
+// task retries are controlled exclusively by the Manager's scheduler logic rather than
+// the K8s kubelet, preventing "zombie" retries from interfering with new attempts.
 type KubeOrchestrator struct {
 	clientset   kubernetes.Interface
 	namespace   string
 	workerImage string
 }
 
+// NewKubeOrchestrator creates a new Kubernetes-backed orchestrator.
+//
+// It defaults to the "default" namespace and "kubemapreduce-worker:latest" image if not specified.
 func NewKubeOrchestrator(clientset kubernetes.Interface, namespace, workerImage string) *KubeOrchestrator {
 	if namespace == "" {
 		namespace = "default"
@@ -39,6 +62,11 @@ func NewKubeOrchestrator(clientset kubernetes.Interface, namespace, workerImage 
 	}
 }
 
+// SpawnWorker creates a K8s Job for a task attempt.
+//
+// It uses a deterministic naming scheme (worker-[taskID]-[hash]) to prevent duplicate jobs
+// for the same attempt. The backoffLimit is set to 0 because the Manager handles retries
+// at the application level to maintain strict state consistency in the DDS.
 func (k *KubeOrchestrator) SpawnWorker(ctx context.Context, taskID string, jobID string, attemptID string, managerAddr string) error {
 	sanitizedTaskID := sanitizeForDNSLabel(taskID)
 	sanitizedJobID := sanitizeForDNSLabel(jobID)
@@ -99,6 +127,10 @@ func (k *KubeOrchestrator) SpawnWorker(ctx context.Context, taskID string, jobID
 	return nil
 }
 
+// CancelJob deletes all K8s Jobs tagged with the job_id label.
+//
+// PropagationPolicy is set to Background to allow the API call to return quickly while
+// K8s cleans up the underlying pods asynchronously.
 func (k *KubeOrchestrator) CancelJob(ctx context.Context, jobID string) error {
 	sanitizedJobID := sanitizeForDNSLabel(jobID)
 	policy := metav1.DeletePropagationBackground
@@ -108,6 +140,7 @@ func (k *KubeOrchestrator) CancelJob(ctx context.Context, jobID string) error {
 	)
 }
 
+// MockOrchestrator is a no-op implementation for unit testing.
 type MockOrchestrator struct{}
 
 func (m *MockOrchestrator) SpawnWorker(ctx context.Context, taskID string, jobID string, attemptID string, managerAddr string) error {
