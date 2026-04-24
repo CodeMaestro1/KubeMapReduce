@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -11,6 +12,7 @@ import (
 	"time"
 
 	"kubemapreduce/auth-service/pkg/auth"
+	"kubemapreduce/manager-service/internal/manager"
 	"kubemapreduce/manager-service/internal/models"
 	"kubemapreduce/manager-service/internal/validation"
 	"kubemapreduce/manager-service/pkg/httputil"
@@ -64,6 +66,8 @@ func newHandlersWithOptions(adminClient *auth.KeycloakAdminClient, store JobStor
 		now:            now,
 	}
 }
+
+
 
 // HandleRoot provides a basic discovery endpoint for the API.
 //
@@ -340,9 +344,34 @@ func (h *Handlers) HandleConfigureNodes(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	if err := httputil.WriteJSON(w, http.StatusNotImplemented, map[string]interface{}{
-		"status":      "not_implemented",
-		"message":     "node configuration backend integration is not implemented yet",
+	// proxy to manager internal endpoint
+	update := manager.SystemConfigUpdate{
+		MaxConcurrentPods: req.MaxPods,
+		CPULimit:          req.CPULimit,
+		MemoryLimit:       req.MemoryLimit,
+	}
+
+	payload, _ := json.Marshal(update)
+	managerURL := fmt.Sprintf("http://%s/internal/config", h.managerAddr)
+	proxyReq, _ := http.NewRequestWithContext(r.Context(), http.MethodPut, managerURL, bytes.NewReader(payload))
+	if h.internalAPIKey != "" {
+		proxyReq.Header.Set("X-Internal-Token", h.internalAPIKey)
+	}
+
+	resp, err := h.httpClient.Do(proxyReq)
+	if err != nil {
+		http.Error(w, "manager service unreachable", http.StatusServiceUnavailable)
+		return
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		http.Error(w, "failed to update config via manager", resp.StatusCode)
+		return
+	}
+
+	if err := httputil.WriteJSON(w, http.StatusOK, map[string]interface{}{
+		"status":      "success",
 		"maxPods":     req.MaxPods,
 		"cpuLimit":    req.CPULimit,
 		"memoryLimit": req.MemoryLimit,
@@ -373,6 +402,31 @@ func (h *Handlers) HandleWorkerConfig(w http.ResponseWriter, r *http.Request) {
 	}
 	if request.MaxJobsPerNode < 1 {
 		httputil.WriteErrorJSON(w, http.StatusBadRequest, "maxJobsPerNode must be positive")
+		return
+	}
+
+	// proxy to manager internal endpoint
+	update := manager.SystemConfigUpdate{
+		WorkerReplicas: request.WorkerReplicas,
+		MaxJobsPerNode: request.MaxJobsPerNode,
+	}
+
+	payload, _ := json.Marshal(update)
+	managerURL := fmt.Sprintf("http://%s/internal/config", h.managerAddr)
+	proxyReq, _ := http.NewRequestWithContext(r.Context(), http.MethodPut, managerURL, bytes.NewReader(payload))
+	if h.internalAPIKey != "" {
+		proxyReq.Header.Set("X-Internal-Token", h.internalAPIKey)
+	}
+
+	resp, err := h.httpClient.Do(proxyReq)
+	if err != nil {
+		http.Error(w, "manager service unreachable", http.StatusServiceUnavailable)
+		return
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		http.Error(w, "failed to update config via manager", resp.StatusCode)
 		return
 	}
 
