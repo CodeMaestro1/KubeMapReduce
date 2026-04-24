@@ -72,8 +72,6 @@ func newHandlersWithOptions(adminClient *auth.KeycloakAdminClient, store JobStor
 	}
 }
 
-
-
 // HandleRoot provides a basic discovery endpoint for the API.
 //
 // It serves as a heartbeat for the CLI and a way to verify the API's base URL.
