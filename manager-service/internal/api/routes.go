@@ -4,6 +4,7 @@ import (
 	"net/http"
 
 	"kubemapreduce/auth-service/pkg/auth"
+	"kubemapreduce/manager-service/pkg/httputil"
 )
 
 // RegisterRoutes wires up the HTTP handlers to their respective URL patterns.
@@ -18,7 +19,7 @@ func RegisterRoutes(mux *http.ServeMux, h *Handlers, validator *auth.JWTValidato
 	mux.HandleFunc("/health", h.HandleHealth)
 
 	// Authenticated routes
-	mux.Handle("/jobs", auth.RequireAnyRole(
+	mux.Handle("/api/v1/jobs", auth.RequireAnyRole(
 		[]string{"USER", "ADMIN"},
 		validator,
 		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -28,37 +29,37 @@ func RegisterRoutes(mux *http.ServeMux, h *Handlers, validator *auth.JWTValidato
 			case http.MethodGet:
 				h.HandleJobsList(w, r)
 			default:
-				http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+				httputil.WriteErrorJSON(w, http.StatusMethodNotAllowed, "method not allowed")
 			}
 		}),
 	))
 
-	mux.Handle("GET /jobs/{job_id}/results", auth.RequireAnyRole(
+	mux.Handle("GET /api/v1/jobs/{job_id}/results", auth.RequireAnyRole(
 		[]string{"USER", "ADMIN"},
 		validator,
 		http.HandlerFunc(h.HandleJobsDownload),
 	))
 
-	mux.Handle("GET /jobs/{job_id}", auth.RequireAnyRole(
+	mux.Handle("GET /api/v1/jobs/{job_id}", auth.RequireAnyRole(
 		[]string{"USER", "ADMIN"},
 		validator,
 		http.HandlerFunc(h.HandleJobsGet),
 	))
 
 	// Admin routes
-	mux.Handle("/admin/workers/config", auth.RequireRole(
+	mux.Handle("PUT /api/v1/admin/workers/config", auth.RequireRole(
 		"ADMIN",
 		validator,
 		http.HandlerFunc(h.HandleWorkerConfig),
 	))
 
-	mux.Handle("/admin/nodes/config", auth.RequireRole(
+	mux.Handle("PUT /api/v1/admin/nodes/config", auth.RequireRole(
 		"ADMIN",
 		validator,
 		http.HandlerFunc(h.HandleConfigureNodes),
 	))
 
-	mux.Handle("/admin/users", auth.RequireRole(
+	mux.Handle("/api/v1/admin/users", auth.RequireRole(
 		"ADMIN",
 		validator,
 		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -66,12 +67,12 @@ func RegisterRoutes(mux *http.ServeMux, h *Handlers, validator *auth.JWTValidato
 			case http.MethodPost:
 				h.HandleAdminCreateUser(w, r)
 			default:
-				http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+				httputil.WriteErrorJSON(w, http.StatusMethodNotAllowed, "method not allowed")
 			}
 		}),
 	))
 
-	mux.Handle("/admin/users/{username}", auth.RequireRole(
+	mux.Handle("/api/v1/admin/users/{username}", auth.RequireRole(
 		"ADMIN",
 		validator,
 		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -79,7 +80,7 @@ func RegisterRoutes(mux *http.ServeMux, h *Handlers, validator *auth.JWTValidato
 			case http.MethodDelete:
 				h.HandleAdminDeleteUser(w, r)
 			default:
-				http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+				httputil.WriteErrorJSON(w, http.StatusMethodNotAllowed, "method not allowed")
 			}
 		}),
 	))
