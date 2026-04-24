@@ -6,7 +6,19 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"os"
+)
+
+const (
+	// MaxBatchSize is the upper limit for concurrent open streams to prevent
+	// file descriptor exhaustion. Most Linux containers have a soft limit of 1024.
+	MaxBatchSize = 900
+
+	// DefaultMaxRecordBytes is the default buffer limit for the JSONL scanner.
+	// 1MB is sufficient for typical MapReduce key-value pairs while preventing
+	// a single oversized record from causing an OOM.
+	DefaultMaxRecordBytes = 1 * 1024 * 1024
 )
 
 // Record represents a single JSONL key-value pair processed during the shuffle phase.
@@ -26,6 +38,8 @@ type MergeConfig struct {
 	BatchSize int
 	// TempDir is the directory where intermediate spill files are stored.
 	TempDir string
+	// MaxRecordBytes is the maximum allowed size for a single JSONL line.
+	MaxRecordBytes int
 }
 
 // MergeStats provides observability into the complexity of a shuffle operation.
@@ -41,36 +55,37 @@ type MergeStats struct {
 }
 
 // DefaultMergeConfig returns a configuration with safe defaults for production clusters.
-//
-// The BatchSize of 500 is chosen to stay well below the typical 1024 soft limit for
-// file descriptors on Linux containers.
 func DefaultMergeConfig() MergeConfig {
 	return MergeConfig{
-		BatchSize: 500,
-		TempDir:   os.TempDir(),
+		BatchSize:      500,
+		TempDir:        os.TempDir(),
+		MaxRecordBytes: DefaultMaxRecordBytes,
 	}
 }
 
 // MergeInputs performs a bounded multi-pass external merge sort on pre-sorted
 // JSONL input streams.
-//
-// This function implements a standard k-way merge using a min-heap. If the number
-// of input streams exceeds [MergeConfig.BatchSize], it recursively spills partial
-// results to disk to stay within resource limits.
-//
-// Callers must ensure that all input readers provide data that is already sorted
-// by [Record.Key].
 func MergeInputs(readers []io.Reader, w io.Writer, cfg MergeConfig) (MergeStats, error) {
 	if len(readers) == 0 {
 		return MergeStats{}, nil
 	}
 
+	// Validate and clamp tunables
 	if cfg.BatchSize <= 1 {
 		cfg.BatchSize = 500
+	}
+	if cfg.BatchSize > MaxBatchSize {
+		cfg.BatchSize = MaxBatchSize
 	}
 	if cfg.TempDir == "" {
 		cfg.TempDir = os.TempDir()
 	}
+	if cfg.MaxRecordBytes <= 0 {
+		cfg.MaxRecordBytes = DefaultMaxRecordBytes
+	}
+
+	log.Printf("[shuffle] Starting merge of %d streams (batch_size=%d, temp_dir=%s)",
+		len(readers), cfg.BatchSize, cfg.TempDir)
 
 	stats := MergeStats{}
 
@@ -78,11 +93,12 @@ func MergeInputs(readers []io.Reader, w io.Writer, cfg MergeConfig) (MergeStats,
 	if len(readers) <= cfg.BatchSize {
 		stats.TotalPasses = 1
 		stats.PeakOpenStreams = len(readers)
-		total, err := heapMerge(readers, w)
+		total, err := heapMerge(readers, w, cfg.MaxRecordBytes)
 		if err != nil {
 			return stats, err
 		}
 		stats.TotalRecords = total
+		log.Printf("[shuffle] Merge completed in 1 pass. Total records: %d", total)
 		return stats, nil
 	}
 
@@ -121,9 +137,14 @@ func MergeInputs(readers []io.Reader, w io.Writer, cfg MergeConfig) (MergeStats,
 			intermediateFiles = append(intermediateFiles, spillFile)
 			stats.SpillCount++
 
-			_, err = heapMerge(batch, spillFile)
+			// Use buffered writer for efficient spilling
+			bw := bufio.NewWriter(spillFile)
+			_, err = heapMerge(batch, bw, cfg.MaxRecordBytes)
 			if err != nil {
 				return stats, fmt.Errorf("failed merge to spill file: %v", err)
+			}
+			if err := bw.Flush(); err != nil {
+				return stats, fmt.Errorf("failed to flush spill file: %v", err)
 			}
 
 			// Rewind for reading in next pass
@@ -141,11 +162,14 @@ func MergeInputs(readers []io.Reader, w io.Writer, cfg MergeConfig) (MergeStats,
 	if len(currentInputs) > stats.PeakOpenStreams {
 		stats.PeakOpenStreams = len(currentInputs)
 	}
-	total, err := heapMerge(currentInputs, w)
+	total, err := heapMerge(currentInputs, w, cfg.MaxRecordBytes)
 	if err != nil {
 		return stats, err
 	}
 	stats.TotalRecords = total
+
+	log.Printf("[shuffle] Multi-pass merge completed. Passes: %d, Spills: %d, Peak Streams: %d, Records: %d",
+		stats.TotalPasses, stats.SpillCount, stats.PeakOpenStreams, total)
 
 	return stats, nil
 }
@@ -167,11 +191,11 @@ func (h recordHeap) Less(i, j int) bool {
 }
 func (h recordHeap) Swap(i, j int) { h[i], h[j] = h[j], h[i] }
 
-func (h *recordHeap) Push(x interface{}) {
+func (h *recordHeap) Push(x any) {
 	*h = append(*h, x.(heapItem))
 }
 
-func (h *recordHeap) Pop() interface{} {
+func (h *recordHeap) Pop() any {
 	old := *h
 	n := len(old)
 	item := old[n-1]
@@ -180,12 +204,21 @@ func (h *recordHeap) Pop() interface{} {
 }
 
 // heapMerge performs a single-pass k-way merge using a min-heap.
-func heapMerge(readers []io.Reader, w io.Writer) (int64, error) {
+func heapMerge(readers []io.Reader, w io.Writer, maxRecordBytes int) (int64, error) {
 	h := &recordHeap{}
 	heap.Init(h)
 
 	for i, r := range readers {
 		scanner := bufio.NewScanner(r)
+		// Set buffer limit to prevent OOM on oversized records.
+		// The max token size is the larger of the initial buffer capacity and maxRecordBytes.
+		initialBufSize := 64 * 1024
+		if initialBufSize > maxRecordBytes {
+			initialBufSize = maxRecordBytes
+		}
+		buf := make([]byte, initialBufSize)
+		scanner.Buffer(buf, maxRecordBytes)
+
 		if scanner.Scan() {
 			var rec Record
 			if err := json.Unmarshal(scanner.Bytes(), &rec); err != nil {
