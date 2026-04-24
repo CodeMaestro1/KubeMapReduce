@@ -335,12 +335,27 @@ func (h *Handlers) HandleConfigureNodes(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	if err := httputil.WriteJSON(w, http.StatusNotImplemented, map[string]interface{}{
-		"status":      "not_implemented",
-		"message":     "node configuration backend integration is not implemented yet",
-		"maxPods":     req.MaxPods,
-		"cpuLimit":    req.CPULimit,
-		"memoryLimit": req.MemoryLimit,
+	current, err := h.scheduler.GetSystemConfig(r.Context())
+	if err != nil {
+		http.Error(w, "failed to fetch current config", http.StatusInternalServerError)
+		return
+	}
+
+	current.MaxConcurrentPods = req.MaxPods
+	current.CPULimit = req.CPULimit
+	current.MemoryLimit = req.MemoryLimit
+
+	if err := h.scheduler.UpsertSystemConfig(r.Context(), current); err != nil {
+		http.Error(w, "failed to persist config", http.StatusInternalServerError)
+		return
+	}
+
+	if err := httputil.WriteJSON(w, http.StatusOK, map[string]interface{}{
+		"status":      "success",
+		"message":     "node configuration updated",
+		"maxPods":     current.MaxConcurrentPods,
+		"cpuLimit":    current.CPULimit,
+		"memoryLimit": current.MemoryLimit,
 	}); err != nil {
 		return
 	}
@@ -371,11 +386,25 @@ func (h *Handlers) HandleWorkerConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	current, err := h.scheduler.GetSystemConfig(r.Context())
+	if err != nil {
+		http.Error(w, "failed to fetch current config", http.StatusInternalServerError)
+		return
+	}
+
+	current.WorkerReplicas = request.WorkerReplicas
+	current.MaxJobsPerNode = request.MaxJobsPerNode
+
+	if err := h.scheduler.UpsertSystemConfig(r.Context(), current); err != nil {
+		http.Error(w, "failed to persist config", http.StatusInternalServerError)
+		return
+	}
+
 	if err := httputil.WriteJSON(w, http.StatusAccepted, map[string]interface{}{
 		"status":         "accepted",
 		"message":        "worker configuration update accepted",
-		"workerReplicas": request.WorkerReplicas,
-		"maxJobsPerNode": request.MaxJobsPerNode,
+		"workerReplicas": current.WorkerReplicas,
+		"maxJobsPerNode": current.MaxJobsPerNode,
 	}); err != nil {
 		return
 	}
