@@ -147,6 +147,14 @@ func MergeInputs(readers []io.Reader, w io.Writer, cfg MergeConfig) (MergeStats,
 				return stats, fmt.Errorf("failed to flush spill file: %v", err)
 			}
 
+			// Close input readers from this batch to prevent FD exhaustion
+			// during high fan-in merges across multiple passes.
+			for _, input := range batch {
+				if rc, ok := input.(io.ReadCloser); ok {
+					rc.Close()
+				}
+			}
+
 			// Rewind for reading in next pass
 			if _, err := spillFile.Seek(0, 0); err != nil {
 				return stats, fmt.Errorf("failed to seek spill file: %v", err)
