@@ -22,10 +22,10 @@ func TestCLIAdminRoutes_MatchAPIRoutes(t *testing.T) {
 		path   string
 		cmd    string
 	}{
-		{http.MethodPut, "/admin/workers/config", "admin worker-config"},
-		{http.MethodPut, "/admin/nodes/config", "admin configure-nodes"},
-		{http.MethodPost, "/admin/users", "admin create-user"},
-		{http.MethodDelete, "/admin/users/testuser", "admin delete-user"},
+		{http.MethodPut, "/api/v1/admin/workers/config", "admin worker-config"},
+		{http.MethodPut, "/api/v1/admin/nodes/config", "admin configure-nodes"},
+		{http.MethodPost, "/api/v1/admin/users", "admin create-user"},
+		{http.MethodDelete, "/api/v1/admin/users/testuser", "admin delete-user"},
 	}
 
 	for _, tc := range cliAdminPaths {
