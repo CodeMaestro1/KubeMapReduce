@@ -57,6 +57,9 @@ type Config struct {
 	GRPCTLSKeyFile         string
 	EnableGRPCReflection   bool
 	AllowInsecureWorkerRPC bool
+
+	// Manager internal endpoint
+	ManagerAddr string
 }
 
 // Load populates the [Config] struct from environment variables.
@@ -111,6 +114,7 @@ func Load() (*Config, error) {
 		GRPCTLSKeyFile:                  getEnv("GRPC_TLS_KEY_FILE", ""),
 		EnableGRPCReflection:            getEnvBool("ENABLE_GRPC_REFLECTION", false),
 		AllowInsecureWorkerRPC:          getEnvBool("ALLOW_INSECURE_WORKER_RPC", false),
+		ManagerAddr:                     getEnv("MANAGER_ADDR", "manager-0.manager-hs.default.svc.cluster.local:8081"),
 	}
 	cfg.LeaseTTL = cfg.HeartbeatInterval * cfg.MaxMissedHeartbeats
 	return cfg, nil

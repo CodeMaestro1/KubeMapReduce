@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -15,18 +16,17 @@ import (
 	"kubemapreduce/manager-service/pkg/httputil"
 
 	"github.com/google/uuid"
+	"github.com/minio/minio-go/v7"
 )
 
 // Handlers holds HTTP handler state for the API server.
-//
-// This centralizes state management for all REST endpoints, including the
-// Keycloak admin client for user management and a [JobStore] for persisting
-// job metadata. Using a struct-based handler pattern allows for easy
-// dependency injection, making the API layer highly testable with mocks.
 type Handlers struct {
-	adminClient *auth.KeycloakAdminClient
-	store       JobStore
-	now         func() time.Time
+	adminClient    *auth.KeycloakAdminClient
+	store          JobStore
+	minioClient    *minio.Client
+	managerAddr    string
+	internalAPIKey string
+	now            func() time.Time
 }
 
 const (
@@ -36,16 +36,15 @@ const (
 	maxJSONBodyBytes = 1 << 20 // 1 MiB
 )
 
-// NewHandlers creates production-ready Handlers backed by the given JobStore.
-//
-// Callers must provide a valid [JobStore] implementation. In production, this
-// is typically a [PostgresJobStore] to ensure that job state persists across
-// manager restarts and is visible to all replicas.
-func NewHandlers(adminClient *auth.KeycloakAdminClient, store JobStore) *Handlers {
+// NewHandlers creates production-ready Handlers.
+func NewHandlers(adminClient *auth.KeycloakAdminClient, store JobStore, minioClient *minio.Client, managerAddr string, internalAPIKey string) *Handlers {
 	return &Handlers{
-		adminClient: adminClient,
-		store:       store,
-		now:         time.Now,
+		adminClient:    adminClient,
+		store:          store,
+		minioClient:    minioClient,
+		managerAddr:    managerAddr,
+		internalAPIKey: internalAPIKey,
+		now:            time.Now,
 	}
 }
 
@@ -71,7 +70,7 @@ func (h *Handlers) HandleRoot(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		httputil.WriteErrorJSON(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
 
@@ -91,7 +90,7 @@ func (h *Handlers) HandleRoot(w http.ResponseWriter, r *http.Request) {
 // database or Keycloak.
 func (h *Handlers) HandleHealth(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		httputil.WriteErrorJSON(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
 
@@ -109,7 +108,7 @@ func (h *Handlers) HandleHealth(w http.ResponseWriter, r *http.Request) {
 // scheduling but hasn't necessarily started execution.
 func (h *Handlers) HandleJobsSubmit(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		httputil.WriteErrorJSON(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
 
@@ -123,7 +122,7 @@ func (h *Handlers) HandleJobsSubmit(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := validation.ValidateJobSubmission(request); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		httputil.WriteErrorJSON(w, http.StatusBadRequest, err.Error())
 		return
 	}
 
@@ -138,7 +137,7 @@ func (h *Handlers) HandleJobsSubmit(w http.ResponseWriter, r *http.Request) {
 		CreatedAt: now,
 	}
 	if err := h.store.CreateJob(r.Context(), rec); err != nil {
-		http.Error(w, "failed to persist job", http.StatusInternalServerError)
+		httputil.WriteErrorJSON(w, http.StatusInternalServerError, "failed to persist job")
 		return
 	}
 
@@ -160,19 +159,19 @@ func (h *Handlers) HandleJobsSubmit(w http.ResponseWriter, r *http.Request) {
 // time in descending order to prioritize recent activity.
 func (h *Handlers) HandleJobsList(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		httputil.WriteErrorJSON(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
 
 	limit, offset, err := parsePagination(r)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		httputil.WriteErrorJSON(w, http.StatusBadRequest, err.Error())
 		return
 	}
 
 	records, err := h.store.ListJobs(r.Context(), limit, offset)
 	if err != nil {
-		http.Error(w, "failed to list jobs", http.StatusInternalServerError)
+		httputil.WriteErrorJSON(w, http.StatusInternalServerError, "failed to list jobs")
 		return
 	}
 
@@ -224,31 +223,31 @@ func parsePagination(r *http.Request) (int, int, error) {
 // not exist in the [JobStore].
 func (h *Handlers) HandleJobsGet(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		httputil.WriteErrorJSON(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
 
 	jobID := r.PathValue("job_id")
 	if jobID == "" {
-		http.Error(w, "job id required", http.StatusBadRequest)
+		httputil.WriteErrorJSON(w, http.StatusBadRequest, "job id required")
 		return
 	}
 	if _, err := uuid.Parse(jobID); err != nil {
-		http.Error(w, "invalid job id", http.StatusBadRequest)
+		httputil.WriteErrorJSON(w, http.StatusBadRequest, "invalid job id")
 		return
 	}
 
 	rec, err := h.store.GetJob(r.Context(), jobID)
 	if err != nil {
 		if errors.Is(err, ErrInvalidJobID) {
-			http.Error(w, "invalid job id", http.StatusBadRequest)
+			httputil.WriteErrorJSON(w, http.StatusBadRequest, "invalid job id")
 			return
 		}
-		http.Error(w, "failed to retrieve job", http.StatusInternalServerError)
+		httputil.WriteErrorJSON(w, http.StatusInternalServerError, "failed to retrieve job")
 		return
 	}
 	if rec == nil {
-		http.Error(w, "job not found", http.StatusNotFound)
+		httputil.WriteErrorJSON(w, http.StatusNotFound, "job not found")
 		return
 	}
 
@@ -274,25 +273,25 @@ func (h *Handlers) HandleJobsGet(w http.ResponseWriter, r *http.Request) {
 func (h *Handlers) HandleJobsDownload(w http.ResponseWriter, r *http.Request) {
 	jobID := r.PathValue("job_id")
 	if jobID == "" {
-		http.Error(w, "job id required", http.StatusBadRequest)
+		httputil.WriteErrorJSON(w, http.StatusBadRequest, "job id required")
 		return
 	}
 	if _, err := uuid.Parse(jobID); err != nil {
-		http.Error(w, "invalid job id", http.StatusBadRequest)
+		httputil.WriteErrorJSON(w, http.StatusBadRequest, "invalid job id")
 		return
 	}
 
 	rec, err := h.store.GetJob(r.Context(), jobID)
 	if err != nil {
 		if errors.Is(err, ErrInvalidJobID) {
-			http.Error(w, "invalid job id", http.StatusBadRequest)
+			httputil.WriteErrorJSON(w, http.StatusBadRequest, "invalid job id")
 			return
 		}
-		http.Error(w, "failed to retrieve job", http.StatusInternalServerError)
+		httputil.WriteErrorJSON(w, http.StatusInternalServerError, "failed to retrieve job")
 		return
 	}
 	if rec == nil {
-		http.Error(w, "job not found", http.StatusNotFound)
+		httputil.WriteErrorJSON(w, http.StatusNotFound, "job not found")
 		return
 	}
 
@@ -313,7 +312,7 @@ func (h *Handlers) HandleJobsDownload(w http.ResponseWriter, r *http.Request) {
 // is still in progress.
 func (h *Handlers) HandleConfigureNodes(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPut {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		httputil.WriteErrorJSON(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
 
@@ -323,15 +322,15 @@ func (h *Handlers) HandleConfigureNodes(w http.ResponseWriter, r *http.Request) 
 	}
 
 	if req.MaxPods < 1 {
-		http.Error(w, "maxPods must be a positive integer", http.StatusBadRequest)
+		httputil.WriteErrorJSON(w, http.StatusBadRequest, "maxPods must be a positive integer")
 		return
 	}
 	if strings.TrimSpace(req.CPULimit) == "" {
-		http.Error(w, "cpuLimit is required", http.StatusBadRequest)
+		httputil.WriteErrorJSON(w, http.StatusBadRequest, "cpuLimit is required")
 		return
 	}
 	if strings.TrimSpace(req.MemoryLimit) == "" {
-		http.Error(w, "memoryLimit is required", http.StatusBadRequest)
+		httputil.WriteErrorJSON(w, http.StatusBadRequest, "memoryLimit is required")
 		return
 	}
 
@@ -353,7 +352,7 @@ func (h *Handlers) HandleConfigureNodes(w http.ResponseWriter, r *http.Request) 
 // new configuration has been received and will be applied to future jobs.
 func (h *Handlers) HandleWorkerConfig(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPut {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		httputil.WriteErrorJSON(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
 
@@ -363,11 +362,11 @@ func (h *Handlers) HandleWorkerConfig(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if request.WorkerReplicas < 1 {
-		http.Error(w, "workerReplicas must be positive", http.StatusBadRequest)
+		httputil.WriteErrorJSON(w, http.StatusBadRequest, "workerReplicas must be positive")
 		return
 	}
 	if request.MaxJobsPerNode < 1 {
-		http.Error(w, "maxJobsPerNode must be positive", http.StatusBadRequest)
+		httputil.WriteErrorJSON(w, http.StatusBadRequest, "maxJobsPerNode must be positive")
 		return
 	}
 
@@ -410,12 +409,12 @@ func jobMessage(status string) string {
 // (e.g., USER vs ADMIN). Returns 201 Created on success.
 func (h *Handlers) HandleAdminCreateUser(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		httputil.WriteErrorJSON(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
 
 	if h.adminClient == nil {
-		http.Error(w, "authentication admin client not configured", http.StatusServiceUnavailable)
+		httputil.WriteErrorJSON(w, http.StatusServiceUnavailable, "authentication admin client not configured")
 		return
 	}
 
@@ -425,7 +424,7 @@ func (h *Handlers) HandleAdminCreateUser(w http.ResponseWriter, r *http.Request)
 	}
 
 	if err := validation.ValidateCreateUserRequest(req); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		httputil.WriteErrorJSON(w, http.StatusBadRequest, err.Error())
 		return
 	}
 
@@ -441,10 +440,10 @@ func (h *Handlers) HandleAdminCreateUser(w http.ResponseWriter, r *http.Request)
 		Role:     normalizedRole,
 	}); err != nil {
 		if isAuthDependencyError(err) {
-			http.Error(w, "authentication service unavailable", http.StatusServiceUnavailable)
+			httputil.WriteErrorJSON(w, http.StatusServiceUnavailable, "authentication service unavailable")
 			return
 		}
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		httputil.WriteErrorJSON(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 
@@ -464,18 +463,18 @@ func (h *Handlers) HandleAdminCreateUser(w http.ResponseWriter, r *http.Request)
 // underlying client behavior) or a specific error if the auth service fails.
 func (h *Handlers) HandleAdminDeleteUser(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodDelete {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		httputil.WriteErrorJSON(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
 
 	if h.adminClient == nil {
-		http.Error(w, "authentication admin client not configured", http.StatusServiceUnavailable)
+		httputil.WriteErrorJSON(w, http.StatusServiceUnavailable, "authentication admin client not configured")
 		return
 	}
 
 	username := strings.TrimSpace(r.PathValue("username"))
 	if username == "" {
-		http.Error(w, "username is required", http.StatusBadRequest)
+		httputil.WriteErrorJSON(w, http.StatusBadRequest, "username is required")
 		return
 	}
 
@@ -484,10 +483,10 @@ func (h *Handlers) HandleAdminDeleteUser(w http.ResponseWriter, r *http.Request)
 
 	if err := h.adminClient.DeleteUserByUsername(ctx, username); err != nil {
 		if isAuthDependencyError(err) {
-			http.Error(w, "authentication service unavailable", http.StatusServiceUnavailable)
+			httputil.WriteErrorJSON(w, http.StatusServiceUnavailable, "authentication service unavailable")
 			return
 		}
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		httputil.WriteErrorJSON(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 
@@ -502,16 +501,118 @@ func isAuthDependencyError(err error) bool {
 		errors.Is(err, context.Canceled)
 }
 
+// HandleJobsDelete initiates the cancellation of a running or pending job.
+//
+// This operation is proxied to the Manager service's internal endpoint to ensure
+// that all active worker processes for the job are terminated and resources
+// are released.
+func (h *Handlers) HandleJobsDelete(w http.ResponseWriter, r *http.Request) {
+	jobID := r.PathValue("job_id")
+	if jobID == "" {
+		httputil.WriteErrorJSON(w, http.StatusBadRequest, "job id required")
+		return
+	}
+
+	if _, err := uuid.Parse(jobID); err != nil {
+		httputil.WriteErrorJSON(w, http.StatusBadRequest, "invalid job id")
+		return
+	}
+
+	managerURL := fmt.Sprintf("http://%s/internal/jobs/%s", h.managerAddr, jobID)
+	req, err := http.NewRequestWithContext(r.Context(), http.MethodDelete, managerURL, nil)
+	if err != nil {
+		httputil.WriteErrorJSON(w, http.StatusInternalServerError, "failed to build cancellation request")
+		return
+	}
+
+	if h.internalAPIKey != "" {
+		req.Header.Set("X-Internal-Token", h.internalAPIKey)
+	}
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		httputil.WriteErrorJSON(w, http.StatusServiceUnavailable, "manager service unavailable")
+		return
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusAccepted && resp.StatusCode != http.StatusOK {
+		httputil.WriteErrorJSON(w, resp.StatusCode, "cancellation rejected by manager")
+		return
+	}
+
+	if err := httputil.WriteJSON(w, http.StatusOK, map[string]string{
+		"status": "cancelled",
+		"jobId":  jobID,
+	}); err != nil {
+		return
+	}
+}
+
+// HandlePresignUpload generates a temporary URL for direct file upload to object storage.
+func (h *Handlers) HandlePresignUpload(w http.ResponseWriter, r *http.Request) {
+	if h.minioClient == nil {
+		httputil.WriteErrorJSON(w, http.StatusServiceUnavailable, "object storage not configured")
+		return
+	}
+
+	var req models.PresignRequest
+	if !decodeJSONBody(w, r, &req, "invalid presign request") {
+		return
+	}
+
+	if req.Bucket == "" || req.Key == "" {
+		httputil.WriteErrorJSON(w, http.StatusBadRequest, "bucket and key are required")
+		return
+	}
+
+	url, err := h.minioClient.PresignedPutObject(r.Context(), req.Bucket, req.Key, 15*time.Minute)
+	if err != nil {
+		httputil.WriteErrorJSON(w, http.StatusInternalServerError, "failed to generate upload URL")
+		return
+	}
+
+	if err := httputil.WriteJSON(w, http.StatusOK, models.PresignResponse{URL: url.String()}); err != nil {
+		return
+	}
+}
+
+// HandlePresignDownload generates a temporary URL for direct file download from object storage.
+func (h *Handlers) HandlePresignDownload(w http.ResponseWriter, r *http.Request) {
+	if h.minioClient == nil {
+		httputil.WriteErrorJSON(w, http.StatusServiceUnavailable, "object storage not configured")
+		return
+	}
+
+	bucket := r.URL.Query().Get("bucket")
+	key := r.URL.Query().Get("key")
+
+	if bucket == "" || key == "" {
+		httputil.WriteErrorJSON(w, http.StatusBadRequest, "bucket and key are required")
+		return
+	}
+
+	url, err := h.minioClient.PresignedGetObject(r.Context(), bucket, key, 15*time.Minute, nil)
+	if err != nil {
+		httputil.WriteErrorJSON(w, http.StatusInternalServerError, "failed to generate download URL")
+		return
+	}
+
+	if err := httputil.WriteJSON(w, http.StatusOK, models.PresignResponse{URL: url.String()}); err != nil {
+		return
+	}
+}
+
 func decodeJSONBody(w http.ResponseWriter, r *http.Request, out any, invalidMessage string) bool {
 	r.Body = http.MaxBytesReader(w, r.Body, maxJSONBodyBytes)
 	dec := json.NewDecoder(r.Body)
 	if err := dec.Decode(out); err != nil {
 		var maxErr *http.MaxBytesError
 		if errors.As(err, &maxErr) {
-			http.Error(w, "request payload too large", http.StatusRequestEntityTooLarge)
+			httputil.WriteErrorJSON(w, http.StatusRequestEntityTooLarge, "request payload too large")
 			return false
 		}
-		http.Error(w, invalidMessage, http.StatusBadRequest)
+		httputil.WriteErrorJSON(w, http.StatusBadRequest, invalidMessage)
 		return false
 	}
 	return true
