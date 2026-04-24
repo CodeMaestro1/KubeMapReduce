@@ -48,14 +48,17 @@ func NewHandlers(adminClient *auth.KeycloakAdminClient, store JobStore, minioCli
 	}
 }
 
-func newHandlersWithOptions(adminClient *auth.KeycloakAdminClient, store JobStore, now func() time.Time) *Handlers {
+func newHandlersWithOptions(adminClient *auth.KeycloakAdminClient, store JobStore, minioClient *minio.Client, managerAddr string, internalAPIKey string, now func() time.Time) *Handlers {
 	if now == nil {
 		now = time.Now
 	}
 	return &Handlers{
-		adminClient: adminClient,
-		store:       store,
-		now:         now,
+		adminClient:    adminClient,
+		store:          store,
+		minioClient:    minioClient,
+		managerAddr:    managerAddr,
+		internalAPIKey: internalAPIKey,
+		now:            now,
 	}
 }
 
