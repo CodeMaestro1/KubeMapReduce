@@ -333,12 +333,17 @@ func TestMerge_StressLargeFanIn_1000(t *testing.T) {
 	count := 0
 	for scanner.Scan() {
 		var rec Record
-		json.Unmarshal(scanner.Bytes(), &rec)
+		if err := json.Unmarshal(scanner.Bytes(), &rec); err != nil {
+			t.Fatalf("Failed to unmarshal record %d: %v", count, err)
+		}
 		if rec.Key < lastKey {
 			t.Fatalf("Output not sorted: %s < %s at record %d", rec.Key, lastKey, count)
 		}
 		lastKey = rec.Key
 		count++
+	}
+	if err := scanner.Err(); err != nil {
+		t.Fatalf("Scanner error during verification: %v", err)
 	}
 }
 
