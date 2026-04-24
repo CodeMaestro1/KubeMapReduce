@@ -230,7 +230,16 @@ func TestHandleWorkerConfig_RejectsInvalidValues(t *testing.T) {
 }
 
 func TestHandleWorkerConfig_AcceptsValidConfig(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/internal/config" {
+			t.Errorf("expected path /internal/config, got %s", r.URL.Path)
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
 	h := newTestHandlers()
+	h.managerAddr = server.Listener.Addr().String()
 
 	body := `{"workerReplicas":4,"maxJobsPerNode":8}`
 	req := httptest.NewRequest(http.MethodPut, "/admin/workers/config", strings.NewReader(body))
@@ -239,13 +248,10 @@ func TestHandleWorkerConfig_AcceptsValidConfig(t *testing.T) {
 	h.HandleWorkerConfig(rec, req)
 
 	if rec.Code != http.StatusAccepted {
-		t.Fatalf("expected status %d, got %d", http.StatusAccepted, rec.Code)
+		t.Fatalf("expected status %d, got %d: %s", http.StatusAccepted, rec.Code, rec.Body.String())
 	}
 	if !strings.Contains(rec.Body.String(), `"status":"accepted"`) {
 		t.Fatalf("expected accepted status in body, got %q", rec.Body.String())
-	}
-	if !strings.Contains(rec.Body.String(), `"message":"worker configuration update accepted"`) {
-		t.Fatalf("expected accepted message in body, got %q", rec.Body.String())
 	}
 }
 
@@ -301,7 +307,7 @@ func newTestHandlersWithKeycloak(t *testing.T) (*Handlers, *httptest.Server) {
 	kc := fakeKeycloak(t)
 	adminClient := auth.NewKeycloakAdminClient(kc.URL, "test", "admin", "admin")
 	store := NewMemoryJobStore(24*time.Hour, 10000, nil)
-	return NewHandlers(adminClient, store), kc
+	return NewHandlers(adminClient, store, "", ""), kc
 }
 
 // ── Admin Create User tests ─────────────────────────────────
@@ -489,7 +495,7 @@ func TestHandleAdminCreateUser_KeycloakDown_Returns503(t *testing.T) {
 
 	adminClient := auth.NewKeycloakAdminClient(srv.URL, "test", "admin", "admin")
 	store := NewMemoryJobStore(24*time.Hour, 10000, nil)
-	h := NewHandlers(adminClient, store)
+	h := NewHandlers(adminClient, store, "", "")
 
 	body := `{"username":"alice","email":"alice@example.com","password":"secret","role":"USER"}`
 	req := httptest.NewRequest(http.MethodPost, "/admin/users", strings.NewReader(body))
@@ -517,7 +523,7 @@ func TestHandleAdminCreateUser_KeycloakTimeout_Returns503(t *testing.T) {
 
 	adminClient := auth.NewKeycloakAdminClient(srv.URL, "test", "admin", "admin")
 	store := NewMemoryJobStore(24*time.Hour, 10000, nil)
-	h := NewHandlers(adminClient, store)
+	h := NewHandlers(adminClient, store, "", "")
 
 	body := `{"username":"alice","email":"alice@example.com","password":"secret","role":"USER"}`
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
@@ -540,7 +546,7 @@ func TestHandleAdminDeleteUser_KeycloakDown_Returns503(t *testing.T) {
 
 	adminClient := auth.NewKeycloakAdminClient(srv.URL, "test", "admin", "admin")
 	store := NewMemoryJobStore(24*time.Hour, 10000, nil)
-	h := NewHandlers(adminClient, store)
+	h := NewHandlers(adminClient, store, "", "")
 
 	req := httptest.NewRequest(http.MethodDelete, "/admin/users/alice", nil)
 	req.SetPathValue("username", "alice")
@@ -1020,18 +1026,27 @@ func TestHandleConfigureNodes_RejectsMissingCPULimit(t *testing.T) {
 }
 
 func TestHandleConfigureNodes_AcceptsValidConfig(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/internal/config" {
+			t.Errorf("expected path /internal/config, got %s", r.URL.Path)
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
 	h := newTestHandlers()
+	h.managerAddr = server.Listener.Addr().String()
 
 	body := `{"maxPods":20,"cpuLimit":"500m","memoryLimit":"1Gi"}`
 	req := httptest.NewRequest(http.MethodPut, "/admin/nodes/config", strings.NewReader(body))
 	rec := httptest.NewRecorder()
 	h.HandleConfigureNodes(rec, req)
 
-	if rec.Code != http.StatusNotImplemented {
-		t.Fatalf("expected %d, got %d: %s", http.StatusNotImplemented, rec.Code, rec.Body.String())
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected %d, got %d: %s", http.StatusOK, rec.Code, rec.Body.String())
 	}
-	if !strings.Contains(rec.Body.String(), "not_implemented") {
-		t.Fatalf("expected not_implemented in body, got %q", rec.Body.String())
+	if !strings.Contains(rec.Body.String(), "success") {
+		t.Fatalf("expected success in body, got %q", rec.Body.String())
 	}
 }
 

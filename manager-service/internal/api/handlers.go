@@ -31,6 +31,7 @@ type Handlers struct {
 	store          JobStore
 	managerAddr    string
 	internalAPIKey string
+	httpClient     *http.Client
 	now            func() time.Time
 }
 
@@ -52,6 +53,7 @@ func NewHandlers(adminClient *auth.KeycloakAdminClient, store JobStore, managerA
 		store:          store,
 		managerAddr:    managerAddr,
 		internalAPIKey: internalAPIKey,
+		httpClient:     http.DefaultClient,
 		now:            time.Now,
 	}
 }
@@ -65,6 +67,7 @@ func newHandlersWithOptions(adminClient *auth.KeycloakAdminClient, store JobStor
 		store:          store,
 		managerAddr:    managerAddr,
 		internalAPIKey: internalAPIKey,
+		httpClient:     http.DefaultClient,
 		now:            now,
 	}
 }
@@ -360,7 +363,7 @@ func (h *Handlers) HandleConfigureNodes(w http.ResponseWriter, r *http.Request) 
 		proxyReq.Header.Set("X-Internal-Token", h.internalAPIKey)
 	}
 
-	resp, err := http.DefaultClient.Do(proxyReq)
+	resp, err := h.httpClient.Do(proxyReq)
 	if err != nil {
 		http.Error(w, "manager service unreachable", http.StatusServiceUnavailable)
 		return
@@ -420,7 +423,7 @@ func (h *Handlers) HandleWorkerConfig(w http.ResponseWriter, r *http.Request) {
 		proxyReq.Header.Set("X-Internal-Token", h.internalAPIKey)
 	}
 
-	resp, err := http.DefaultClient.Do(proxyReq)
+	resp, err := h.httpClient.Do(proxyReq)
 	if err != nil {
 		http.Error(w, "manager service unreachable", http.StatusServiceUnavailable)
 		return
