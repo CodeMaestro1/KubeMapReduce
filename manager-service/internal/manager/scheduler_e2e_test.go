@@ -109,7 +109,7 @@ func TestE2E_WorkerKillDuringMapTask(t *testing.T) {
 	mock.ExpectExec(regexp.QuoteMeta(QueryUpdateTaskInProgress)).WithArgs(sqlmock.AnyArg(), taskID).WillReturnResult(sqlmock.NewResult(1, 1))
 	mock.ExpectExec(regexp.QuoteMeta(QueryInsertAttempt)).WithArgs(sqlmock.AnyArg(), taskID, workerID, sqlmock.AnyArg(), s.leaseTTL).WillReturnResult(sqlmock.NewResult(1, 1))
 	// update job status
-	mock.ExpectExec(regexp.QuoteMeta(QueryUpdateJobStatus)).WithArgs(jobID, "Running", sqlmock.AnyArg()).WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectExec(regexp.QuoteMeta(QueryUpdateJobStatus)).WithArgs(jobID, "Running").WillReturnResult(sqlmock.NewResult(1, 1))
 	mock.ExpectCommit()
 
 	task, err := s.GetNextTask(context.Background(), jobID, workerID)
@@ -190,12 +190,12 @@ func TestE2E_TripleFailure_MaxAttemptsExhaustion(t *testing.T) {
 	mock.ExpectExec(regexp.QuoteMeta(QueryUpdateTaskStatus)).WithArgs("Failed", taskID).WillReturnResult(sqlmock.NewResult(1, 1))
 	mock.ExpectExec(regexp.QuoteMeta(QueryFailAttempt)).WithArgs(attemptID3).WillReturnResult(sqlmock.NewResult(1, 1))
 	// updateJobStatusTx to Cleaning
-	mock.ExpectExec(regexp.QuoteMeta(QueryUpdateJobStatus)).WithArgs(jobID, "Cleaning", sqlmock.AnyArg()).WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectExec(regexp.QuoteMeta(QueryUpdateJobStatus)).WithArgs(jobID, "Cleaning").WillReturnResult(sqlmock.NewResult(1, 1))
 	mock.ExpectCommit()
 
 	// finalizeJob mock (called synchronously in FailStaleTasks)
 	mock.ExpectBegin()
-	mock.ExpectExec(regexp.QuoteMeta(QueryUpdateJobStatus)).WithArgs(jobID, "Failed", sqlmock.AnyArg()).WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectExec(regexp.QuoteMeta(QueryUpdateJobStatus)).WithArgs(jobID, "Failed").WillReturnResult(sqlmock.NewResult(1, 1))
 	mock.ExpectCommit()
 
 	recovered, err := s.FailStaleTasks(context.Background())
@@ -214,14 +214,14 @@ func TestE2E_CancellationDuringExecution(t *testing.T) {
 	jobID := uuid.New().String()
 
 	mock.ExpectBegin()
-	mock.ExpectExec(regexp.QuoteMeta(QueryUpdateJobStatus)).WithArgs(jobID, "Cleaning", sqlmock.AnyArg()).WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectExec(regexp.QuoteMeta(QueryUpdateJobStatus)).WithArgs(jobID, "Cleaning").WillReturnResult(sqlmock.NewResult(1, 1))
 	mock.ExpectExec(regexp.QuoteMeta("UPDATE TASKS SET status = 'Failed' WHERE job_id = $1 AND status != 'Completed'")).WithArgs(jobID).WillReturnResult(sqlmock.NewResult(1, 1))
 	mock.ExpectExec(regexp.QuoteMeta(QueryFailRunningAttemptsByJob)).WithArgs(jobID).WillReturnResult(sqlmock.NewResult(1, 1))
 	mock.ExpectCommit()
 
 	// finalizeJob mock (called in goroutine)
 	mock.ExpectBegin()
-	mock.ExpectExec(regexp.QuoteMeta(QueryUpdateJobStatus)).WithArgs(jobID, "Cancelled", sqlmock.AnyArg()).WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectExec(regexp.QuoteMeta(QueryUpdateJobStatus)).WithArgs(jobID, "Cancelled").WillReturnResult(sqlmock.NewResult(1, 1))
 	mock.ExpectCommit()
 
 	err := s.CancelJob(context.Background(), jobID)
