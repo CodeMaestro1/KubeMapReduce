@@ -307,11 +307,7 @@ func newTestHandlersWithKeycloak(t *testing.T) (*Handlers, *httptest.Server) {
 	kc := fakeKeycloak(t)
 	adminClient := auth.NewKeycloakAdminClient(kc.URL, "test", "admin", "admin")
 	store := NewMemoryJobStore(24*time.Hour, 10000, nil)
-<<<<<<< HEAD
 	return NewHandlers(adminClient, store, nil, "", ""), kc
-=======
-	return NewHandlers(adminClient, store, "", ""), kc
->>>>>>> fix/admin-config
 }
 
 // ── Admin Create User tests ─────────────────────────────────
@@ -499,11 +495,7 @@ func TestHandleAdminCreateUser_KeycloakDown_Returns503(t *testing.T) {
 
 	adminClient := auth.NewKeycloakAdminClient(srv.URL, "test", "admin", "admin")
 	store := NewMemoryJobStore(24*time.Hour, 10000, nil)
-<<<<<<< HEAD
 	h := NewHandlers(adminClient, store, nil, "", "")
-=======
-	h := NewHandlers(adminClient, store, "", "")
->>>>>>> fix/admin-config
 
 	body := `{"username":"alice","email":"alice@example.com","password":"secret","role":"USER"}`
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/users", strings.NewReader(body))
@@ -531,11 +523,7 @@ func TestHandleAdminCreateUser_KeycloakTimeout_Returns503(t *testing.T) {
 
 	adminClient := auth.NewKeycloakAdminClient(srv.URL, "test", "admin", "admin")
 	store := NewMemoryJobStore(24*time.Hour, 10000, nil)
-<<<<<<< HEAD
 	h := NewHandlers(adminClient, store, nil, "", "")
-=======
-	h := NewHandlers(adminClient, store, "", "")
->>>>>>> fix/admin-config
 
 	body := `{"username":"alice","email":"alice@example.com","password":"secret","role":"USER"}`
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
@@ -558,11 +546,7 @@ func TestHandleAdminDeleteUser_KeycloakDown_Returns503(t *testing.T) {
 
 	adminClient := auth.NewKeycloakAdminClient(srv.URL, "test", "admin", "admin")
 	store := NewMemoryJobStore(24*time.Hour, 10000, nil)
-<<<<<<< HEAD
 	h := NewHandlers(adminClient, store, nil, "", "")
-=======
-	h := NewHandlers(adminClient, store, "", "")
->>>>>>> fix/admin-config
 
 	req := httptest.NewRequest(http.MethodDelete, "/api/v1/admin/users/alice", nil)
 	req.SetPathValue("username", "alice")

@@ -579,7 +579,7 @@ func (h *Handlers) HandleJobsDelete(w http.ResponseWriter, r *http.Request) {
 	}
 
 	managerURL := fmt.Sprintf("http://%s/internal/jobs/%s", h.managerAddr, jobID)
-	req, err := http.NewRequestWithContext(r.Context(), http.MethodDelete, managerURL, nil)
+	proxyReq, err := http.NewRequestWithContext(r.Context(), http.MethodDelete, managerURL, nil)
 	if err != nil {
 		httputil.WriteErrorJSON(w, http.StatusInternalServerError, "failed to build cancellation request")
 		return
