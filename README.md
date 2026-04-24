@@ -258,14 +258,36 @@ Some HTTP clients and proxies do not fully support bodies on `DELETE` requests, 
 
 All protected endpoints require a Bearer token from Keycloak.
 
-## Known Limitations
+## E2E Failure Validation (INF-419)
 
-- **In-memory job store (temporary):** Job data is held in memory only.
-  All jobs are lost on server restart, and job visibility is not shared across
-  multiple API replicas. A persistent store will replace this in a future release.
+KubeMapReduce includes a dedicated end-to-end failure-injection suite to validate the system's resilience against infrastructure failures, as required for the INF-419 Principles of Distributed Systems deliverable.
 
-## Common Issues
+### Prerequisites
 
-- JWKS `404` on startup: realm/client missing or wrong realm settings.
-- `listen tcp :8081 bind`: another process is already using port 8081.
-- `session expired, please login again`: refresh token expired — run `login` again.
+- A running Kubernetes cluster (Kind, Minikube, or EKS/GKE).
+- `kubectl` configured to point to the cluster.
+- KubeMapReduce deployed to the cluster with the following labels:
+  - Manager StatefulSet: `app=manager`
+  - Worker Jobs: `app=kubemapreduce-worker`
+- Active CLI authentication (`kubemapreduce login`).
+
+### Running the Validation Suite
+
+The suite automates three high-impact failure scenarios:
+1. **Worker Pod Kill**: Deletes a worker pod mid-execution to verify task reassignment.
+2. **Manager Restart**: Restarts the manager StatefulSet to verify recovery of active attempts from the DDS.
+3. **Zombie Fencing**: Pauses a worker (SIGSTOP) until its lease expires, then resumes it (SIGCONT) to verify that its subsequent commit attempt is rejected by the manager.
+
+Execute the suite from the repository root:
+
+```bash
+./scripts/e2e_failure_injection.sh
+```
+
+### Reports and Artifacts
+
+Each run generates a timestamped report directory in `./reports/`. This directory contains:
+- `suite.log`: Detailed execution trace with timestamps.
+- `zombie_worker.log`: Captured logs from the fenced worker showing rejection errors (e.g., `PermissionDenied`).
+
+These artifacts provide the necessary evidence for the final validation report and presentation.
