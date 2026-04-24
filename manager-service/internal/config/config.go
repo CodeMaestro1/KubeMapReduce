@@ -25,9 +25,12 @@ type Config struct {
 	MinioEndpoint       string
 	// MinioAccessKey and MinioSecretKey are expected to be injected via environment
 	// variables (typically from Kubernetes Secrets) when manifest fallback is enabled.
-	MinioAccessKey       string
-	MinioSecretKey       string
-	MinioUseSSL          bool
+	MinioAccessKey string
+	MinioSecretKey string
+	MinioUseSSL    bool
+	// MinioBucket is the name of the primary object-storage bucket used for job
+	// inputs, outputs, and shuffle staging data.
+	MinioBucket          string
 	InternalAPIKey       string
 	WorkerRPCToken       string
 	GRPCTLSCertFile      string
@@ -75,6 +78,7 @@ func Load() (*Config, error) {
 		MinioAccessKey:       getEnv("MINIO_ACCESS_KEY", ""),
 		MinioSecretKey:       getEnv("MINIO_SECRET_KEY", ""),
 		MinioUseSSL:          getEnvBool("MINIO_USE_SSL", false),
+		MinioBucket:          getEnv("MINIO_BUCKET", "mapreduce"),
 		InternalAPIKey:       getEnv("MANAGER_INTERNAL_API_KEY", ""),
 		WorkerRPCToken:       getEnv("MANAGER_WORKER_RPC_TOKEN", ""),
 		GRPCTLSCertFile:      getEnv("GRPC_TLS_CERT_FILE", ""),

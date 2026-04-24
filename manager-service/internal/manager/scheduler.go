@@ -34,6 +34,7 @@ type Scheduler struct {
 	replicaIndex   int
 	totalReplicas  int
 	orchestrator   WorkerOrchestrator
+	stagingCleaner StagingCleaner
 	managerAddr    string
 	leaseTTL       int
 	cleanupMu      sync.Mutex
@@ -572,7 +573,7 @@ func (s *Scheduler) CompleteTask(taskID string, attemptID string, leaseID string
 	}
 	jobCompleted := false
 	if pendingTasks == 0 {
-		if err := s.updateJobStatusTx(ctx, tx, jobID, "Completed"); err != nil {
+		if err := s.updateJobStatusTx(ctx, tx, jobID, "Cleaning"); err != nil {
 			return err
 		}
 		jobCompleted = true
@@ -583,6 +584,7 @@ func (s *Scheduler) CompleteTask(taskID string, attemptID string, leaseID string
 	}
 
 	if jobCompleted {
+		s.cleanStagingAndFinalizeJob(jobID, "Completed")
 		go func() {
 			cancelCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 			defer cancel()
@@ -721,7 +723,7 @@ func (s *Scheduler) FailTask(taskID string, attemptID string, leaseID string, re
 
 	var retryAttemptID string
 	if newState == "Failed" {
-		if err := s.updateJobStatusTx(ctx, tx, jobID, "Failed"); err != nil {
+		if err := s.updateJobStatusTx(ctx, tx, jobID, "Cleaning"); err != nil {
 			return err
 		}
 	} else {
@@ -736,6 +738,7 @@ func (s *Scheduler) FailTask(taskID string, attemptID string, leaseID string, re
 	}
 
 	if newState == "Failed" {
+		s.cleanStagingAndFinalizeJob(jobID, "Failed")
 		go func() {
 			cancelCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 			defer cancel()
@@ -823,8 +826,10 @@ func (s *Scheduler) FailStaleTasks() (int, error) {
 		}
 		zombies = append(zombies, zombieWorker{taskID: rec.taskID, attemptID: rec.attemptID})
 		if newState == "Failed" {
-			if err := s.updateJobStatusTx(ctx, tx, jobID, "Failed"); err != nil {
-				return 0, fmt.Errorf("marking job %s failed: %w", jobID, err)
+			if _, alreadyCleaning := failedJobs[jobID]; !alreadyCleaning {
+				if err := s.updateJobStatusTx(ctx, tx, jobID, "Cleaning"); err != nil {
+					return 0, fmt.Errorf("marking job %s Cleaning: %w", jobID, err)
+				}
 			}
 			failedJobs[jobID] = struct{}{}
 		} else if newState == "Idle" {
@@ -853,6 +858,13 @@ func (s *Scheduler) FailStaleTasks() (int, error) {
 		if err := s.orchestrator.DeleteWorker(reapCtx, z.taskID, z.attemptID); err != nil {
 			log.Printf("Failed to delete zombie worker for task %s (attempt %s): %v", z.taskID, z.attemptID, err)
 		}
+	}
+
+	// Delete staging data and finalize each failed job through the Cleaning phase
+	// before marking it Failed. This is done before K8s cancellation so that
+	// any lingering workers RPCs will be rejected by fencing.
+	for jobID := range failedJobs {
+		s.cleanStagingAndFinalizeJob(jobID, "Failed")
 	}
 
 	cancelCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
@@ -1017,6 +1029,34 @@ func (s *Scheduler) enqueueCleanup(jobID string) {
 	s.cleanupMu.Lock()
 	s.pendingCleanup[jobID] = struct{}{}
 	s.cleanupMu.Unlock()
+}
+
+// SetStagingCleaner registers a StagingCleaner implementation that will be
+// invoked during the Cleaning phase of a job before it is transitioned to
+// a terminal state (Completed or Failed). Calling this is optional; when not
+// set the Cleaning phase still transitions correctly but no staging objects
+// are removed (relying on the bucket lifecycle policy instead).
+func (s *Scheduler) SetStagingCleaner(c StagingCleaner) {
+	s.stagingCleaner = c
+}
+
+// cleanStagingAndFinalizeJob runs the Cleaning phase for a job: it bulk-deletes
+// the shuffle staging prefix (staging/<jobID>/) then marks the job with the
+// given terminal status. If staging deletion fails the error is logged and
+// finalization continues to prevent the job from being stuck in Cleaning.
+func (s *Scheduler) cleanStagingAndFinalizeJob(jobID, terminalStatus string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+
+	if s.stagingCleaner != nil {
+		if err := s.stagingCleaner.DeleteStagingPrefix(ctx, jobID); err != nil {
+			log.Printf("staging cleanup failed for job %s (finalizing as %s anyway): %v", jobID, terminalStatus, err)
+		}
+	}
+
+	if _, err := s.db.ExecContext(ctx, QueryUpdateJobStatus, jobID, terminalStatus, time.Now()); err != nil {
+		log.Printf("failed to finalize job %s as %s: %v", jobID, terminalStatus, err)
+	}
 }
 
 func (s *Scheduler) popPendingCleanup() []string {

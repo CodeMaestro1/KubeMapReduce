@@ -85,6 +85,20 @@ func (r *recordingOrchestrator) DeleteWorker(ctx context.Context, taskID string,
 	return err
 }
 
+// recordingStagingCleaner records DeleteStagingPrefix calls for test assertions.
+type recordingStagingCleaner struct {
+	mu      sync.Mutex
+	deleted []string
+	err     error
+}
+
+func (r *recordingStagingCleaner) DeleteStagingPrefix(_ context.Context, jobID string) error {
+	r.mu.Lock()
+	r.deleted = append(r.deleted, jobID)
+	r.mu.Unlock()
+	return r.err
+}
+
 func expectLeaseValidation(mock sqlmock.Sqlmock, attemptID string, leaseID string, leaseValid bool) {
 	mock.ExpectQuery(regexp.QuoteMeta(QueryCheckLeaseValid)).
 		WithArgs(attemptID, leaseID).
@@ -408,10 +422,15 @@ func TestScheduler_CompleteTask_Success(t *testing.T) {
 		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
 
 	mock.ExpectExec(regexp.QuoteMeta(QueryUpdateJobStatus)).
-		WithArgs(jobID, "Completed", sqlmock.AnyArg()).
+		WithArgs(jobID, "Cleaning", sqlmock.AnyArg()).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
 	mock.ExpectCommit()
+
+	// Post-commit: staging cleanup (no-op, stagingCleaner is nil) then finalize to Completed.
+	mock.ExpectExec(regexp.QuoteMeta(QueryUpdateJobStatus)).
+		WithArgs(jobID, "Completed", sqlmock.AnyArg()).
+		WillReturnResult(sqlmock.NewResult(1, 1))
 
 	err := scheduler.CompleteTask(taskID, attemptID, "mock-lease", []string{"s3://output1"}, []string{"hash1"})
 	if err != nil {
@@ -426,6 +445,124 @@ func TestScheduler_CompleteTask_LengthMismatch(t *testing.T) {
 	err := scheduler.CompleteTask(uuid.NewString(), uuid.NewString(), "mock-lease", []string{"uri1"}, []string{"hash1", "hash2"})
 	if !errors.Is(err, ErrOutputMismatch) {
 		t.Errorf("expected output mismatch, got %v", err)
+	}
+}
+
+// TestScheduler_CompleteTask_TriggersCleaningPhase verifies that when a job is
+// fully complete the Cleaning-phase transition is recorded before the terminal
+// Completed status is written, and that the staging cleaner is invoked.
+func TestScheduler_CompleteTask_TriggersCleaningPhase(t *testing.T) {
+	db, mock, scheduler := setupMockDB(t)
+	defer db.Close()
+
+	cleaner := &recordingStagingCleaner{}
+	scheduler.SetStagingCleaner(cleaner)
+
+	taskID := uuid.New().String()
+	attemptID := uuid.New().String()
+	jobID := uuid.New().String()
+
+	mock.ExpectBegin()
+	mock.ExpectQuery(regexp.QuoteMeta(QuerySelectTaskForUpdate)).
+		WithArgs(taskID).
+		WillReturnRows(sqlmock.NewRows([]string{"status", "current_attempt_id"}).AddRow("In-Progress", attemptID))
+	mock.ExpectQuery(regexp.QuoteMeta(QueryCheckLeaseValid)).
+		WithArgs(attemptID, "mock-lease").
+		WillReturnRows(sqlmock.NewRows([]string{"lease_valid"}).AddRow(true))
+	mock.ExpectExec(regexp.QuoteMeta(QueryCompleteTask)).
+		WithArgs(taskID).
+		WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectExec(regexp.QuoteMeta(QuerySucceedAttempt)).
+		WithArgs(attemptID).
+		WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectQuery(regexp.QuoteMeta(QueryGetTaskJobID)).
+		WithArgs(taskID).
+		WillReturnRows(sqlmock.NewRows([]string{"job_id"}).AddRow(jobID))
+	mock.ExpectQuery(regexp.QuoteMeta(QueryCountAllPendingTasks)).
+		WithArgs(jobID).
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
+	// In-tx: Cleaning marker.
+	mock.ExpectExec(regexp.QuoteMeta(QueryUpdateJobStatus)).
+		WithArgs(jobID, "Cleaning", sqlmock.AnyArg()).
+		WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectCommit()
+	// Post-commit: finalize to Completed.
+	mock.ExpectExec(regexp.QuoteMeta(QueryUpdateJobStatus)).
+		WithArgs(jobID, "Completed", sqlmock.AnyArg()).
+		WillReturnResult(sqlmock.NewResult(1, 1))
+
+	err := scheduler.CompleteTask(taskID, attemptID, "mock-lease", nil, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	cleaner.mu.Lock()
+	deletedJobs := append([]string(nil), cleaner.deleted...)
+	cleaner.mu.Unlock()
+
+	if len(deletedJobs) != 1 || deletedJobs[0] != jobID {
+		t.Errorf("expected staging deleted for job %s, got %v", jobID, deletedJobs)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unfulfilled sql expectations: %v", err)
+	}
+}
+
+// TestScheduler_FailTask_TriggersCleaningPhase verifies that a terminal FailTask
+// routes through Cleaning before writing the Failed status.
+func TestScheduler_FailTask_TriggersCleaningPhase(t *testing.T) {
+	db, mock, scheduler := setupMockDB(t)
+	defer db.Close()
+
+	cleaner := &recordingStagingCleaner{}
+	scheduler.SetStagingCleaner(cleaner)
+
+	taskID := uuid.New().String()
+	attemptID := uuid.New().String()
+	leaseID := uuid.New().String()
+	jobID := uuid.New().String()
+
+	mock.ExpectBegin()
+	mock.ExpectQuery(regexp.QuoteMeta(QuerySelectTaskForUpdate)).
+		WithArgs(taskID).
+		WillReturnRows(sqlmock.NewRows([]string{"status", "current_attempt_id"}).AddRow("In-Progress", attemptID))
+	expectLeaseValidation(mock, attemptID, leaseID, true)
+	mock.ExpectQuery(regexp.QuoteMeta(QueryCountAttemptsByTask)).
+		WithArgs(taskID).
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(3)) // MaxAttempts
+	mock.ExpectExec(regexp.QuoteMeta(QueryUpdateTaskStatus)).
+		WithArgs("Failed", taskID).
+		WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectExec(regexp.QuoteMeta(QueryFailAttempt)).
+		WithArgs(attemptID).
+		WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectQuery(regexp.QuoteMeta(QueryGetTaskJobID)).
+		WithArgs(taskID).
+		WillReturnRows(sqlmock.NewRows([]string{"job_id"}).AddRow(jobID))
+	// In-tx: Cleaning marker.
+	mock.ExpectExec(regexp.QuoteMeta(QueryUpdateJobStatus)).
+		WithArgs(jobID, "Cleaning", sqlmock.AnyArg()).
+		WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectCommit()
+	// Post-commit: finalize to Failed.
+	mock.ExpectExec(regexp.QuoteMeta(QueryUpdateJobStatus)).
+		WithArgs(jobID, "Failed", sqlmock.AnyArg()).
+		WillReturnResult(sqlmock.NewResult(1, 1))
+
+	err := scheduler.FailTask(taskID, attemptID, leaseID, "crash")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	cleaner.mu.Lock()
+	deletedJobs := append([]string(nil), cleaner.deleted...)
+	cleaner.mu.Unlock()
+
+	if len(deletedJobs) != 1 || deletedJobs[0] != jobID {
+		t.Errorf("expected staging deleted for job %s, got %v", jobID, deletedJobs)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unfulfilled sql expectations: %v", err)
 	}
 }
 
@@ -516,10 +653,15 @@ func TestScheduler_FailTask_MaxAttempts(t *testing.T) {
 		WillReturnRows(sqlmock.NewRows([]string{"job_id"}).AddRow(jobID))
 
 	mock.ExpectExec(regexp.QuoteMeta(QueryUpdateJobStatus)).
-		WithArgs(jobID, "Failed", sqlmock.AnyArg()).
+		WithArgs(jobID, "Cleaning", sqlmock.AnyArg()).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
 	mock.ExpectCommit()
+
+	// Post-commit: staging cleanup (no-op) then finalize to Failed.
+	mock.ExpectExec(regexp.QuoteMeta(QueryUpdateJobStatus)).
+		WithArgs(jobID, "Failed", sqlmock.AnyArg()).
+		WillReturnResult(sqlmock.NewResult(1, 1))
 
 	err := scheduler.FailTask(taskID, attemptID, leaseID, "crash")
 	if err != nil {
@@ -997,10 +1139,15 @@ func TestScheduler_FailStaleTasks_MarksJobFailedAtMaxAttempts(t *testing.T) {
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
 	mock.ExpectExec(regexp.QuoteMeta(QueryUpdateJobStatus)).
-		WithArgs(jobID, "Failed", sqlmock.AnyArg()).
+		WithArgs(jobID, "Cleaning", sqlmock.AnyArg()).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
 	mock.ExpectCommit()
+
+	// Post-commit: staging cleanup (no-op) then finalize to Failed.
+	mock.ExpectExec(regexp.QuoteMeta(QueryUpdateJobStatus)).
+		WithArgs(jobID, "Failed", sqlmock.AnyArg()).
+		WillReturnResult(sqlmock.NewResult(1, 1))
 
 	recovered, err := scheduler.FailStaleTasks()
 	if err != nil {
@@ -1040,8 +1187,9 @@ func TestScheduler_FailStaleTasks_DeduplicatesJobCancellation(t *testing.T) {
 	mock.ExpectExec(regexp.QuoteMeta(QueryFailAttempt)).
 		WithArgs(attempt1).
 		WillReturnResult(sqlmock.NewResult(1, 1))
+	// First task marks the job Cleaning (inside tx).
 	mock.ExpectExec(regexp.QuoteMeta(QueryUpdateJobStatus)).
-		WithArgs(jobID, "Failed", sqlmock.AnyArg()).
+		WithArgs(jobID, "Cleaning", sqlmock.AnyArg()).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
 	mock.ExpectQuery(regexp.QuoteMeta(QueryGetTaskJobID)).
@@ -1056,11 +1204,14 @@ func TestScheduler_FailStaleTasks_DeduplicatesJobCancellation(t *testing.T) {
 	mock.ExpectExec(regexp.QuoteMeta(QueryFailAttempt)).
 		WithArgs(attempt2).
 		WillReturnResult(sqlmock.NewResult(1, 1))
+	// Second task for the same job: Cleaning update is deduplicated — no extra UpdateJobStatus.
+
+	mock.ExpectCommit()
+
+	// Post-commit: staging cleanup (no-op) then finalize to Failed — once for the job.
 	mock.ExpectExec(regexp.QuoteMeta(QueryUpdateJobStatus)).
 		WithArgs(jobID, "Failed", sqlmock.AnyArg()).
 		WillReturnResult(sqlmock.NewResult(1, 1))
-
-	mock.ExpectCommit()
 
 	recovered, err := scheduler.FailStaleTasks()
 	if err != nil {
@@ -1324,9 +1475,14 @@ func TestScheduler_CompleteTask_NoMutation(t *testing.T) {
 		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
 
 	mock.ExpectExec(regexp.QuoteMeta(QueryUpdateJobStatus)).
-		WithArgs(jobID, "Completed", sqlmock.AnyArg()).
+		WithArgs(jobID, "Cleaning", sqlmock.AnyArg()).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 	mock.ExpectCommit()
+
+	// Post-commit: staging cleanup (no-op) then finalize to Completed.
+	mock.ExpectExec(regexp.QuoteMeta(QueryUpdateJobStatus)).
+		WithArgs(jobID, "Completed", sqlmock.AnyArg()).
+		WillReturnResult(sqlmock.NewResult(1, 1))
 
 	err := scheduler.CompleteTask(taskID, attemptID, leaseID, origURIs, origChecksums)
 	if err != nil {
@@ -1506,9 +1662,14 @@ func TestScheduler_CompleteTask_JobCompleted_TriggersCleanup(t *testing.T) {
 		WithArgs(jobID).
 		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
 	mock.ExpectExec(regexp.QuoteMeta(QueryUpdateJobStatus)).
-		WithArgs(jobID, "Completed", sqlmock.AnyArg()).
+		WithArgs(jobID, "Cleaning", sqlmock.AnyArg()).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 	mock.ExpectCommit()
+
+	// Post-commit: staging cleanup (no-op) then finalize to Completed.
+	mock.ExpectExec(regexp.QuoteMeta(QueryUpdateJobStatus)).
+		WithArgs(jobID, "Completed", sqlmock.AnyArg()).
+		WillReturnResult(sqlmock.NewResult(1, 1))
 
 	err := scheduler.CompleteTask(taskID, attemptID, leaseID,
 		[]string{"s3://output/file.txt"}, []string{"sha256-output"})

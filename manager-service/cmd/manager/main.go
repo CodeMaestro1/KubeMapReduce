@@ -175,6 +175,11 @@ func main() {
 		log.Printf("minio endpoint configured without credentials; manifest fallback disabled")
 	}
 
+	if minioClient != nil {
+		scheduler.SetStagingCleaner(newMinioStagingCleaner(minioClient, cfg.MinioBucket))
+		log.Printf("staging cleaner configured for bucket %q", cfg.MinioBucket)
+	}
+
 	grpcOpts := []grpc.ServerOption{
 		grpc.UnaryInterceptor(workerAuthUnaryInterceptor(cfg.WorkerRPCToken)),
 	}
