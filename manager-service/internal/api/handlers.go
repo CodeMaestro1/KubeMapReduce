@@ -1,15 +1,18 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
 	"time"
 
 	"kubemapreduce/auth-service/pkg/auth"
+	"kubemapreduce/manager-service/internal/manager"
 	"kubemapreduce/manager-service/internal/models"
 	"kubemapreduce/manager-service/internal/validation"
 	"kubemapreduce/manager-service/pkg/httputil"
@@ -24,9 +27,11 @@ import (
 // job metadata. Using a struct-based handler pattern allows for easy
 // dependency injection, making the API layer highly testable with mocks.
 type Handlers struct {
-	adminClient *auth.KeycloakAdminClient
-	store       JobStore
-	now         func() time.Time
+	adminClient    *auth.KeycloakAdminClient
+	store          JobStore
+	managerAddr    string
+	internalAPIKey string
+	now            func() time.Time
 }
 
 const (
@@ -41,24 +46,30 @@ const (
 // Callers must provide a valid [JobStore] implementation. In production, this
 // is typically a [PostgresJobStore] to ensure that job state persists across
 // manager restarts and is visible to all replicas.
-func NewHandlers(adminClient *auth.KeycloakAdminClient, store JobStore) *Handlers {
+func NewHandlers(adminClient *auth.KeycloakAdminClient, store JobStore, managerAddr string, internalAPIKey string) *Handlers {
 	return &Handlers{
-		adminClient: adminClient,
-		store:       store,
-		now:         time.Now,
+		adminClient:    adminClient,
+		store:          store,
+		managerAddr:    managerAddr,
+		internalAPIKey: internalAPIKey,
+		now:            time.Now,
 	}
 }
 
-func newHandlersWithOptions(adminClient *auth.KeycloakAdminClient, store JobStore, now func() time.Time) *Handlers {
+func newHandlersWithOptions(adminClient *auth.KeycloakAdminClient, store JobStore, managerAddr string, internalAPIKey string, now func() time.Time) *Handlers {
 	if now == nil {
 		now = time.Now
 	}
 	return &Handlers{
-		adminClient: adminClient,
-		store:       store,
-		now:         now,
+		adminClient:    adminClient,
+		store:          store,
+		managerAddr:    managerAddr,
+		internalAPIKey: internalAPIKey,
+		now:            now,
 	}
 }
+
+
 
 // HandleRoot provides a basic discovery endpoint for the API.
 //
@@ -335,27 +346,37 @@ func (h *Handlers) HandleConfigureNodes(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	current, err := h.scheduler.GetSystemConfig(r.Context())
-	if err != nil {
-		http.Error(w, "failed to fetch current config", http.StatusInternalServerError)
-		return
+	// proxy to manager internal endpoint
+	update := manager.SystemConfigUpdate{
+		MaxConcurrentPods: req.MaxPods,
+		CPULimit:          req.CPULimit,
+		MemoryLimit:       req.MemoryLimit,
 	}
 
-	current.MaxConcurrentPods = req.MaxPods
-	current.CPULimit = req.CPULimit
-	current.MemoryLimit = req.MemoryLimit
+	payload, _ := json.Marshal(update)
+	managerURL := fmt.Sprintf("http://%s/internal/config", h.managerAddr)
+	proxyReq, _ := http.NewRequestWithContext(r.Context(), http.MethodPut, managerURL, bytes.NewReader(payload))
+	if h.internalAPIKey != "" {
+		proxyReq.Header.Set("X-Internal-Token", h.internalAPIKey)
+	}
 
-	if err := h.scheduler.UpsertSystemConfig(r.Context(), current); err != nil {
-		http.Error(w, "failed to persist config", http.StatusInternalServerError)
+	resp, err := http.DefaultClient.Do(proxyReq)
+	if err != nil {
+		http.Error(w, "manager service unreachable", http.StatusServiceUnavailable)
+		return
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		http.Error(w, "failed to update config via manager", resp.StatusCode)
 		return
 	}
 
 	if err := httputil.WriteJSON(w, http.StatusOK, map[string]interface{}{
 		"status":      "success",
-		"message":     "node configuration updated",
-		"maxPods":     current.MaxConcurrentPods,
-		"cpuLimit":    current.CPULimit,
-		"memoryLimit": current.MemoryLimit,
+		"maxPods":     req.MaxPods,
+		"cpuLimit":    req.CPULimit,
+		"memoryLimit": req.MemoryLimit,
 	}); err != nil {
 		return
 	}
@@ -386,25 +407,36 @@ func (h *Handlers) HandleWorkerConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	current, err := h.scheduler.GetSystemConfig(r.Context())
-	if err != nil {
-		http.Error(w, "failed to fetch current config", http.StatusInternalServerError)
-		return
+	// proxy to manager internal endpoint
+	update := manager.SystemConfigUpdate{
+		WorkerReplicas: request.WorkerReplicas,
+		MaxJobsPerNode: request.MaxJobsPerNode,
 	}
 
-	current.WorkerReplicas = request.WorkerReplicas
-	current.MaxJobsPerNode = request.MaxJobsPerNode
+	payload, _ := json.Marshal(update)
+	managerURL := fmt.Sprintf("http://%s/internal/config", h.managerAddr)
+	proxyReq, _ := http.NewRequestWithContext(r.Context(), http.MethodPut, managerURL, bytes.NewReader(payload))
+	if h.internalAPIKey != "" {
+		proxyReq.Header.Set("X-Internal-Token", h.internalAPIKey)
+	}
 
-	if err := h.scheduler.UpsertSystemConfig(r.Context(), current); err != nil {
-		http.Error(w, "failed to persist config", http.StatusInternalServerError)
+	resp, err := http.DefaultClient.Do(proxyReq)
+	if err != nil {
+		http.Error(w, "manager service unreachable", http.StatusServiceUnavailable)
+		return
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		http.Error(w, "failed to update config via manager", resp.StatusCode)
 		return
 	}
 
 	if err := httputil.WriteJSON(w, http.StatusAccepted, map[string]interface{}{
 		"status":         "accepted",
 		"message":        "worker configuration update accepted",
-		"workerReplicas": current.WorkerReplicas,
-		"maxJobsPerNode": current.MaxJobsPerNode,
+		"workerReplicas": request.WorkerReplicas,
+		"maxJobsPerNode": request.MaxJobsPerNode,
 	}); err != nil {
 		return
 	}

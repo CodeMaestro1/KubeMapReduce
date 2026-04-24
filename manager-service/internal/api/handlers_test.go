@@ -16,12 +16,12 @@ import (
 
 func newTestHandlers() *Handlers {
 	store := NewMemoryJobStore(24*time.Hour, 10000, nil)
-	return NewHandlers(nil, store)
+	return NewHandlers(nil, store, "", "")
 }
 
 func newTestHandlersWithRetention(now func() time.Time, ttl time.Duration, max int) *Handlers {
 	store := NewMemoryJobStore(ttl, max, now)
-	return newHandlersWithOptions(nil, store, now)
+	return newHandlersWithOptions(nil, store, "", "", now)
 }
 
 func TestHandleHealth(t *testing.T) {

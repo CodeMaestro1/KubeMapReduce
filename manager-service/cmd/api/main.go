@@ -69,7 +69,7 @@ func main() {
 	}
 
 	store := api.NewPostgresJobStore(db)
-	handlers := api.NewHandlers(adminClient, store)
+	handlers := api.NewHandlers(adminClient, store, cfg.ManagerAddr, cfg.InternalAPIKey)
 
 	mux := http.NewServeMux()
 	api.RegisterRoutes(mux, handlers, validator)
