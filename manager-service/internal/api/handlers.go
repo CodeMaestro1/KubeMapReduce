@@ -26,6 +26,7 @@ type Handlers struct {
 	minioClient    *minio.Client
 	managerAddr    string
 	internalAPIKey string
+	httpClient     *http.Client
 	now            func() time.Time
 }
 
@@ -44,6 +45,7 @@ func NewHandlers(adminClient *auth.KeycloakAdminClient, store JobStore, minioCli
 		minioClient:    minioClient,
 		managerAddr:    managerAddr,
 		internalAPIKey: internalAPIKey,
+		httpClient:     http.DefaultClient,
 		now:            time.Now,
 	}
 }
@@ -58,6 +60,7 @@ func newHandlersWithOptions(adminClient *auth.KeycloakAdminClient, store JobStor
 		minioClient:    minioClient,
 		managerAddr:    managerAddr,
 		internalAPIKey: internalAPIKey,
+		httpClient:     http.DefaultClient,
 		now:            now,
 	}
 }
@@ -529,10 +532,10 @@ func (h *Handlers) HandleJobsDelete(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if h.internalAPIKey != "" {
-		req.Header.Set("X-Internal-Token", h.internalAPIKey)
+		proxyReq.Header.Set("X-Internal-Token", h.internalAPIKey)
 	}
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := h.httpClient.Do(proxyReq)
 	if err != nil {
 		httputil.WriteErrorJSON(w, http.StatusServiceUnavailable, "manager service unavailable")
 		return
