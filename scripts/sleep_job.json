@@ -1,16 +1,16 @@
 {
-  "filename": "s3://inputs/large-dataset.jsonl",
+  "filename": "large-dataset.jsonl",
   "mapper": {
     "language": "python",
     "artifact": "s3://code/sleep_mapper.py",
     "entrypoint": "map",
-    "interface": "v1"
+    "interface": "map(key,value)->[]KeyValue"
   },
   "reducer": {
     "language": "python",
     "artifact": "s3://code/sleep_reducer.py",
     "entrypoint": "reduce",
-    "interface": "v1"
+    "interface": "reduce(key,values)->Value"
   },
   "reducers": 2
 }

@@ -266,9 +266,9 @@ KubeMapReduce includes a dedicated end-to-end failure-injection suite to validat
 
 - A running Kubernetes cluster (Kind, Minikube, or EKS/GKE).
 - `kubectl` configured to point to the cluster.
-- KubeMapReduce deployed to the cluster with the following labels:
-  - Manager StatefulSet: `app=manager`
-  - Worker Jobs: `app=kubemapreduce-worker`
+- KubeMapReduce deployed to the cluster with the following resources:
+  - Manager: a StatefulSet named `manager`
+  - Worker Jobs: labeled with `app=kubemapreduce-worker`
 - Active CLI authentication (`kubemapreduce login`).
 
 ### Running the Validation Suite
