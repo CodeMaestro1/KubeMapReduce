@@ -788,7 +788,12 @@ func (s *Scheduler) FailStaleTasks() (int, error) {
 		attemptID string
 		jobID     string
 	}
+	type zombieWorker struct {
+		taskID    string
+		attemptID string
+	}
 	var respawnTasks []retrySpawn
+	var zombies []zombieWorker
 	failedJobs := make(map[string]struct{})
 	for _, rec := range stales {
 		var jobID string
@@ -816,6 +821,7 @@ func (s *Scheduler) FailStaleTasks() (int, error) {
 		if err != nil {
 			return 0, fmt.Errorf("failing attempt %s: %w", rec.attemptID, err)
 		}
+		zombies = append(zombies, zombieWorker{taskID: rec.taskID, attemptID: rec.attemptID})
 		if newState == "Failed" {
 			if err := s.updateJobStatusTx(ctx, tx, jobID, "Failed"); err != nil {
 				return 0, fmt.Errorf("marking job %s failed: %w", jobID, err)
@@ -834,6 +840,19 @@ func (s *Scheduler) FailStaleTasks() (int, error) {
 	if err := tx.Commit(); err != nil {
 		log.Printf("Failed to commit stale task cleanup: %v", err)
 		return 0, err
+	}
+
+	// Reap zombie worker pods/jobs for each stale attempt. The DDS row is already
+	// authoritative (attempt marked Failed, task reset or failed), so any lingering
+	// pod's RPCs would be rejected by the fencing check; deleting the K8s Job here
+	// prevents zombie compute from consuming cluster resources. Deletes are best
+	// effort and idempotent (already-gone jobs are treated as success).
+	reapCtx, reapCancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer reapCancel()
+	for _, z := range zombies {
+		if err := s.orchestrator.DeleteWorker(reapCtx, z.taskID, z.attemptID); err != nil {
+			log.Printf("Failed to delete zombie worker for task %s (attempt %s): %v", z.taskID, z.attemptID, err)
+		}
 	}
 
 	cancelCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)

@@ -46,11 +46,18 @@ type spawnCall struct {
 	managerAddr string
 }
 
+type deleteWorkerCall struct {
+	taskID    string
+	attemptID string
+}
+
 type recordingOrchestrator struct {
-	mu         sync.Mutex
-	calls      []spawnCall
-	cancelJobs []string
-	err        error
+	mu                sync.Mutex
+	calls             []spawnCall
+	cancelJobs        []string
+	deleteWorkers     []deleteWorkerCall
+	deleteWorkerError error
+	err               error
 }
 
 func (r *recordingOrchestrator) SpawnWorker(ctx context.Context, taskID string, jobID string, attemptID string, managerAddr string) error {
@@ -68,6 +75,14 @@ func (r *recordingOrchestrator) CancelJob(ctx context.Context, jobID string) err
 	r.cancelJobs = append(r.cancelJobs, jobID)
 	r.mu.Unlock()
 	return nil
+}
+
+func (r *recordingOrchestrator) DeleteWorker(ctx context.Context, taskID string, attemptID string) error {
+	r.mu.Lock()
+	r.deleteWorkers = append(r.deleteWorkers, deleteWorkerCall{taskID: taskID, attemptID: attemptID})
+	err := r.deleteWorkerError
+	r.mu.Unlock()
+	return err
 }
 
 func expectLeaseValidation(mock sqlmock.Sqlmock, attemptID string, leaseID string, leaseValid bool) {
@@ -924,6 +939,12 @@ func TestScheduler_E2E_ReaperRecovery_StaleHeartbeatRejectedAfterReassign(t *tes
 	if len(rec.calls) != 1 {
 		t.Fatalf("expected one respawn after stale cleanup, got %d", len(rec.calls))
 	}
+	if len(rec.deleteWorkers) != 1 {
+		t.Fatalf("expected zombie worker to be deleted once, got %d delete calls", len(rec.deleteWorkers))
+	}
+	if rec.deleteWorkers[0].taskID != taskID || rec.deleteWorkers[0].attemptID != staleAttemptID {
+		t.Fatalf("expected DeleteWorker(taskID=%s, attemptID=%s), got %+v", taskID, staleAttemptID, rec.deleteWorkers[0])
+	}
 
 	newAttemptID := rec.calls[0].attemptID
 	if newAttemptID == "" {
@@ -1050,6 +1071,19 @@ func TestScheduler_FailStaleTasks_DeduplicatesJobCancellation(t *testing.T) {
 	}
 	if len(rec.cancelJobs) != 1 || rec.cancelJobs[0] != jobID {
 		t.Fatalf("expected one cancellation call for %s, got %+v", jobID, rec.cancelJobs)
+	}
+	if len(rec.deleteWorkers) != 2 {
+		t.Fatalf("expected two zombie worker deletions, got %d: %+v", len(rec.deleteWorkers), rec.deleteWorkers)
+	}
+	seen := make(map[string]string, 2)
+	for _, d := range rec.deleteWorkers {
+		seen[d.taskID] = d.attemptID
+	}
+	if seen[task1] != attempt1 {
+		t.Fatalf("expected DeleteWorker(%s,%s) in %+v", task1, attempt1, rec.deleteWorkers)
+	}
+	if seen[task2] != attempt2 {
+		t.Fatalf("expected DeleteWorker(%s,%s) in %+v", task2, attempt2, rec.deleteWorkers)
 	}
 }
 

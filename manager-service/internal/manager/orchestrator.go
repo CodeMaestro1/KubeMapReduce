@@ -17,6 +17,12 @@ import (
 type WorkerOrchestrator interface {
 	SpawnWorker(ctx context.Context, taskID string, jobID string, attemptID string, managerAddr string) error
 	CancelJob(ctx context.Context, jobID string) error
+	// DeleteWorker removes the Kubernetes Job (and its pod) associated with a single
+	// worker attempt. It is used by the Active Reaper to reap zombie workers whose
+	// lease has expired before the task is reset or failed in the DDS.
+	// Implementations must be idempotent: deleting a worker that is already gone
+	// must not return an error.
+	DeleteWorker(ctx context.Context, taskID string, attemptID string) error
 }
 
 type KubeOrchestrator struct {
@@ -108,6 +114,20 @@ func (k *KubeOrchestrator) CancelJob(ctx context.Context, jobID string) error {
 	)
 }
 
+// DeleteWorker deletes the K8s Job (and its pod, via background propagation)
+// belonging to a specific worker attempt. Missing jobs are treated as success
+// so reaper retries remain idempotent.
+func (k *KubeOrchestrator) DeleteWorker(ctx context.Context, taskID string, attemptID string) error {
+	sanitizedTaskID := sanitizeForDNSLabel(taskID)
+	jobName := buildWorkerJobName(sanitizedTaskID, attemptID)
+	policy := metav1.DeletePropagationBackground
+	err := k.clientset.BatchV1().Jobs(k.namespace).Delete(ctx, jobName, metav1.DeleteOptions{PropagationPolicy: &policy})
+	if err == nil || apierrors.IsNotFound(err) {
+		return nil
+	}
+	return err
+}
+
 type MockOrchestrator struct{}
 
 func (m *MockOrchestrator) SpawnWorker(ctx context.Context, taskID string, jobID string, attemptID string, managerAddr string) error {
@@ -115,6 +135,10 @@ func (m *MockOrchestrator) SpawnWorker(ctx context.Context, taskID string, jobID
 }
 
 func (m *MockOrchestrator) CancelJob(ctx context.Context, jobID string) error {
+	return nil
+}
+
+func (m *MockOrchestrator) DeleteWorker(ctx context.Context, taskID string, attemptID string) error {
 	return nil
 }
 
