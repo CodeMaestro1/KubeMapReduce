@@ -217,7 +217,7 @@ const QueryCountPendingMapTasks = `SELECT COUNT(*) FROM TASKS WHERE job_id = $1 
 // QueryInsertJob creates a new job record.
 const QueryInsertJob = `
 	INSERT INTO JOBS (job_id, user_id, status, created_at, updated_at)
-	VALUES ($1, $2, 'Pending', $3, $4)`
+	VALUES ($1, $2, 'Pending', NOW(), NOW())`
 
 // QueryInsertJobConfig persists immutable job configuration.
 const QueryInsertJobConfig = `
@@ -235,16 +235,16 @@ const QueryInsertTaskInput = `
 	VALUES ($1, $2, $3, $4, $5)`
 
 // QueryUpdateJobStatus transitions a job to a new lifecycle state.
-const QueryUpdateJobStatus = `UPDATE JOBS SET status = $2, updated_at = $3 WHERE job_id = $1`
+const QueryUpdateJobStatus = `UPDATE JOBS SET status = $2, updated_at = NOW() WHERE job_id = $1`
 
 // QueryUpsertSystemConfig updates global cluster configuration.
 const QueryUpsertSystemConfig = `
 	INSERT INTO SYSTEM_CONFIG (config_id, max_concurrent_pods, cpu_limit, memory_limit, worker_replicas, max_jobs_per_node, updated_at)
-	VALUES (1, $1, $2, $3, $4, $5, $6)
+	VALUES (1, $1, $2, $3, $4, $5, NOW())
 	ON CONFLICT (config_id) DO UPDATE
 	SET max_concurrent_pods = EXCLUDED.max_concurrent_pods,
 	    cpu_limit = EXCLUDED.cpu_limit,
 	    memory_limit = EXCLUDED.memory_limit,
 	    worker_replicas = EXCLUDED.worker_replicas,
 	    max_jobs_per_node = EXCLUDED.max_jobs_per_node,
-	    updated_at = EXCLUDED.updated_at`
+	    updated_at = NOW()`

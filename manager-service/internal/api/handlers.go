@@ -349,9 +349,17 @@ func (h *Handlers) HandleConfigureNodes(w http.ResponseWriter, r *http.Request) 
 		MemoryLimit:       req.MemoryLimit,
 	}
 
-	payload, _ := json.Marshal(update)
+	payload, err := json.Marshal(update)
+	if err != nil {
+		httputil.WriteErrorJSON(w, http.StatusInternalServerError, "failed to serialize config update")
+		return
+	}
 	managerURL := fmt.Sprintf("http://%s/internal/config", h.managerAddr)
-	proxyReq, _ := http.NewRequestWithContext(r.Context(), http.MethodPut, managerURL, bytes.NewReader(payload))
+	proxyReq, err := http.NewRequestWithContext(r.Context(), http.MethodPut, managerURL, bytes.NewReader(payload))
+	if err != nil {
+		httputil.WriteErrorJSON(w, http.StatusInternalServerError, "failed to build proxy request")
+		return
+	}
 	if h.internalAPIKey != "" {
 		proxyReq.Header.Set("X-Internal-Token", h.internalAPIKey)
 	}
@@ -409,9 +417,17 @@ func (h *Handlers) HandleWorkerConfig(w http.ResponseWriter, r *http.Request) {
 		MaxJobsPerNode: request.MaxJobsPerNode,
 	}
 
-	payload, _ := json.Marshal(update)
+	payload, err := json.Marshal(update)
+	if err != nil {
+		httputil.WriteErrorJSON(w, http.StatusInternalServerError, "failed to serialize config update")
+		return
+	}
 	managerURL := fmt.Sprintf("http://%s/internal/config", h.managerAddr)
-	proxyReq, _ := http.NewRequestWithContext(r.Context(), http.MethodPut, managerURL, bytes.NewReader(payload))
+	proxyReq, err := http.NewRequestWithContext(r.Context(), http.MethodPut, managerURL, bytes.NewReader(payload))
+	if err != nil {
+		httputil.WriteErrorJSON(w, http.StatusInternalServerError, "failed to build proxy request")
+		return
+	}
 	if h.internalAPIKey != "" {
 		proxyReq.Header.Set("X-Internal-Token", h.internalAPIKey)
 	}

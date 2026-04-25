@@ -234,7 +234,7 @@ func TestScheduler_GetNextTask_MapSuccess(t *testing.T) {
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
 	mock.ExpectExec(regexp.QuoteMeta(QueryUpdateJobStatus)).
-		WithArgs(jobID.String(), "Running", sqlmock.AnyArg()).
+		WithArgs(jobID.String(), "Running").
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
 	mock.ExpectCommit()
@@ -309,7 +309,7 @@ func TestScheduler_GetNextTask_NoMapIdle_ReduceSuccess(t *testing.T) {
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
 	mock.ExpectExec(regexp.QuoteMeta(QueryUpdateJobStatus)).
-		WithArgs(jobID.String(), "Running", sqlmock.AnyArg()).
+		WithArgs(jobID.String(), "Running").
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
 	mock.ExpectCommit()
@@ -432,7 +432,7 @@ func TestScheduler_CompleteTask_Success(t *testing.T) {
 		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
 
 	mock.ExpectExec(regexp.QuoteMeta(QueryUpdateJobStatus)).
-		WithArgs(jobID, "Cleaning", sqlmock.AnyArg()).
+		WithArgs(jobID, "Cleaning").
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
 	mock.ExpectCommit()
@@ -540,7 +540,7 @@ func TestScheduler_FailTask_MaxAttempts(t *testing.T) {
 		WillReturnRows(sqlmock.NewRows([]string{"job_id"}).AddRow(jobID))
 
 	mock.ExpectExec(regexp.QuoteMeta(QueryUpdateJobStatus)).
-		WithArgs(jobID, "Cleaning", sqlmock.AnyArg()).
+		WithArgs(jobID, "Cleaning").
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
 	mock.ExpectCommit()
@@ -869,7 +869,7 @@ func TestScheduler_FailStaleTasks_MarksJobFailedAtMaxAttempts(t *testing.T) {
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
 	mock.ExpectExec(regexp.QuoteMeta(QueryUpdateJobStatus)).
-		WithArgs(jobID, "Cleaning", sqlmock.AnyArg()).
+		WithArgs(jobID, "Cleaning").
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
 	mock.ExpectCommit()
@@ -913,7 +913,7 @@ func TestScheduler_FailStaleTasks_DeduplicatesJobCancellation(t *testing.T) {
 		WithArgs(attempt1).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 	mock.ExpectExec(regexp.QuoteMeta(QueryUpdateJobStatus)).
-		WithArgs(jobID, "Cleaning", sqlmock.AnyArg()).
+		WithArgs(jobID, "Cleaning").
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
 	mock.ExpectQuery(regexp.QuoteMeta(QueryGetTaskJobID)).
@@ -929,7 +929,7 @@ func TestScheduler_FailStaleTasks_DeduplicatesJobCancellation(t *testing.T) {
 		WithArgs(attempt2).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 	mock.ExpectExec(regexp.QuoteMeta(QueryUpdateJobStatus)).
-		WithArgs(jobID, "Cleaning", sqlmock.AnyArg()).
+		WithArgs(jobID, "Cleaning").
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
 	mock.ExpectCommit()
@@ -977,7 +977,7 @@ func TestScheduler_FailStaleTasks_UsesPerJobFinalizeDeadlines(t *testing.T) {
 		WithArgs(attempt1).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 	mock.ExpectExec(regexp.QuoteMeta(QueryUpdateJobStatus)).
-		WithArgs(job1, "Cleaning", sqlmock.AnyArg()).
+		WithArgs(job1, "Cleaning").
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
 	mock.ExpectQuery(regexp.QuoteMeta(QueryGetTaskJobID)).
@@ -993,7 +993,7 @@ func TestScheduler_FailStaleTasks_UsesPerJobFinalizeDeadlines(t *testing.T) {
 		WithArgs(attempt2).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 	mock.ExpectExec(regexp.QuoteMeta(QueryUpdateJobStatus)).
-		WithArgs(job2, "Cleaning", sqlmock.AnyArg()).
+		WithArgs(job2, "Cleaning").
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
 	mock.ExpectCommit()
@@ -1250,7 +1250,7 @@ func TestScheduler_CompleteTask_NoMutation(t *testing.T) {
 		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
 
 	mock.ExpectExec(regexp.QuoteMeta(QueryUpdateJobStatus)).
-		WithArgs(jobID, "Cleaning", sqlmock.AnyArg()).
+		WithArgs(jobID, "Cleaning").
 		WillReturnResult(sqlmock.NewResult(1, 1))
 	mock.ExpectCommit()
 
@@ -1317,7 +1317,7 @@ func TestScheduler_ScheduleJob_PersistsDDSRecords(t *testing.T) {
 
 	mock.ExpectBegin()
 	mock.ExpectExec(regexp.QuoteMeta(QueryInsertJob)).
-		WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg()).
+		WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg()).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 	mock.ExpectExec(regexp.QuoteMeta(QueryInsertJobConfig)).
 		WithArgs(sqlmock.AnyArg(), req.InputURI, req.MapperURI, req.ReducerURI, req.CombinerURI, req.MTasks, req.RTasks, req.InputChecksum).
@@ -1362,7 +1362,7 @@ func TestScheduler_UpsertSystemConfig(t *testing.T) {
 	defer db.Close()
 
 	mock.ExpectExec(regexp.QuoteMeta(QueryUpsertSystemConfig)).
-		WithArgs(20, "500m", "1Gi", 5, 2, sqlmock.AnyArg()).
+		WithArgs(20, "500m", "1Gi", 5, 2).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
 	if err := scheduler.UpsertSystemConfig(context.Background(), SystemConfigUpdate{
@@ -1384,7 +1384,7 @@ func TestScheduler_CancelJob_Success(t *testing.T) {
 
 	mock.ExpectBegin()
 	mock.ExpectExec(regexp.QuoteMeta(QueryUpdateJobStatus)).
-		WithArgs(jobID, "Cleaning", sqlmock.AnyArg()).
+		WithArgs(jobID, "Cleaning").
 		WillReturnResult(sqlmock.NewResult(1, 1))
 	mock.ExpectExec("UPDATE TASKS SET status = 'Failed' WHERE job_id =").
 		WithArgs(jobID).
@@ -1434,7 +1434,7 @@ func TestScheduler_CompleteTask_JobCompleted_TriggersCleanup(t *testing.T) {
 		WithArgs(jobID).
 		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
 	mock.ExpectExec(regexp.QuoteMeta(QueryUpdateJobStatus)).
-		WithArgs(jobID, "Cleaning", sqlmock.AnyArg()).
+		WithArgs(jobID, "Cleaning").
 		WillReturnResult(sqlmock.NewResult(1, 1))
 	mock.ExpectCommit()
 
@@ -1579,7 +1579,7 @@ func TestScheduler_StartCleanupReconciler_BoundedConcurrency(t *testing.T) {
 		scheduler.enqueueCleanup(jobID, "Completed")
 		mock.ExpectBegin()
 		mock.ExpectExec(regexp.QuoteMeta(QueryUpdateJobStatus)).
-			WithArgs(jobID, "Completed", sqlmock.AnyArg()).
+			WithArgs(jobID, "Completed").
 			WillReturnResult(sqlmock.NewResult(1, 1))
 		mock.ExpectCommit()
 	}

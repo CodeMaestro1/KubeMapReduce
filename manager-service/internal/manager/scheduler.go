@@ -275,6 +275,8 @@ func (s *Scheduler) tryAssignTask(ctx context.Context, tx *sql.Tx, requestedJobI
 	t.LeaseID = leaseID.String()
 	t.State = InProgress
 	now := time.Now()
+	// NOTE: These are in-memory values for the caller's convenience (gRPC response).
+	// The DB-authoritative timestamps are set via NOW() in QueryInsertAttempt.
 	t.startTime = now
 	t.LastHeartbeat = now
 	requestedUUID, err := uuid.Parse(requestedJobID)
@@ -452,9 +454,7 @@ func (s *Scheduler) ScheduleJob(ctx context.Context, req ScheduleJobRequest) err
 	if err != nil {
 		return err
 	}
-	now := time.Now()
-
-	if _, err := tx.ExecContext(ctx, QueryInsertJob, jobID, userID, now, now); err != nil {
+	if _, err := tx.ExecContext(ctx, QueryInsertJob, jobID, userID); err != nil {
 		return err
 	}
 	if _, err := tx.ExecContext(ctx, QueryInsertJobConfig,
@@ -552,13 +552,12 @@ func (s *Scheduler) UpsertSystemConfig(ctx context.Context, req SystemConfigUpda
 		req.MemoryLimit,
 		req.WorkerReplicas,
 		req.MaxJobsPerNode,
-		time.Now(),
 	)
 	return err
 }
 
 func (s *Scheduler) updateJobStatusTx(ctx context.Context, tx *sql.Tx, jobID string, status string) error {
-	_, err := tx.ExecContext(ctx, QueryUpdateJobStatus, jobID, status, time.Now())
+	_, err := tx.ExecContext(ctx, QueryUpdateJobStatus, jobID, status)
 	return err
 }
 
