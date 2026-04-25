@@ -454,6 +454,7 @@ func (s *Scheduler) ScheduleJob(ctx context.Context, req ScheduleJobRequest) err
 	if err != nil {
 		return err
 	}
+
 	if _, err := tx.ExecContext(ctx, QueryInsertJob, jobID, userID); err != nil {
 		return err
 	}
@@ -553,6 +554,7 @@ func (s *Scheduler) UpsertSystemConfig(ctx context.Context, req SystemConfigUpda
 		req.WorkerReplicas,
 		req.MaxJobsPerNode,
 	)
+	_, err := s.db.ExecContext(ctx, QueryUpsertSystemConfig, req.MaxConcurrentPods, req.CPULimit, req.MemoryLimit)
 	return err
 }
 

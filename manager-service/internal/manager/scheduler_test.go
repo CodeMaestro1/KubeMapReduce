@@ -1631,3 +1631,54 @@ func TestScheduler_StartCleanupReconciler_BoundedConcurrency(t *testing.T) {
 	}
 	cancel()
 }
+
+func TestScheduler_ExpiredLeaseFencedByDB(t *testing.T) {
+	tests := []struct {
+		name string
+		call func(context.Context, *Scheduler, string, string, string) error
+	}{
+		{
+			name: "CompleteTask",
+			call: func(ctx context.Context, scheduler *Scheduler, taskID, attemptID, leaseID string) error {
+				return scheduler.CompleteTask(ctx, taskID, attemptID, leaseID, []string{"s3://out"}, []string{"sha1"})
+			},
+		},
+		{
+			name: "FailTask",
+			call: func(ctx context.Context, scheduler *Scheduler, taskID, attemptID, leaseID string) error {
+				return scheduler.FailTask(ctx, taskID, attemptID, leaseID, "crash")
+			},
+		},
+		{
+			name: "RenewLease",
+			call: func(ctx context.Context, scheduler *Scheduler, taskID, attemptID, leaseID string) error {
+				return scheduler.RenewLease(ctx, taskID, attemptID, leaseID)
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			db, mock, scheduler := setupMockDB(t)
+			defer db.Close()
+
+			taskID := uuid.New().String()
+			attemptID := uuid.New().String()
+			leaseID := "lease123"
+
+			mock.ExpectBegin()
+			mock.ExpectQuery(regexp.QuoteMeta(QuerySelectTaskForUpdate)).
+				WithArgs(taskID).
+				WillReturnRows(sqlmock.NewRows([]string{"status", "current_attempt_id"}).AddRow("In-Progress", attemptID))
+
+			// Mock DB clock reporting the lease is expired (false).
+			expectLeaseValidation(mock, attemptID, leaseID, false)
+			mock.ExpectRollback()
+
+			err := tt.call(context.Background(), scheduler, taskID, attemptID, leaseID)
+			if !errors.Is(err, ErrExpiredLease) {
+				t.Errorf("expected ErrExpiredLease from DB clock, got %v", err)
+			}
+		})
+	}
+}
