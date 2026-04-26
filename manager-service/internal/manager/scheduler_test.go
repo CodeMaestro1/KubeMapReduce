@@ -21,7 +21,7 @@ func setupMockDB(t *testing.T) (*sql.DB, sqlmock.Sqlmock, *Scheduler) {
 		t.Fatalf("an error '%s' was not expected when opening a stub database connection", err)
 	}
 
-	scheduler, err := NewScheduler(db, 0, 1, &MockOrchestrator{}, "manager-0:50051", 30)
+	scheduler, err := NewScheduler(db, 0, 1, &MockOrchestrator{}, "manager-0:50051", 30, nil)
 	if err != nil {
 		t.Fatalf("unexpected error creating scheduler: %v", err)
 	}
@@ -34,7 +34,7 @@ func setupMockDBWithOrchestrator(t *testing.T, orchestrator WorkerOrchestrator) 
 	if err != nil {
 		t.Fatalf("an error '%s' was not expected when opening a stub database connection", err)
 	}
-	scheduler, err := NewScheduler(db, 0, 1, orchestrator, "manager-0:50051", 30)
+	scheduler, err := NewScheduler(db, 0, 1, orchestrator, "manager-0:50051", 30, nil)
 	if err != nil {
 		t.Fatalf("unexpected error creating scheduler: %v", err)
 	}
@@ -131,7 +131,7 @@ func expectReduceTaskMetadataQueries(mock sqlmock.Sqlmock, taskID uuid.UUID, map
 }
 
 func TestNewScheduler_NilDB(t *testing.T) {
-	_, err := NewScheduler(nil, 0, 1, &MockOrchestrator{}, "manager-0:50051", 30)
+	_, err := NewScheduler(nil, 0, 1, &MockOrchestrator{}, "manager-0:50051", 30, nil)
 	if err == nil {
 		t.Fatalf("expected error when passing nil DB to NewScheduler")
 	}
@@ -144,7 +144,7 @@ func TestNewScheduler_NilOrchestrator(t *testing.T) {
 	}
 	defer db.Close()
 
-	_, err = NewScheduler(db, 0, 1, nil, "manager-0:50051", 30)
+	_, err = NewScheduler(db, 0, 1, nil, "manager-0:50051", 30, nil)
 	if err == nil {
 		t.Fatalf("expected error when passing nil orchestrator to NewScheduler")
 	}
@@ -1276,7 +1276,7 @@ func TestScheduler_ScheduleJob_PersistsDDSRecords(t *testing.T) {
 	}
 	defer db.Close()
 
-	scheduler, err := NewScheduler(db, 0, 4, &MockOrchestrator{}, "manager-0:50051", 30)
+	scheduler, err := NewScheduler(db, 0, 4, &MockOrchestrator{}, "manager-0:50051", 30, nil)
 	if err != nil {
 		t.Fatalf("unexpected error creating scheduler: %v", err)
 	}
@@ -1680,5 +1680,169 @@ func TestScheduler_ExpiredLeaseFencedByDB(t *testing.T) {
 				t.Errorf("expected ErrExpiredLease from DB clock, got %v", err)
 			}
 		})
+	}
+}
+
+// ── Staging cleanup tests ────────────────────────────────────
+
+type mockStagingCleaner struct {
+	mu      sync.Mutex
+	deleted []string
+	err     error
+}
+
+func (m *mockStagingCleaner) DeleteStagingObjects(_ context.Context, jobID string) error {
+	m.mu.Lock()
+	m.deleted = append(m.deleted, jobID)
+	m.mu.Unlock()
+	return m.err
+}
+
+func (m *mockStagingCleaner) calledWith() []string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([]string, len(m.deleted))
+	copy(out, m.deleted)
+	return out
+}
+
+func setupMockDBWithStaging(t *testing.T, staging StagingCleaner) (*sql.DB, sqlmock.Sqlmock, *Scheduler) {
+	t.Helper()
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	scheduler, err := NewScheduler(db, 0, 1, &MockOrchestrator{}, "manager-0:50051", 30, staging)
+	if err != nil {
+		t.Fatalf("NewScheduler: %v", err)
+	}
+	return db, mock, scheduler
+}
+
+// TestFinalizeJob_DeletesStagingObjects verifies that finalizeJob calls
+// DeleteStagingObjects after CancelJob succeeds and before updating the DB.
+func TestFinalizeJob_DeletesStagingObjects(t *testing.T) {
+	staging := &mockStagingCleaner{}
+	db, mock, scheduler := setupMockDBWithStaging(t, staging)
+	defer db.Close()
+
+	jobID := uuid.New().String()
+
+	mock.ExpectBegin()
+	mock.ExpectExec(regexp.QuoteMeta(QueryUpdateJobStatus)).
+		WithArgs(jobID, "Completed").
+		WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectCommit()
+
+	scheduler.finalizeJob(context.Background(), jobID, "Completed")
+
+	deleted := staging.calledWith()
+	if len(deleted) != 1 || deleted[0] != jobID {
+		t.Fatalf("expected staging.DeleteStagingObjects(%q), got %v", jobID, deleted)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unfulfilled DB expectations: %v", err)
+	}
+}
+
+// TestFinalizeJob_StagingFailureRequeues verifies that a MinIO error causes the
+// job to be re-enqueued for retry without updating the DB status.
+func TestFinalizeJob_StagingFailureRequeues(t *testing.T) {
+	staging := &mockStagingCleaner{err: errors.New("minio unavailable")}
+	db, mock, scheduler := setupMockDBWithStaging(t, staging)
+	defer db.Close()
+
+	jobID := uuid.New().String()
+
+	// No DB expectations — finalizeJob must return before touching the DB.
+	scheduler.finalizeJob(context.Background(), jobID, "Completed")
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unexpected DB call after staging failure: %v", err)
+	}
+
+	// Job must be back in the retry queue.
+	pending := scheduler.popPendingCleanup(10)
+	state, ok := pending[jobID]
+	if !ok {
+		t.Fatalf("job %s not re-enqueued after staging failure", jobID)
+	}
+	if state != "Completed" {
+		t.Errorf("expected terminal state Completed in retry queue, got %q", state)
+	}
+}
+
+// TestStartCleanupReconciler_RetriesStagingFailure verifies that the reconciler
+// retries a job whose staging cleanup failed on the first attempt.
+func TestStartCleanupReconciler_RetriesStagingFailure(t *testing.T) {
+	callCount := 0
+	staging := &mockStagingCleaner{}
+
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+
+	scheduler, err := NewScheduler(db, 0, 1, &MockOrchestrator{}, "manager-0:50051", 30, staging)
+	if err != nil {
+		t.Fatalf("NewScheduler: %v", err)
+	}
+
+	jobID := uuid.New().String()
+
+	// First reconciler pass: staging fails → job re-enqueued.
+	// Second pass: staging succeeds → DB update expected.
+	staging.err = errors.New("temporary minio error")
+
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT job_id FROM JOBS WHERE status = 'Cleaning'")).
+		WillReturnRows(sqlmock.NewRows([]string{"job_id"}))
+
+	mock.ExpectBegin()
+	mock.ExpectExec(regexp.QuoteMeta(QueryUpdateJobStatus)).
+		WithArgs(jobID, "Completed").
+		WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectCommit()
+
+	scheduler.enqueueCleanup(jobID, "Completed")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	scheduler.StartCleanupReconciler(ctx, 5*time.Millisecond)
+
+	// Wait for the first tick: staging error → re-enqueue.
+	deadline := time.After(500 * time.Millisecond)
+	for {
+		if len(staging.calledWith()) > 0 {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatal("timed out waiting for first staging attempt")
+		default:
+			time.Sleep(2 * time.Millisecond)
+		}
+	}
+
+	// Clear the error so the next attempt succeeds.
+	staging.mu.Lock()
+	staging.err = nil
+	callCount = len(staging.deleted)
+	staging.mu.Unlock()
+	_ = callCount
+
+	// Wait for the DB update to be fulfilled.
+	deadline2 := time.After(2 * time.Second)
+	for {
+		if err := mock.ExpectationsWereMet(); err == nil {
+			break
+		}
+		select {
+		case <-deadline2:
+			t.Fatalf("unfulfilled DB expectations after retry: %v", mock.ExpectationsWereMet())
+		default:
+			time.Sleep(10 * time.Millisecond)
+		}
 	}
 }

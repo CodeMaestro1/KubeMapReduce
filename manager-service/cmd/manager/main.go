@@ -93,7 +93,20 @@ func main() {
 		port = "50051"
 	}
 	managerAddr := resolveManagerAddr(hostname, headlessService, namespace, port)
-	scheduler, err := manager.NewScheduler(db, replicaIndex, cfg.TotalReplicas, orchestrator, managerAddr, cfg.LeaseTTL)
+	var stagingCleaner manager.StagingCleaner
+	if cfg.MinioEndpoint != "" && cfg.MinioAccessKey != "" && cfg.MinioSecretKey != "" {
+		mc, mcErr := minio.New(cfg.MinioEndpoint, &minio.Options{
+			Creds:  credentials.NewStaticV4(cfg.MinioAccessKey, cfg.MinioSecretKey, ""),
+			Secure: cfg.MinioUseSSL,
+		})
+		if mcErr != nil {
+			log.Printf("staging cleaner: failed to create minio client: %v", mcErr)
+		} else {
+			stagingCleaner = manager.NewMinioStagingCleaner(mc)
+		}
+	}
+
+	scheduler, err := manager.NewScheduler(db, replicaIndex, cfg.TotalReplicas, orchestrator, managerAddr, cfg.LeaseTTL, stagingCleaner)
 	if err != nil {
 		log.Fatalf("failed to create scheduler: %v", err)
 	}

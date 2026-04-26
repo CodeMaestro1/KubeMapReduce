@@ -47,6 +47,7 @@ type Scheduler struct {
 	orchestrator   WorkerOrchestrator
 	managerAddr    string
 	leaseTTL       int
+	staging        StagingCleaner
 	cleanupMu      sync.Mutex
 	pendingCleanup map[string]string
 }
@@ -60,8 +61,8 @@ type taskMetadataQuerier interface {
 //
 // Callers must provide a valid *sql.DB connection and an implementation of WorkerOrchestrator.
 // The leaseTTL (in seconds) determines how long a worker can go without a heartbeat before
-// being considered stale by the Active Reaper.
-func NewScheduler(db *sql.DB, replicaIndex int, totalReplicas int, orchestrator WorkerOrchestrator, managerAddr string, leaseTTL int) (*Scheduler, error) {
+// being considered stale by the Active Reaper. staging may be nil to disable MinIO cleanup.
+func NewScheduler(db *sql.DB, replicaIndex int, totalReplicas int, orchestrator WorkerOrchestrator, managerAddr string, leaseTTL int, staging StagingCleaner) (*Scheduler, error) {
 	if db == nil {
 		return nil, errors.New("db cannot be nil")
 	}
@@ -81,6 +82,7 @@ func NewScheduler(db *sql.DB, replicaIndex int, totalReplicas int, orchestrator 
 		orchestrator:   orchestrator,
 		managerAddr:    managerAddr,
 		leaseTTL:       leaseTTL,
+		staging:        staging,
 		pendingCleanup: make(map[string]string),
 	}, nil
 }
@@ -1109,6 +1111,14 @@ func (s *Scheduler) finalizeJob(ctx context.Context, jobID, terminalState string
 		log.Printf("Failed to cleanup K8s worker jobs for job %s: %v", jobID, err)
 		s.enqueueCleanup(jobID, terminalState)
 		return
+	}
+
+	if s.staging != nil {
+		if err := s.staging.DeleteStagingObjects(ctx, jobID); err != nil {
+			log.Printf("Failed to delete staging objects for job %s: %v", jobID, err)
+			s.enqueueCleanup(jobID, terminalState)
+			return
+		}
 	}
 
 	tx, err := s.db.BeginTx(ctx, nil)

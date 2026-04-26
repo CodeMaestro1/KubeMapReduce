@@ -78,7 +78,7 @@ func setupE2ETest(t *testing.T) (*sql.DB, sqlmock.Sqlmock, *Scheduler, *Tracking
 	}
 
 	orch := &TrackingOrchestrator{}
-	s, err := NewScheduler(db, 0, 1, orch, "localhost:50051", 30)
+	s, err := NewScheduler(db, 0, 1, orch, "localhost:50051", 30, nil)
 	if err != nil {
 		t.Fatalf("failed to create scheduler: %v", err)
 	}
