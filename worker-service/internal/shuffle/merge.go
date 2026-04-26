@@ -31,7 +31,7 @@ type Record struct {
 
 // MergeConfig holds tunable parameters for the multi-pass external merge operation.
 //
-// These limits prevent the Manager from exhausting file descriptors or memory
+// These limits prevent the Worker from exhausting file descriptors or memory
 // when merging intermediate data from thousands of mapper tasks.
 type MergeConfig struct {
 	// BatchSize is the maximum number of concurrent open streams per merge pass.

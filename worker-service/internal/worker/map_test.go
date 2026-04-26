@@ -5,7 +5,7 @@ import (
 	"sort"
 	"testing"
 
-	"kubemapreduce/pkg/shuffle"
+	"kubemapreduce/worker-service/internal/shuffle"
 )
 
 // ── hashPartition ─────────────────────��───────────────────────────────────────

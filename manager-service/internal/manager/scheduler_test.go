@@ -1709,8 +1709,9 @@ type mockStagingCleaner struct {
 func (m *mockStagingCleaner) DeleteStagingObjects(_ context.Context, jobID string) error {
 	m.mu.Lock()
 	m.deleted = append(m.deleted, jobID)
+	err := m.err
 	m.mu.Unlock()
-	return m.err
+	return err
 }
 
 func (m *mockStagingCleaner) calledWith() []string {

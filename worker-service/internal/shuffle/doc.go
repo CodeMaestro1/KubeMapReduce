@@ -9,7 +9,7 @@
 // The core algorithm is an external k-way merge sort using a min-heap (implemented via the
 // [container/heap] package). This approach was chosen to allow the system to merge data
 // that is much larger than the available RAM. By spilling intermediate batches to disk
-// (multi-pass merge), the Manager maintains a constant memory footprint regardless of
+// (multi-pass merge), the Worker maintains a constant memory footprint regardless of
 // the input size.
 //
 // # Key Types

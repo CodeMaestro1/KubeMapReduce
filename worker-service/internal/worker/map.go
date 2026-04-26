@@ -15,7 +15,7 @@ import (
 
 	"github.com/minio/minio-go/v7"
 
-	"kubemapreduce/pkg/shuffle"
+	"kubemapreduce/worker-service/internal/shuffle"
 	pb "kubemapreduce/proto"
 )
 
