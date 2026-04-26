@@ -28,6 +28,10 @@ func WriteJSON(w http.ResponseWriter, status int, payload any) error {
 }
 
 // WriteErrorJSON sends a structured JSON error response.
+//
+// This follows the standard error contract: {"error": "...", "code": 400}.
+// Structured errors allow CLI and web clients to handle failures programmatically
+// instead of relying on fragile text-based parsing.
 func WriteErrorJSON(w http.ResponseWriter, status int, message string) {
 	_ = WriteJSON(w, status, map[string]any{
 		"error": message,
@@ -36,6 +40,9 @@ func WriteErrorJSON(w http.ResponseWriter, status int, message string) {
 }
 
 // WriteError sends a plain-text error message with the specified HTTP status code.
+//
+// DEPRECATED: Use WriteErrorJSON for all new handler logic to ensure
+// API responses are consistently structured.
 func WriteError(w http.ResponseWriter, status int, message string) {
 	http.Error(w, message, status)
 }
