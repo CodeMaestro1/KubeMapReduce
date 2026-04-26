@@ -15,8 +15,8 @@ import (
 
 	"github.com/minio/minio-go/v7"
 
-	"kubemapreduce/worker-service/internal/shuffle"
 	pb "kubemapreduce/proto"
+	"kubemapreduce/worker-service/internal/shuffle"
 )
 
 const stagingBucket = "mapreduce-staging"
