@@ -1,32 +1,35 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
 	"time"
 
 	"kubemapreduce/auth-service/pkg/auth"
+	"kubemapreduce/manager-service/internal/manager"
 	"kubemapreduce/manager-service/internal/models"
 	"kubemapreduce/manager-service/internal/validation"
 	"kubemapreduce/manager-service/pkg/httputil"
 
 	"github.com/google/uuid"
+	"github.com/minio/minio-go/v7"
 )
 
 // Handlers holds HTTP handler state for the API server.
-//
-// This centralizes state management for all REST endpoints, including the
-// Keycloak admin client for user management and a [JobStore] for persisting
-// job metadata. Using a struct-based handler pattern allows for easy
-// dependency injection, making the API layer highly testable with mocks.
 type Handlers struct {
-	adminClient *auth.KeycloakAdminClient
-	store       JobStore
-	now         func() time.Time
+	adminClient    *auth.KeycloakAdminClient
+	store          JobStore
+	minioClient    *minio.Client
+	managerAddr    string
+	internalAPIKey string
+	httpClient     *http.Client
+	now            func() time.Time
 }
 
 const (
@@ -36,27 +39,31 @@ const (
 	maxJSONBodyBytes = 1 << 20 // 1 MiB
 )
 
-// NewHandlers creates production-ready Handlers backed by the given JobStore.
-//
-// Callers must provide a valid [JobStore] implementation. In production, this
-// is typically a [PostgresJobStore] to ensure that job state persists across
-// manager restarts and is visible to all replicas.
-func NewHandlers(adminClient *auth.KeycloakAdminClient, store JobStore) *Handlers {
+// NewHandlers creates production-ready Handlers.
+func NewHandlers(adminClient *auth.KeycloakAdminClient, store JobStore, minioClient *minio.Client, managerAddr string, internalAPIKey string) *Handlers {
 	return &Handlers{
-		adminClient: adminClient,
-		store:       store,
-		now:         time.Now,
+		adminClient:    adminClient,
+		store:          store,
+		minioClient:    minioClient,
+		managerAddr:    managerAddr,
+		internalAPIKey: internalAPIKey,
+		httpClient:     http.DefaultClient,
+		now:            time.Now,
 	}
 }
 
-func newHandlersWithOptions(adminClient *auth.KeycloakAdminClient, store JobStore, now func() time.Time) *Handlers {
+func newHandlersWithOptions(adminClient *auth.KeycloakAdminClient, store JobStore, minioClient *minio.Client, managerAddr string, internalAPIKey string, now func() time.Time) *Handlers {
 	if now == nil {
 		now = time.Now
 	}
 	return &Handlers{
-		adminClient: adminClient,
-		store:       store,
-		now:         now,
+		adminClient:    adminClient,
+		store:          store,
+		minioClient:    minioClient,
+		managerAddr:    managerAddr,
+		internalAPIKey: internalAPIKey,
+		httpClient:     http.DefaultClient,
+		now:            now,
 	}
 }
 
@@ -335,9 +342,42 @@ func (h *Handlers) HandleConfigureNodes(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	if err := httputil.WriteJSON(w, http.StatusNotImplemented, map[string]interface{}{
-		"status":      "not_implemented",
-		"message":     "node configuration backend integration is not implemented yet",
+	// proxy to manager internal endpoint
+	update := manager.SystemConfigUpdate{
+		MaxConcurrentPods: req.MaxPods,
+		CPULimit:          req.CPULimit,
+		MemoryLimit:       req.MemoryLimit,
+	}
+
+	payload, err := json.Marshal(update)
+	if err != nil {
+		httputil.WriteErrorJSON(w, http.StatusInternalServerError, "failed to serialize config update")
+		return
+	}
+	managerURL := fmt.Sprintf("http://%s/internal/config", h.managerAddr)
+	proxyReq, err := http.NewRequestWithContext(r.Context(), http.MethodPut, managerURL, bytes.NewReader(payload))
+	if err != nil {
+		httputil.WriteErrorJSON(w, http.StatusInternalServerError, "failed to build proxy request")
+		return
+	}
+	if h.internalAPIKey != "" {
+		proxyReq.Header.Set("X-Internal-Token", h.internalAPIKey)
+	}
+
+	resp, err := h.httpClient.Do(proxyReq)
+	if err != nil {
+		http.Error(w, "manager service unreachable", http.StatusServiceUnavailable)
+		return
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		http.Error(w, "failed to update config via manager", resp.StatusCode)
+		return
+	}
+
+	if err := httputil.WriteJSON(w, http.StatusOK, map[string]interface{}{
+		"status":      "success",
 		"maxPods":     req.MaxPods,
 		"cpuLimit":    req.CPULimit,
 		"memoryLimit": req.MemoryLimit,
@@ -368,6 +408,39 @@ func (h *Handlers) HandleWorkerConfig(w http.ResponseWriter, r *http.Request) {
 	}
 	if request.MaxJobsPerNode < 1 {
 		httputil.WriteErrorJSON(w, http.StatusBadRequest, "maxJobsPerNode must be positive")
+		return
+	}
+
+	// proxy to manager internal endpoint
+	update := manager.SystemConfigUpdate{
+		WorkerReplicas: request.WorkerReplicas,
+		MaxJobsPerNode: request.MaxJobsPerNode,
+	}
+
+	payload, err := json.Marshal(update)
+	if err != nil {
+		httputil.WriteErrorJSON(w, http.StatusInternalServerError, "failed to serialize config update")
+		return
+	}
+	managerURL := fmt.Sprintf("http://%s/internal/config", h.managerAddr)
+	proxyReq, err := http.NewRequestWithContext(r.Context(), http.MethodPut, managerURL, bytes.NewReader(payload))
+	if err != nil {
+		httputil.WriteErrorJSON(w, http.StatusInternalServerError, "failed to build proxy request")
+		return
+	}
+	if h.internalAPIKey != "" {
+		proxyReq.Header.Set("X-Internal-Token", h.internalAPIKey)
+	}
+
+	resp, err := h.httpClient.Do(proxyReq)
+	if err != nil {
+		http.Error(w, "manager service unreachable", http.StatusServiceUnavailable)
+		return
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		http.Error(w, "failed to update config via manager", resp.StatusCode)
 		return
 	}
 
@@ -500,6 +573,108 @@ func isAuthDependencyError(err error) bool {
 	return auth.IsServiceUnavailable(err) ||
 		errors.Is(err, context.DeadlineExceeded) ||
 		errors.Is(err, context.Canceled)
+}
+
+// HandleJobsDelete initiates the cancellation of a running or pending job.
+//
+// This operation is proxied to the Manager service's internal endpoint to ensure
+// that all active worker processes for the job are terminated and resources
+// are released.
+func (h *Handlers) HandleJobsDelete(w http.ResponseWriter, r *http.Request) {
+	jobID := r.PathValue("job_id")
+	if jobID == "" {
+		httputil.WriteErrorJSON(w, http.StatusBadRequest, "job id required")
+		return
+	}
+
+	if _, err := uuid.Parse(jobID); err != nil {
+		httputil.WriteErrorJSON(w, http.StatusBadRequest, "invalid job id")
+		return
+	}
+
+	managerURL := fmt.Sprintf("http://%s/internal/jobs/%s", h.managerAddr, jobID)
+	proxyReq, err := http.NewRequestWithContext(r.Context(), http.MethodDelete, managerURL, nil)
+	if err != nil {
+		httputil.WriteErrorJSON(w, http.StatusInternalServerError, "failed to build cancellation request")
+		return
+	}
+
+	if h.internalAPIKey != "" {
+		proxyReq.Header.Set("X-Internal-Token", h.internalAPIKey)
+	}
+
+	resp, err := h.httpClient.Do(proxyReq)
+	if err != nil {
+		httputil.WriteErrorJSON(w, http.StatusServiceUnavailable, "manager service unavailable")
+		return
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusAccepted && resp.StatusCode != http.StatusOK {
+		httputil.WriteErrorJSON(w, resp.StatusCode, "cancellation rejected by manager")
+		return
+	}
+
+	if err := httputil.WriteJSON(w, http.StatusOK, map[string]string{
+		"status": "cancelled",
+		"jobId":  jobID,
+	}); err != nil {
+		return
+	}
+}
+
+// HandlePresignUpload generates a temporary URL for direct file upload to object storage.
+func (h *Handlers) HandlePresignUpload(w http.ResponseWriter, r *http.Request) {
+	if h.minioClient == nil {
+		httputil.WriteErrorJSON(w, http.StatusServiceUnavailable, "object storage not configured")
+		return
+	}
+
+	var req models.PresignRequest
+	if !decodeJSONBody(w, r, &req, "invalid presign request") {
+		return
+	}
+
+	if req.Bucket == "" || req.Key == "" {
+		httputil.WriteErrorJSON(w, http.StatusBadRequest, "bucket and key are required")
+		return
+	}
+
+	url, err := h.minioClient.PresignedPutObject(r.Context(), req.Bucket, req.Key, 15*time.Minute)
+	if err != nil {
+		httputil.WriteErrorJSON(w, http.StatusInternalServerError, "failed to generate upload URL")
+		return
+	}
+
+	if err := httputil.WriteJSON(w, http.StatusOK, models.PresignResponse{URL: url.String()}); err != nil {
+		return
+	}
+}
+
+// HandlePresignDownload generates a temporary URL for direct file download from object storage.
+func (h *Handlers) HandlePresignDownload(w http.ResponseWriter, r *http.Request) {
+	if h.minioClient == nil {
+		httputil.WriteErrorJSON(w, http.StatusServiceUnavailable, "object storage not configured")
+		return
+	}
+
+	bucket := r.URL.Query().Get("bucket")
+	key := r.URL.Query().Get("key")
+
+	if bucket == "" || key == "" {
+		httputil.WriteErrorJSON(w, http.StatusBadRequest, "bucket and key are required")
+		return
+	}
+
+	url, err := h.minioClient.PresignedGetObject(r.Context(), bucket, key, 15*time.Minute, nil)
+	if err != nil {
+		httputil.WriteErrorJSON(w, http.StatusInternalServerError, "failed to generate download URL")
+		return
+	}
+
+	if err := httputil.WriteJSON(w, http.StatusOK, models.PresignResponse{URL: url.String()}); err != nil {
+		return
+	}
 }
 
 func decodeJSONBody(w http.ResponseWriter, r *http.Request, out any, invalidMessage string) bool {

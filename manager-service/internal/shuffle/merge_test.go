@@ -194,3 +194,173 @@ func TestMerge_MalformedJSON(t *testing.T) {
 		t.Fatal("Expected error for malformed JSON, got nil")
 	}
 }
+
+func TestMerge_StatsPopulated(t *testing.T) {
+	// 5 readers, batch size 2
+	inputs := []string{
+		`{"key": "e", "value": "5"}`,
+		`{"key": "d", "value": "4"}`,
+		`{"key": "c", "value": "3"}`,
+		`{"key": "b", "value": "2"}`,
+		`{"key": "a", "value": "1"}`,
+	}
+	readers := make([]io.Reader, len(inputs))
+	for i, in := range inputs {
+		readers[i] = strings.NewReader(in + "\n")
+	}
+
+	var buf bytes.Buffer
+	cfg := MergeConfig{BatchSize: 2}
+
+	stats, err := MergeInputs(readers, &buf, cfg)
+	if err != nil {
+		t.Fatalf("MergeInputs failed: %v", err)
+	}
+
+	// 5 readers, BatchSize 2
+	// Pass 1: 5 -> batch1(2), batch2(2), batch3(1) -> 3 spills
+	// Pass 2: 3 -> batch1(2), batch2(1) -> 2 spills
+	// Pass 3: 2 -> final output
+	if stats.TotalPasses != 3 {
+		t.Errorf("Expected 3 passes, got %d", stats.TotalPasses)
+	}
+	if stats.SpillCount != 5 {
+		t.Errorf("Expected 5 total spills (3+2), got %d", stats.SpillCount)
+	}
+	if stats.TotalRecords != 5 {
+		t.Errorf("Expected 5 records, got %d", stats.TotalRecords)
+	}
+}
+
+func TestMerge_AllEmptyReaders(t *testing.T) {
+	numReaders := 10
+	readers := make([]io.Reader, numReaders)
+	for i := 0; i < numReaders; i++ {
+		readers[i] = strings.NewReader("")
+	}
+
+	var buf bytes.Buffer
+	cfg := DefaultMergeConfig()
+	stats, err := MergeInputs(readers, &buf, cfg)
+	if err != nil {
+		t.Fatalf("MergeInputs failed: %v", err)
+	}
+	if stats.TotalRecords != 0 {
+		t.Errorf("Expected 0 records, got %d", stats.TotalRecords)
+	}
+}
+
+func TestMerge_SingleRecordHighFanIn(t *testing.T) {
+	numReaders := 50
+	readers := make([]io.Reader, numReaders)
+	for i := 0; i < numReaders; i++ {
+		if i == 25 {
+			readers[i] = strings.NewReader(`{"key": "x", "value": "found"}` + "\n")
+		} else {
+			readers[i] = strings.NewReader("")
+		}
+	}
+
+	var buf bytes.Buffer
+	cfg := MergeConfig{BatchSize: 10}
+	stats, err := MergeInputs(readers, &buf, cfg)
+	if err != nil {
+		t.Fatalf("MergeInputs failed: %v", err)
+	}
+	if stats.TotalRecords != 1 {
+		t.Errorf("Expected 1 record, got %d", stats.TotalRecords)
+	}
+	expected := `{"key":"x","value":"found"}` + "\n"
+	if buf.String() != expected {
+		t.Errorf("Expected %q, got %q", expected, buf.String())
+	}
+}
+
+func TestMerge_BatchSizeOneUsesDefault(t *testing.T) {
+	readers := []io.Reader{strings.NewReader(`{"key": "a", "value": "1"}` + "\n")}
+	var buf bytes.Buffer
+	// BatchSize 1 is invalid, should fallback to 500
+	cfg := MergeConfig{BatchSize: 1}
+	_, err := MergeInputs(readers, &buf, cfg)
+	if err != nil {
+		t.Fatalf("MergeInputs failed: %v", err)
+	}
+}
+
+func TestMerge_BatchSizeExceedsMax(t *testing.T) {
+	readers := []io.Reader{strings.NewReader(`{"key": "a", "value": "1"}` + "\n")}
+	var buf bytes.Buffer
+	cfg := MergeConfig{BatchSize: 10000}
+	_, err := MergeInputs(readers, &buf, cfg)
+	if err != nil {
+		t.Fatalf("MergeInputs failed: %v", err)
+	}
+}
+
+func TestMerge_StressLargeFanIn_1000(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping stress test in short mode")
+	}
+
+	numReaders := 1000
+	recordsPerReader := 5
+	readers := make([]io.Reader, numReaders)
+
+	for i := 0; i < numReaders; i++ {
+		var b bytes.Buffer
+		for j := 0; j < recordsPerReader; j++ {
+			fmt.Fprintf(&b, `{"key": "%05d", "value": "%d"}`+"\n", j, i)
+		}
+		readers[i] = bytes.NewReader(b.Bytes())
+	}
+
+	var buf bytes.Buffer
+	cfg := MergeConfig{BatchSize: 100}
+
+	stats, err := MergeInputs(readers, &buf, cfg)
+	if err != nil {
+		t.Fatalf("MergeInputs failed: %v", err)
+	}
+
+	expectedRecords := int64(numReaders * recordsPerReader)
+	if stats.TotalRecords != expectedRecords {
+		t.Errorf("Expected %d records, got %d", expectedRecords, stats.TotalRecords)
+	}
+
+	// Verify sorting
+	scanner := bufio.NewScanner(&buf)
+	lastKey := ""
+	count := 0
+	for scanner.Scan() {
+		var rec Record
+		if err := json.Unmarshal(scanner.Bytes(), &rec); err != nil {
+			t.Fatalf("Failed to unmarshal record %d: %v", count, err)
+		}
+		if rec.Key < lastKey {
+			t.Fatalf("Output not sorted: %s < %s at record %d", rec.Key, lastKey, count)
+		}
+		lastKey = rec.Key
+		count++
+	}
+	if err := scanner.Err(); err != nil {
+		t.Fatalf("Scanner error during verification: %v", err)
+	}
+}
+
+func TestMerge_OversizedRecordRespectsLimit(t *testing.T) {
+	largeValue := strings.Repeat("x", 2048)
+	input := fmt.Sprintf(`{"key": "a", "value": "%s"}`+"\n", largeValue)
+
+	readers := []io.Reader{strings.NewReader(input)}
+	var buf bytes.Buffer
+	// Set limit smaller than record
+	cfg := MergeConfig{MaxRecordBytes: 1024}
+
+	_, err := MergeInputs(readers, &buf, cfg)
+	if err == nil {
+		t.Fatal("Expected error for oversized record, got nil")
+	}
+	if !strings.Contains(err.Error(), "token too long") {
+		t.Errorf("Expected 'token too long' error, got: %v", err)
+	}
+}

@@ -275,6 +275,8 @@ func (s *Scheduler) tryAssignTask(ctx context.Context, tx *sql.Tx, requestedJobI
 	t.LeaseID = leaseID.String()
 	t.State = InProgress
 	now := time.Now()
+	// NOTE: These are in-memory values for the caller's convenience (gRPC response).
+	// The DB-authoritative timestamps are set via NOW() in QueryInsertAttempt.
 	t.startTime = now
 	t.LastHeartbeat = now
 	requestedUUID, err := uuid.Parse(requestedJobID)
@@ -452,9 +454,8 @@ func (s *Scheduler) ScheduleJob(ctx context.Context, req ScheduleJobRequest) err
 	if err != nil {
 		return err
 	}
-	now := time.Now()
 
-	if _, err := tx.ExecContext(ctx, QueryInsertJob, jobID, userID, now, now); err != nil {
+	if _, err := tx.ExecContext(ctx, QueryInsertJob, jobID, userID); err != nil {
 		return err
 	}
 	if _, err := tx.ExecContext(ctx, QueryInsertJobConfig,
@@ -521,14 +522,43 @@ func (s *Scheduler) ScheduleJob(ctx context.Context, req ScheduleJobRequest) err
 	return nil
 }
 
+// GetSystemConfig retrieves the current cluster configuration.
+func (s *Scheduler) GetSystemConfig(ctx context.Context) (SystemConfigUpdate, error) {
+	var cfg SystemConfigUpdate
+	err := s.db.QueryRowContext(ctx, QueryGetSystemConfig).Scan(
+		&cfg.MaxConcurrentPods,
+		&cfg.CPULimit,
+		&cfg.MemoryLimit,
+		&cfg.WorkerReplicas,
+		&cfg.MaxJobsPerNode,
+	)
+	if err == sql.ErrNoRows {
+		// Return defaults if not configured
+		return SystemConfigUpdate{
+			MaxConcurrentPods: 10,
+			CPULimit:          "500m",
+			MemoryLimit:       "1Gi",
+			WorkerReplicas:    1,
+			MaxJobsPerNode:    1,
+		}, nil
+	}
+	return cfg, err
+}
+
 // UpsertSystemConfig updates cluster-wide operational parameters.
 func (s *Scheduler) UpsertSystemConfig(ctx context.Context, req SystemConfigUpdate) error {
-	_, err := s.db.ExecContext(ctx, QueryUpsertSystemConfig, req.MaxConcurrentPods, req.CPULimit, req.MemoryLimit, time.Now())
+	_, err := s.db.ExecContext(ctx, QueryUpsertSystemConfig,
+		req.MaxConcurrentPods,
+		req.CPULimit,
+		req.MemoryLimit,
+		req.WorkerReplicas,
+		req.MaxJobsPerNode,
+	)
 	return err
 }
 
 func (s *Scheduler) updateJobStatusTx(ctx context.Context, tx *sql.Tx, jobID string, status string) error {
-	_, err := tx.ExecContext(ctx, QueryUpdateJobStatus, jobID, status, time.Now())
+	_, err := tx.ExecContext(ctx, QueryUpdateJobStatus, jobID, status)
 	return err
 }
 

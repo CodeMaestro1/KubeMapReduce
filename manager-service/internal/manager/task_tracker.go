@@ -110,6 +110,8 @@ type SystemConfigUpdate struct {
 	MaxConcurrentPods int
 	CPULimit          string
 	MemoryLimit       string
+	WorkerReplicas    int
+	MaxJobsPerNode    int
 }
 
 // Task represents the metadata the Master needs to track for a single unit of work.

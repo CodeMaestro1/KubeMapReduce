@@ -8,11 +8,6 @@ import (
 )
 
 // RegisterRoutes wires up the HTTP handlers to their respective URL patterns.
-//
-// It separates routes into public endpoints (root, health) and authenticated
-// endpoints protected by [auth.RequireAnyRole] or [auth.RequireRole]
-// middlewares. The routing uses the standard library's [http.ServeMux] but
-// leverages the 1.22+ pattern matching features (e.g., "GET /jobs/{job_id}").
 func RegisterRoutes(mux *http.ServeMux, h *Handlers, validator *auth.JWTValidator) {
 	// Public routes
 	mux.HandleFunc("/", h.HandleRoot)
@@ -34,6 +29,12 @@ func RegisterRoutes(mux *http.ServeMux, h *Handlers, validator *auth.JWTValidato
 		}),
 	))
 
+	mux.Handle("DELETE /api/v1/jobs/{job_id}", auth.RequireAnyRole(
+		[]string{"USER", "ADMIN"},
+		validator,
+		http.HandlerFunc(h.HandleJobsDelete),
+	))
+
 	mux.Handle("GET /api/v1/jobs/{job_id}/results", auth.RequireAnyRole(
 		[]string{"USER", "ADMIN"},
 		validator,
@@ -44,6 +45,19 @@ func RegisterRoutes(mux *http.ServeMux, h *Handlers, validator *auth.JWTValidato
 		[]string{"USER", "ADMIN"},
 		validator,
 		http.HandlerFunc(h.HandleJobsGet),
+	))
+
+	// File Management
+	mux.Handle("POST /api/v1/files/presign-upload", auth.RequireAnyRole(
+		[]string{"USER", "ADMIN"},
+		validator,
+		http.HandlerFunc(h.HandlePresignUpload),
+	))
+
+	mux.Handle("GET /api/v1/files/presign-download", auth.RequireAnyRole(
+		[]string{"USER", "ADMIN"},
+		validator,
+		http.HandlerFunc(h.HandlePresignDownload),
 	))
 
 	// Admin routes

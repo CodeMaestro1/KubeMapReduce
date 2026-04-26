@@ -17,6 +17,9 @@ import (
 	"kubemapreduce/auth-service/pkg/auth"
 	"kubemapreduce/manager-service/internal/api"
 	"kubemapreduce/manager-service/internal/config"
+
+	"github.com/minio/minio-go/v7"
+	"github.com/minio/minio-go/v7/pkg/credentials"
 )
 
 // main bootstraps the UI Service API server.
@@ -68,8 +71,19 @@ func main() {
 		log.Fatalf("failed to ping database: %v", err)
 	}
 
+	var minioClient *minio.Client
+	if cfg.MinioEndpoint != "" && cfg.MinioAccessKey != "" && cfg.MinioSecretKey != "" {
+		minioClient, err = minio.New(cfg.MinioEndpoint, &minio.Options{
+			Creds:  credentials.NewStaticV4(cfg.MinioAccessKey, cfg.MinioSecretKey, ""),
+			Secure: cfg.MinioUseSSL,
+		})
+		if err != nil {
+			log.Printf("failed to initialize minio client: %v", err)
+		}
+	}
+
 	store := api.NewPostgresJobStore(db)
-	handlers := api.NewHandlers(adminClient, store)
+	handlers := api.NewHandlers(adminClient, store, minioClient, cfg.ManagerAddr, cfg.InternalAPIKey)
 
 	mux := http.NewServeMux()
 	api.RegisterRoutes(mux, handlers, validator)

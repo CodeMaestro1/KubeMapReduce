@@ -13,7 +13,7 @@ import (
 func TestCLIAdminRoutes_MatchAPIRoutes(t *testing.T) {
 	mux := http.NewServeMux()
 	store := NewMemoryJobStore(24*time.Hour, 10000, nil)
-	h := NewHandlers(nil, store)
+	h := NewHandlers(nil, store, nil, "", "")
 	v := new(auth.JWTValidator)
 	RegisterRoutes(mux, h, v)
 
