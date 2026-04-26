@@ -554,7 +554,6 @@ func (s *Scheduler) UpsertSystemConfig(ctx context.Context, req SystemConfigUpda
 		req.WorkerReplicas,
 		req.MaxJobsPerNode,
 	)
-	_, err := s.db.ExecContext(ctx, QueryUpsertSystemConfig, req.MaxConcurrentPods, req.CPULimit, req.MemoryLimit)
 	return err
 }
 
