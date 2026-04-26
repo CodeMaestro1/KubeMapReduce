@@ -195,6 +195,9 @@ func TestE2E_TripleFailure_MaxAttemptsExhaustion(t *testing.T) {
 
 	// finalizeJob mock (called synchronously in FailStaleTasks)
 	mock.ExpectBegin()
+	mock.ExpectQuery(regexp.QuoteMeta(QueryGetJobStatusForUpdate)).
+		WithArgs(jobID).
+		WillReturnRows(sqlmock.NewRows([]string{"status"}).AddRow("Cleaning"))
 	mock.ExpectExec(regexp.QuoteMeta(QueryUpdateJobStatus)).WithArgs(jobID, "Failed").WillReturnResult(sqlmock.NewResult(1, 1))
 	mock.ExpectCommit()
 
@@ -221,6 +224,9 @@ func TestE2E_CancellationDuringExecution(t *testing.T) {
 
 	// finalizeJob mock (called in goroutine)
 	mock.ExpectBegin()
+	mock.ExpectQuery(regexp.QuoteMeta(QueryGetJobStatusForUpdate)).
+		WithArgs(jobID).
+		WillReturnRows(sqlmock.NewRows([]string{"status"}).AddRow("Cleaning"))
 	mock.ExpectExec(regexp.QuoteMeta(QueryUpdateJobStatus)).WithArgs(jobID, "Cancelled").WillReturnResult(sqlmock.NewResult(1, 1))
 	mock.ExpectCommit()
 

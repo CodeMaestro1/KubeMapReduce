@@ -238,6 +238,10 @@ const QueryInsertTaskInput = `
 	INSERT INTO TASK_INPUTS (task_id, input_uri, byte_start, byte_end, split_checksum)
 	VALUES ($1, $2, $3, $4, $5)`
 
+// QueryGetJobStatusForUpdate reads the current job status under a row-level lock.
+// Used by applyJobTransitionTx to enforce the state machine before any UPDATE.
+const QueryGetJobStatusForUpdate = `SELECT status FROM JOBS WHERE job_id = $1 FOR UPDATE`
+
 // QueryUpdateJobStatus transitions a job to a new lifecycle state.
 const QueryUpdateJobStatus = `UPDATE JOBS SET status = $2, updated_at = NOW() WHERE job_id = $1`
 

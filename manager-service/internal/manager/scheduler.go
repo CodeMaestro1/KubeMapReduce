@@ -564,6 +564,28 @@ func (s *Scheduler) updateJobStatusTx(ctx context.Context, tx *sql.Tx, jobID str
 	return err
 }
 
+// applyJobTransitionTx reads the current job status with FOR UPDATE, validates the
+// transition via ValidateJobTransition, and applies QueryUpdateJobStatus.
+// If the current status already equals to, it returns nil (idempotent no-op).
+func (s *Scheduler) applyJobTransitionTx(ctx context.Context, tx *sql.Tx, jobID string, to string) error {
+	var current string
+	err := tx.QueryRowContext(ctx, QueryGetJobStatusForUpdate, jobID).Scan(&current)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrTaskNotFound
+		}
+		return err
+	}
+	if current == to {
+		return nil
+	}
+	if err := ValidateJobTransition(current, to); err != nil {
+		return err
+	}
+	_, err = tx.ExecContext(ctx, QueryUpdateJobStatus, jobID, to)
+	return err
+}
+
 func (s *Scheduler) validateLeaseTx(ctx context.Context, tx *sql.Tx, attemptID string, leaseID string) error {
 	var leaseValid bool
 	err := tx.QueryRowContext(ctx, QueryCheckLeaseValid, attemptID, leaseID).Scan(&leaseValid)
@@ -1129,7 +1151,7 @@ func (s *Scheduler) finalizeJob(ctx context.Context, jobID, terminalState string
 	}
 	defer tx.Rollback()
 
-	if err := s.updateJobStatusTx(ctx, tx, jobID, terminalState); err != nil {
+	if err := s.applyJobTransitionTx(ctx, tx, jobID, terminalState); err != nil {
 		log.Printf("Failed to update terminal status of job %s: %v", jobID, err)
 		s.enqueueCleanup(jobID, terminalState)
 		return

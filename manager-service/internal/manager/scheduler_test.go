@@ -1578,6 +1578,9 @@ func TestScheduler_StartCleanupReconciler_BoundedConcurrency(t *testing.T) {
 		jobIDs = append(jobIDs, jobID)
 		scheduler.enqueueCleanup(jobID, "Completed")
 		mock.ExpectBegin()
+		mock.ExpectQuery(regexp.QuoteMeta(QueryGetJobStatusForUpdate)).
+			WithArgs(jobID).
+			WillReturnRows(sqlmock.NewRows([]string{"status"}).AddRow("Cleaning"))
 		mock.ExpectExec(regexp.QuoteMeta(QueryUpdateJobStatus)).
 			WithArgs(jobID, "Completed").
 			WillReturnResult(sqlmock.NewResult(1, 1))
@@ -1729,6 +1732,9 @@ func TestFinalizeJob_DeletesStagingObjects(t *testing.T) {
 	jobID := uuid.New().String()
 
 	mock.ExpectBegin()
+	mock.ExpectQuery(regexp.QuoteMeta(QueryGetJobStatusForUpdate)).
+		WithArgs(jobID).
+		WillReturnRows(sqlmock.NewRows([]string{"status"}).AddRow("Cleaning"))
 	mock.ExpectExec(regexp.QuoteMeta(QueryUpdateJobStatus)).
 		WithArgs(jobID, "Completed").
 		WillReturnResult(sqlmock.NewResult(1, 1))
@@ -1799,6 +1805,9 @@ func TestStartCleanupReconciler_RetriesStagingFailure(t *testing.T) {
 		WillReturnRows(sqlmock.NewRows([]string{"job_id"}))
 
 	mock.ExpectBegin()
+	mock.ExpectQuery(regexp.QuoteMeta(QueryGetJobStatusForUpdate)).
+		WithArgs(jobID).
+		WillReturnRows(sqlmock.NewRows([]string{"status"}).AddRow("Cleaning"))
 	mock.ExpectExec(regexp.QuoteMeta(QueryUpdateJobStatus)).
 		WithArgs(jobID, "Completed").
 		WillReturnResult(sqlmock.NewResult(1, 1))
@@ -1844,5 +1853,54 @@ func TestStartCleanupReconciler_RetriesStagingFailure(t *testing.T) {
 		default:
 			time.Sleep(10 * time.Millisecond)
 		}
+	}
+}
+
+// TestFinalizeJob_CleaningPhaseEnforcedOnRetry is an integration test that verifies
+// the Cleaning phase is maintained between cleanup attempts:
+//  1. First call: staging fails → DB not touched (job stays in Cleaning).
+//  2. Second call: staging succeeds → Cleaning → terminal transition enforced.
+func TestFinalizeJob_CleaningPhaseEnforcedOnRetry(t *testing.T) {
+	staging := &mockStagingCleaner{err: errors.New("transient minio error")}
+	db, mock, scheduler := setupMockDBWithStaging(t, staging)
+	defer db.Close()
+
+	jobID := uuid.New().String()
+
+	// First attempt: staging fails — DB must not be touched.
+	scheduler.finalizeJob(context.Background(), jobID, "Completed")
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("DB was touched during staging failure (job should stay in Cleaning): %v", err)
+	}
+
+	// Job must be back in the retry queue with its terminal state preserved.
+	pending := scheduler.popPendingCleanup(10)
+	state, ok := pending[jobID]
+	if !ok {
+		t.Fatalf("job %s not re-enqueued after cleanup failure; job is not in Cleaning", jobID)
+	}
+	if state != "Completed" {
+		t.Errorf("expected terminal state Completed in retry queue, got %q", state)
+	}
+
+	// Second attempt: staging succeeds — transition Cleaning → Completed must be enforced.
+	staging.mu.Lock()
+	staging.err = nil
+	staging.mu.Unlock()
+
+	mock.ExpectBegin()
+	mock.ExpectQuery(regexp.QuoteMeta(QueryGetJobStatusForUpdate)).
+		WithArgs(jobID).
+		WillReturnRows(sqlmock.NewRows([]string{"status"}).AddRow("Cleaning"))
+	mock.ExpectExec(regexp.QuoteMeta(QueryUpdateJobStatus)).
+		WithArgs(jobID, "Completed").
+		WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectCommit()
+
+	scheduler.finalizeJob(context.Background(), jobID, "Completed")
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unfulfilled DB expectations on retry (Cleaning → Completed not applied): %v", err)
 	}
 }
