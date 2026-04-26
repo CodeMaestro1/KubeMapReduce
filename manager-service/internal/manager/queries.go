@@ -214,15 +214,19 @@ const QueryCountPendingMapTasks = `SELECT COUNT(*) FROM TASKS WHERE job_id = $1 
 // Job lifecycle and bootstrap queries
 // ---------------------------------------------------------------------------
 
-// QueryInsertJob creates a new job record.
+// QueryInsertJob creates a new job record, skipping if the job was already
+// inserted by the API layer (idempotent when called from ScheduleJob).
 const QueryInsertJob = `
 	INSERT INTO JOBS (job_id, user_id, status, created_at, updated_at)
-	VALUES ($1, $2, 'Pending', NOW(), NOW())`
+	VALUES ($1, $2, 'Pending', NOW(), NOW())
+	ON CONFLICT (job_id) DO NOTHING`
 
-// QueryInsertJobConfig persists immutable job configuration.
+// QueryInsertJobConfig persists immutable job configuration, skipping if the
+// API layer already inserted a config row for this job.
 const QueryInsertJobConfig = `
 	INSERT INTO JOB_CONFIGS (job_id, input_uri, mapper_uri, reducer_uri, combiner_uri, m_tasks, r_tasks, input_checksum)
-	VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`
+	VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+	ON CONFLICT (job_id) DO NOTHING`
 
 // QueryInsertTask creates a new task record.
 const QueryInsertTask = `

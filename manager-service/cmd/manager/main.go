@@ -148,6 +148,25 @@ func main() {
 		}
 		w.WriteHeader(http.StatusAccepted)
 	})
+	mux.HandleFunc("POST /internal/schedule", func(w http.ResponseWriter, r *http.Request) {
+		if !isAuthorizedInternalCancel(r, cfg.InternalAPIKey, cfg.AllowInsecureInternalCancelAuth) {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		var req manager.ScheduleJobRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "invalid payload", http.StatusBadRequest)
+			return
+		}
+		schedCtx, schedCancel := context.WithTimeout(r.Context(), 30*time.Second)
+		defer schedCancel()
+		if err := scheduler.ScheduleJob(schedCtx, req); err != nil {
+			log.Printf("failed to schedule job %s: %v", req.JobID, err)
+			http.Error(w, "failed to schedule job", http.StatusInternalServerError)
+			return
+		}
+		w.WriteHeader(http.StatusAccepted)
+	})
 	mux.HandleFunc("PUT /internal/config", func(w http.ResponseWriter, r *http.Request) {
 		if !isAuthorizedInternalCancel(r, cfg.InternalAPIKey, cfg.AllowInsecureInternalCancelAuth) {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)

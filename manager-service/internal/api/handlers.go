@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"strconv"
 	"strings"
@@ -137,16 +138,32 @@ func (h *Handlers) HandleJobsSubmit(w http.ResponseWriter, r *http.Request) {
 	jobID := uuid.New().String()
 	now := h.now().UTC()
 
+	combinerURI := ""
+	if request.Combiner != nil {
+		combinerURI = request.Combiner.Artifact
+	}
+
 	rec := JobRecord{
-		JobID:     jobID,
-		Status:    "Pending",
-		Filename:  request.Filename,
-		Reducers:  request.Reducers,
-		CreatedAt: now,
+		JobID:       jobID,
+		Status:      "Pending",
+		Filename:    request.Filename,
+		Reducers:    request.Reducers,
+		CreatedAt:   now,
+		MapperURI:   request.Mapper.Artifact,
+		ReducerURI:  request.Reducer.Artifact,
+		CombinerURI: combinerURI,
+		MTasks:      1,
 	}
 	if err := h.store.CreateJob(r.Context(), rec); err != nil {
 		httputil.WriteErrorJSON(w, http.StatusInternalServerError, "failed to persist job")
 		return
+	}
+
+	if h.managerAddr != "" {
+		schedReq := buildScheduleRequest(jobID, request, combinerURI)
+		if err := h.postSchedule(r.Context(), schedReq); err != nil {
+			log.Printf("[api] job %s persisted but schedule failed: %v", jobID, err)
+		}
 	}
 
 	response := models.JobSubmissionResponse{
@@ -451,6 +468,64 @@ func (h *Handlers) HandleWorkerConfig(w http.ResponseWriter, r *http.Request) {
 		"maxJobsPerNode": request.MaxJobsPerNode,
 	}); err != nil {
 		return
+	}
+}
+
+// postSchedule POSTs a ScheduleJobRequest to the Manager's internal schedule endpoint.
+func (h *Handlers) postSchedule(ctx context.Context, req manager.ScheduleJobRequest) error {
+	body, err := json.Marshal(req)
+	if err != nil {
+		return fmt.Errorf("marshal schedule request: %w", err)
+	}
+	url := fmt.Sprintf("http://%s/internal/schedule", h.managerAddr)
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("build schedule request: %w", err)
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	if h.internalAPIKey != "" {
+		httpReq.Header.Set("X-Internal-Token", h.internalAPIKey)
+	}
+	resp, err := h.httpClient.Do(httpReq)
+	if err != nil {
+		return fmt.Errorf("schedule POST: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusAccepted {
+		return fmt.Errorf("schedule POST returned %d", resp.StatusCode)
+	}
+	return nil
+}
+
+// buildScheduleRequest constructs a ScheduleJobRequest for a fresh job submission.
+// It creates one Map task covering the full input and R Reduce tasks.
+func buildScheduleRequest(jobID string, req models.JobSubmissionRequest, combinerURI string) manager.ScheduleJobRequest {
+	mapTaskID := uuid.New().String()
+	tasks := make([]manager.ScheduleTask, 0, 1+req.Reducers)
+	tasks = append(tasks, manager.ScheduleTask{
+		TaskID:   mapTaskID,
+		TaskType: "Map",
+		InputSplits: []manager.ScheduleTaskInput{{
+			InputURI: req.Filename,
+		}},
+	})
+	for i := 0; i < req.Reducers; i++ {
+		tasks = append(tasks, manager.ScheduleTask{
+			TaskID:       uuid.New().String(),
+			TaskType:     "Reduce",
+			ReplicaIndex: i,
+		})
+	}
+	return manager.ScheduleJobRequest{
+		JobID:       jobID,
+		UserID:      uuid.Nil.String(),
+		InputURI:    req.Filename,
+		MapperURI:   req.Mapper.Artifact,
+		ReducerURI:  req.Reducer.Artifact,
+		CombinerURI: combinerURI,
+		MTasks:      1,
+		RTasks:      req.Reducers,
+		Tasks:       tasks,
 	}
 }
 

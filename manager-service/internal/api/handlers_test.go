@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"kubemapreduce/auth-service/pkg/auth"
+	"kubemapreduce/manager-service/internal/manager"
 	"kubemapreduce/manager-service/internal/models"
 	"net/http"
 	"net/http/httptest"
@@ -107,6 +108,62 @@ func TestHandleJobsSubmit_RejectsTrailingData(t *testing.T) {
 
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("expected status %d for trailing data, got %d", http.StatusBadRequest, rec.Code)
+	}
+}
+
+func TestHandleJobsSubmit_SchedulesJobAfterPersist(t *testing.T) {
+	var capturedReq manager.ScheduleJobRequest
+	managerSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/internal/schedule" {
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		if err := json.NewDecoder(r.Body).Decode(&capturedReq); err != nil {
+			t.Errorf("decode schedule request: %v", err)
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	defer managerSrv.Close()
+
+	h := newTestHandlers()
+	h.managerAddr = managerSrv.Listener.Addr().String()
+
+	body := `{"filename":"input.jsonl","mapper":{"language":"python","artifact":"mapper.py","entrypoint":"map","interface":"map(key,value)->[]KeyValue"},"reducer":{"language":"python","artifact":"reducer.py","entrypoint":"reduce","interface":"reduce(key,values)->Value"},"reducers":2}`
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/jobs", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	h.HandleJobsSubmit(rec, req)
+
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("expected 202, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	var submitResp struct {
+		JobID string `json:"jobId"`
+	}
+	if err := json.NewDecoder(strings.NewReader(rec.Body.String())).Decode(&submitResp); err != nil {
+		t.Fatalf("decode submit response: %v", err)
+	}
+
+	if capturedReq.JobID != submitResp.JobID {
+		t.Errorf("schedule request JobID %q != submitted JobID %q", capturedReq.JobID, submitResp.JobID)
+	}
+	if capturedReq.MapperURI != "mapper.py" {
+		t.Errorf("expected MapperURI mapper.py, got %q", capturedReq.MapperURI)
+	}
+	if capturedReq.ReducerURI != "reducer.py" {
+		t.Errorf("expected ReducerURI reducer.py, got %q", capturedReq.ReducerURI)
+	}
+	if capturedReq.MTasks != 1 {
+		t.Errorf("expected MTasks=1, got %d", capturedReq.MTasks)
+	}
+	if capturedReq.RTasks != 2 {
+		t.Errorf("expected RTasks=2, got %d", capturedReq.RTasks)
+	}
+	if len(capturedReq.Tasks) != 3 {
+		t.Errorf("expected 3 tasks (1 Map + 2 Reduce), got %d", len(capturedReq.Tasks))
 	}
 }
 
