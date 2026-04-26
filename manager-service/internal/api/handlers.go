@@ -680,12 +680,17 @@ func (h *Handlers) HandlePresignDownload(w http.ResponseWriter, r *http.Request)
 func decodeJSONBody(w http.ResponseWriter, r *http.Request, out any, invalidMessage string) bool {
 	r.Body = http.MaxBytesReader(w, r.Body, maxJSONBodyBytes)
 	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
 	if err := dec.Decode(out); err != nil {
 		var maxErr *http.MaxBytesError
 		if errors.As(err, &maxErr) {
 			httputil.WriteErrorJSON(w, http.StatusRequestEntityTooLarge, "request payload too large")
 			return false
 		}
+		httputil.WriteErrorJSON(w, http.StatusBadRequest, invalidMessage)
+		return false
+	}
+	if dec.More() {
 		httputil.WriteErrorJSON(w, http.StatusBadRequest, invalidMessage)
 		return false
 	}

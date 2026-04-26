@@ -81,6 +81,35 @@ func TestHandleJobsSubmit_RejectsOversizedPayload(t *testing.T) {
 	}
 }
 
+func TestHandleJobsSubmit_RejectsUnknownFields(t *testing.T) {
+	h := newTestHandlers()
+
+	body := `{"filename":"data.csv","mapper":{"language":"python","artifact":"m.py","entrypoint":"map","interface":"map(key,value)->[]KeyValue"},"reducer":{"language":"python","artifact":"r.py","entrypoint":"reduce","interface":"reduce(key,values)->Value"},"unknown":"x"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/jobs", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+
+	h.HandleJobsSubmit(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected status %d for unknown field, got %d", http.StatusBadRequest, rec.Code)
+	}
+}
+
+func TestHandleJobsSubmit_RejectsTrailingData(t *testing.T) {
+	h := newTestHandlers()
+
+	obj := `{"filename":"data.csv","mapper":{"language":"python","artifact":"m.py","entrypoint":"map","interface":"map(key,value)->[]KeyValue"},"reducer":{"language":"python","artifact":"r.py","entrypoint":"reduce","interface":"reduce(key,values)->Value"}}`
+	body := obj + obj
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/jobs", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+
+	h.HandleJobsSubmit(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected status %d for trailing data, got %d", http.StatusBadRequest, rec.Code)
+	}
+}
+
 func TestHandleJobsSubmit_RejectsEmptyFilename(t *testing.T) {
 	h := newTestHandlers()
 
