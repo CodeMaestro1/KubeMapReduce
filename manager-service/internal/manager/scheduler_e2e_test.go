@@ -235,10 +235,13 @@ func TestE2E_CancellationDuringExecution(t *testing.T) {
 		t.Fatalf("CancelJob failed: %v", err)
 	}
 
-	// Poll with mutex-safe accessor until the async finalizeJob goroutine completes.
-	deadline := time.Now().Add(500 * time.Millisecond)
+	// Poll until the async finalizeJob goroutine has both called orchestrator.CancelJob
+	// AND committed its DB transaction. Checking only CancelCount > 0 is insufficient:
+	// CancelJob is called before the DB operations, so the expectations may not yet be
+	// met when the poll breaks — especially under -race where goroutine scheduling is slower.
+	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
-		if orch.CancelCount() > 0 {
+		if orch.CancelCount() > 0 && mock.ExpectationsWereMet() == nil {
 			break
 		}
 		time.Sleep(10 * time.Millisecond)
