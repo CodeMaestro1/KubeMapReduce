@@ -12,8 +12,8 @@ import (
 	"github.com/minio/minio-go/v7"
 	"google.golang.org/grpc"
 
-	"kubemapreduce/worker-service/internal/config"
 	pb "kubemapreduce/proto"
+	"kubemapreduce/worker-service/internal/config"
 )
 
 // ── mock gRPC client ──────────────────────────────────────────────────────────
@@ -101,12 +101,12 @@ func newTestWorker(t *testing.T, grpcClient pb.WorkerServiceClient, store object
 // mapAssignment returns a minimal MAP TaskAssignment for tests.
 func mapAssignment(dataURI string) *pb.TaskAssignment {
 	return &pb.TaskAssignment{
-		TaskId:       "task-1",
-		AttemptId:    "attempt-1",
-		JobId:        "job-1",
-		Type:         pb.TaskType_MAP,
-		LeaseId:      "lease-1",
-		CodeLocation: "s3://code/mapper.py",
+		TaskId:        "task-1",
+		AttemptId:     "attempt-1",
+		JobId:         "job-1",
+		Type:          pb.TaskType_MAP,
+		LeaseId:       "lease-1",
+		CodeLocation:  "s3://code/mapper.py",
 		DataLocations: []string{dataURI},
 		TotalReducers: 2,
 	}
@@ -228,11 +228,11 @@ func TestWorker_ReduceSuccess(t *testing.T) {
 	store.put("code", "reducer.py", []byte("# mock"))
 
 	reduceAssignment := &pb.TaskAssignment{
-		TaskId:    "task-2",
-		AttemptId: "attempt-1",
-		JobId:     "job-1",
-		Type:      pb.TaskType_REDUCE,
-		LeaseId:   "lease-2",
+		TaskId:       "task-2",
+		AttemptId:    "attempt-1",
+		JobId:        "job-1",
+		Type:         pb.TaskType_REDUCE,
+		LeaseId:      "lease-2",
 		CodeLocation: "s3://code/reducer.py",
 		DataLocations: []string{
 			"s3://mapreduce-staging/job-1/map-0/att-0/partition-0.jsonl",
@@ -360,7 +360,7 @@ func TestWorker_HeartbeatTerminateCausesTaskFailed(t *testing.T) {
 			return &pb.TaskAssignment{
 				TaskId: "task-1", AttemptId: "attempt-1", JobId: "job-1",
 				Type: pb.TaskType_MAP, LeaseId: "lease-1",
-				CodeLocation: "s3://code/mapper.py",
+				CodeLocation:  "s3://code/mapper.py",
 				DataLocations: []string{"s3://inputs/data.jsonl"},
 				TotalReducers: 1,
 			}, nil
@@ -420,9 +420,15 @@ func TestWorker_RegisterFailureReturnsError(t *testing.T) {
 		registerFn: func(_ context.Context, _ *pb.RegisterRequest, _ ...grpc.CallOption) (*pb.TaskAssignment, error) {
 			return nil, fmt.Errorf("no such task")
 		},
-		heartbeatFn:    func(_ context.Context, _ *pb.HeartbeatRequest, _ ...grpc.CallOption) (*pb.HeartbeatResponse, error) { return nil, nil },
-		taskCompleteFn: func(_ context.Context, _ *pb.TaskCompleteRequest, _ ...grpc.CallOption) (*pb.Ack, error) { return nil, nil },
-		taskFailedFn:   func(_ context.Context, _ *pb.TaskFailedRequest, _ ...grpc.CallOption) (*pb.Ack, error) { return nil, nil },
+		heartbeatFn: func(_ context.Context, _ *pb.HeartbeatRequest, _ ...grpc.CallOption) (*pb.HeartbeatResponse, error) {
+			return nil, nil
+		},
+		taskCompleteFn: func(_ context.Context, _ *pb.TaskCompleteRequest, _ ...grpc.CallOption) (*pb.Ack, error) {
+			return nil, nil
+		},
+		taskFailedFn: func(_ context.Context, _ *pb.TaskFailedRequest, _ ...grpc.CallOption) (*pb.Ack, error) {
+			return nil, nil
+		},
 	}
 	w := newTestWorker(t, grpcClient, newMockStorage())
 	if err := w.Run(context.Background()); err == nil {

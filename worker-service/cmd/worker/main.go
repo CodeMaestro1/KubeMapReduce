@@ -13,9 +13,9 @@ import (
 	grpccreds "google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
 
+	pb "kubemapreduce/proto"
 	"kubemapreduce/worker-service/internal/config"
 	"kubemapreduce/worker-service/internal/worker"
-	pb "kubemapreduce/proto"
 )
 
 func main() {

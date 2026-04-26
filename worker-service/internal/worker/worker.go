@@ -11,8 +11,8 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
-	"kubemapreduce/worker-service/internal/config"
 	pb "kubemapreduce/proto"
+	"kubemapreduce/worker-service/internal/config"
 )
 
 // Worker executes a single MapReduce task on behalf of the Manager.
