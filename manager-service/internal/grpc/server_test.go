@@ -101,6 +101,64 @@ func TestWorkerServer_Register_Success(t *testing.T) {
 	}
 }
 
+func TestWorkerServer_Register_RuntimeEnvInferredFromExtension(t *testing.T) {
+	cases := []struct {
+		mapperURI   string
+		wantRuntime string
+	}{
+		{"s3://code/mapper.py", "python"},
+		{"s3://code/mapper.jar", "java"},
+		{"s3://code/mapper.c", "c"},
+		{"s3://code/mapper.cpp", "cpp"},
+		{"s3://code/mapper.cc", "cpp"},
+		{"s3://code/mapper.cxx", "cpp"},
+		{"s3://code/mapper", ""},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.mapperURI, func(t *testing.T) {
+			db, mock, server := setupMockServer(t)
+			defer db.Close()
+
+			taskID := uuid.New().String()
+			jobID := uuid.New().String()
+			attemptID := uuid.New().String()
+
+			mock.ExpectQuery(regexp.QuoteMeta(manager.QueryGetTaskByID)).
+				WithArgs(taskID).
+				WillReturnRows(sqlmock.NewRows([]string{"task_id", "job_id", "task_type", "status", "current_attempt_id", "replica_index"}).
+					AddRow(taskID, jobID, "Map", "In-Progress", attemptID, 0))
+
+			mock.ExpectQuery(regexp.QuoteMeta(manager.QueryGetJobConfigByTask)).
+				WithArgs(taskID).
+				WillReturnRows(sqlmock.NewRows([]string{"mapper_uri", "reducer_uri", "combiner_uri", "r_tasks", "input_checksum"}).
+					AddRow(tc.mapperURI, "s3://code/reducer.py", "", 1, ""))
+
+			mock.ExpectQuery(regexp.QuoteMeta(manager.QueryGetTaskInputs)).
+				WithArgs(taskID).
+				WillReturnRows(sqlmock.NewRows([]string{"input_uri", "byte_start", "byte_end", "split_checksum"}).
+					AddRow("s3://inputs/data.jsonl", 0, 0, ""))
+
+			mock.ExpectQuery(regexp.QuoteMeta(manager.QueryGetAttemptDetails)).
+				WithArgs(attemptID).
+				WillReturnRows(sqlmock.NewRows([]string{"worker_id", "lease_id", "start_time", "last_renewed_at"}).
+					AddRow("worker-1", "lease-abc", time.Now(), time.Now()))
+
+			resp, err := server.Register(context.Background(), &pb.RegisterRequest{
+				TaskId:    taskID,
+				AttemptId: attemptID,
+			})
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if resp.RuntimeEnv != tc.wantRuntime {
+				t.Errorf("mapper=%s: want RuntimeEnv=%q, got %q", tc.mapperURI, tc.wantRuntime, resp.RuntimeEnv)
+			}
+		})
+	}
+}
+
 func TestWorkerServer_Register_PermissionDenied(t *testing.T) {
 	db, mock, server := setupMockServer(t)
 	defer db.Close()
