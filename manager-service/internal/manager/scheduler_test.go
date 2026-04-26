@@ -1362,13 +1362,15 @@ func TestScheduler_UpsertSystemConfig(t *testing.T) {
 	defer db.Close()
 
 	mock.ExpectExec(regexp.QuoteMeta(QueryUpsertSystemConfig)).
-		WithArgs(20, "500m", "1Gi").
+		WithArgs(20, "500m", "1Gi", 5, 2).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
 	if err := scheduler.UpsertSystemConfig(context.Background(), SystemConfigUpdate{
 		MaxConcurrentPods: 20,
 		CPULimit:          "500m",
 		MemoryLimit:       "1Gi",
+		WorkerReplicas:    5,
+		MaxJobsPerNode:    2,
 	}); err != nil {
 		t.Fatalf("expected upsert success, got %v", err)
 	}

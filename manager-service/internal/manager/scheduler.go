@@ -522,9 +522,38 @@ func (s *Scheduler) ScheduleJob(ctx context.Context, req ScheduleJobRequest) err
 	return nil
 }
 
+// GetSystemConfig retrieves the current cluster configuration.
+func (s *Scheduler) GetSystemConfig(ctx context.Context) (SystemConfigUpdate, error) {
+	var cfg SystemConfigUpdate
+	err := s.db.QueryRowContext(ctx, QueryGetSystemConfig).Scan(
+		&cfg.MaxConcurrentPods,
+		&cfg.CPULimit,
+		&cfg.MemoryLimit,
+		&cfg.WorkerReplicas,
+		&cfg.MaxJobsPerNode,
+	)
+	if err == sql.ErrNoRows {
+		// Return defaults if not configured
+		return SystemConfigUpdate{
+			MaxConcurrentPods: 10,
+			CPULimit:          "500m",
+			MemoryLimit:       "1Gi",
+			WorkerReplicas:    1,
+			MaxJobsPerNode:    1,
+		}, nil
+	}
+	return cfg, err
+}
+
 // UpsertSystemConfig updates cluster-wide operational parameters.
 func (s *Scheduler) UpsertSystemConfig(ctx context.Context, req SystemConfigUpdate) error {
-	_, err := s.db.ExecContext(ctx, QueryUpsertSystemConfig, req.MaxConcurrentPods, req.CPULimit, req.MemoryLimit)
+	_, err := s.db.ExecContext(ctx, QueryUpsertSystemConfig,
+		req.MaxConcurrentPods,
+		req.CPULimit,
+		req.MemoryLimit,
+		req.WorkerReplicas,
+		req.MaxJobsPerNode,
+	)
 	return err
 }
 

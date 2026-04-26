@@ -14,6 +14,9 @@ package manager
 // Used by GetNextTask for Resource Quota Enforcement (Section 4.3 of the Design Document).
 const QueryGetMaxConcurrentPods = `SELECT max_concurrent_pods FROM SYSTEM_CONFIG WHERE config_id = 1`
 
+// QueryGetSystemConfig retrieves the entire cluster configuration.
+const QueryGetSystemConfig = `SELECT max_concurrent_pods, cpu_limit, memory_limit, worker_replicas, max_jobs_per_node FROM SYSTEM_CONFIG WHERE config_id = 1`
+
 // QueryAcquireSchedulingLock acquires a transaction-scoped advisory lock
 // to serialize quota decisions across concurrent manager replicas.
 // Uses an arbitrary but fixed namespace (42) for scheduling decisions.
@@ -236,10 +239,12 @@ const QueryUpdateJobStatus = `UPDATE JOBS SET status = $2, updated_at = NOW() WH
 
 // QueryUpsertSystemConfig updates global cluster configuration.
 const QueryUpsertSystemConfig = `
-	INSERT INTO SYSTEM_CONFIG (config_id, max_concurrent_pods, cpu_limit, memory_limit, updated_at)
-	VALUES (1, $1, $2, $3, NOW())
+	INSERT INTO SYSTEM_CONFIG (config_id, max_concurrent_pods, cpu_limit, memory_limit, worker_replicas, max_jobs_per_node, updated_at)
+	VALUES (1, $1, $2, $3, $4, $5, NOW())
 	ON CONFLICT (config_id) DO UPDATE
 	SET max_concurrent_pods = EXCLUDED.max_concurrent_pods,
 	    cpu_limit = EXCLUDED.cpu_limit,
 	    memory_limit = EXCLUDED.memory_limit,
+	    worker_replicas = EXCLUDED.worker_replicas,
+	    max_jobs_per_node = EXCLUDED.max_jobs_per_node,
 	    updated_at = NOW()`

@@ -76,3 +76,14 @@ type NodeConfigRequest struct {
 type DeleteUserRequest struct {
 	Username string `json:"username"`
 }
+
+// PresignRequest is used to request a temporary URL for object storage access.
+type PresignRequest struct {
+	Bucket string `json:"bucket"`
+	Key    string `json:"key"`
+}
+
+// PresignResponse contains the generated presigned URL.
+type PresignResponse struct {
+	URL string `json:"url"`
+}
