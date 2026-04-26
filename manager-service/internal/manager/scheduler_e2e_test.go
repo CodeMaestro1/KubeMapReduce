@@ -43,6 +43,10 @@ func (o *TrackingOrchestrator) CancelJob(ctx context.Context, jobID string) erro
 	return nil
 }
 
+func (o *TrackingOrchestrator) DeleteWorkerJob(ctx context.Context, taskID string) error {
+	return nil
+}
+
 // SpawnCount returns the number of SpawnWorker calls recorded so far.
 func (o *TrackingOrchestrator) SpawnCount() int {
 	o.mu.Lock()

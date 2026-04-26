@@ -32,6 +32,12 @@ type WorkerOrchestrator interface {
 	// This is used during job cancellation or failure to immediately reclaim cluster resources.
 	// Implementation should be idempotent and handle cases where some workers might already be dead.
 	CancelJob(ctx context.Context, jobID string) error
+
+	// DeleteWorkerJob removes the K8s Job (and its pod) for a specific task, identified by
+	// the task_id label. Called before SpawnWorker on retry paths so the old pod is
+	// evicted before the new attempt starts, preventing two pods from running concurrently.
+	// Implementation must be idempotent: no error when no matching job exists.
+	DeleteWorkerJob(ctx context.Context, taskID string) error
 }
 
 // KubeOrchestrator implements WorkerOrchestrator using Kubernetes Jobs.
@@ -140,6 +146,34 @@ func (k *KubeOrchestrator) CancelJob(ctx context.Context, jobID string) error {
 	)
 }
 
+// DeleteWorkerJob removes all K8s Jobs tagged with task_id=<taskID>, freeing the
+// pod slot before a new attempt is spawned. It lists matching jobs and deletes
+// each individually (rather than DeleteCollection) so unrelated jobs are never
+// affected and per-job errors can be reported precisely.
+// PropagationPolicy Background lets pods be reaped asynchronously.
+// NotFound on any individual job is silently ignored (idempotent).
+func (k *KubeOrchestrator) DeleteWorkerJob(ctx context.Context, taskID string) error {
+	sanitizedTaskID := sanitizeForDNSLabel(taskID)
+	jobs, err := k.clientset.BatchV1().Jobs(k.namespace).List(ctx, metav1.ListOptions{
+		LabelSelector: fmt.Sprintf("task_id=%s", sanitizedTaskID),
+	})
+	if err != nil {
+		if apierrors.IsNotFound(err) {
+			return nil
+		}
+		return fmt.Errorf("list jobs for task %s: %w", taskID, err)
+	}
+	policy := metav1.DeletePropagationBackground
+	for i := range jobs.Items {
+		delErr := k.clientset.BatchV1().Jobs(k.namespace).Delete(ctx, jobs.Items[i].Name,
+			metav1.DeleteOptions{PropagationPolicy: &policy})
+		if delErr != nil && !apierrors.IsNotFound(delErr) {
+			return fmt.Errorf("delete job %s: %w", jobs.Items[i].Name, delErr)
+		}
+	}
+	return nil
+}
+
 // MockOrchestrator is a no-op implementation for unit testing.
 type MockOrchestrator struct{}
 
@@ -148,6 +182,10 @@ func (m *MockOrchestrator) SpawnWorker(ctx context.Context, taskID string, jobID
 }
 
 func (m *MockOrchestrator) CancelJob(ctx context.Context, jobID string) error {
+	return nil
+}
+
+func (m *MockOrchestrator) DeleteWorkerJob(ctx context.Context, taskID string) error {
 	return nil
 }
 

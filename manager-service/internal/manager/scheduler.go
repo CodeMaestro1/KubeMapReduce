@@ -846,6 +846,9 @@ func (s *Scheduler) FailTask(ctx context.Context, taskID string, attemptID strin
 	} else if newState == "Idle" {
 		spawnCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
 		defer cancel()
+		if err := s.orchestrator.DeleteWorkerJob(spawnCtx, taskID); err != nil {
+			log.Printf("Failed to delete stale K8s Job for task %s before retry: %v", taskID, err)
+		}
 		if err := s.orchestrator.SpawnWorker(spawnCtx, taskID, jobID, retryAttemptID, s.managerAddr); err != nil {
 			log.Printf("Failed to respawn worker for failed task %s (attempt %s): %v", taskID, retryAttemptID, err)
 		}
@@ -950,6 +953,9 @@ func (s *Scheduler) FailStaleTasks(ctx context.Context) (int, error) {
 
 	for _, rec := range respawnTasks {
 		spawnCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		if err := s.orchestrator.DeleteWorkerJob(spawnCtx, rec.taskID); err != nil {
+			log.Printf("Failed to delete stale K8s Job for task %s before retry: %v", rec.taskID, err)
+		}
 		if err := s.orchestrator.SpawnWorker(spawnCtx, rec.taskID, rec.jobID, rec.attemptID, s.managerAddr); err != nil {
 			log.Printf("Failed to respawn worker for stale task %s (attempt %s): %v", rec.taskID, rec.attemptID, err)
 		}

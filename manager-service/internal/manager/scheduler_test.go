@@ -79,6 +79,10 @@ func (r *recordingOrchestrator) CancelJob(ctx context.Context, jobID string) err
 	return nil
 }
 
+func (r *recordingOrchestrator) DeleteWorkerJob(ctx context.Context, taskID string) error {
+	return nil
+}
+
 func (d *deadlineRecordingOrchestrator) SpawnWorker(ctx context.Context, taskID string, jobID string, attemptID string, managerAddr string) error {
 	return nil
 }
@@ -97,6 +101,10 @@ func (d *deadlineRecordingOrchestrator) CancelJob(ctx context.Context, jobID str
 	if isFirstCall && delay > 0 {
 		time.Sleep(delay)
 	}
+	return nil
+}
+
+func (d *deadlineRecordingOrchestrator) DeleteWorkerJob(ctx context.Context, taskID string) error {
 	return nil
 }
 
@@ -1525,6 +1533,10 @@ type cleanupProbeOrchestrator struct {
 }
 
 func (c *cleanupProbeOrchestrator) SpawnWorker(context.Context, string, string, string, string) error {
+	return nil
+}
+
+func (c *cleanupProbeOrchestrator) DeleteWorkerJob(context.Context, string) error {
 	return nil
 }
 
