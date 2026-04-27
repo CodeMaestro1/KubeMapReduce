@@ -314,22 +314,46 @@ func (s *Scheduler) tryAssignTask(ctx context.Context, tx *sql.Tx, requestedJobI
 	return &t, nil
 }
 
-func (s *Scheduler) enforceQuotaTx(ctx context.Context, tx *sql.Tx) error {
+// QuotaSnapshot is the consistent view of cluster-wide pod accounting captured
+// inside the scheduling transaction's advisory-lock critical section.
+//
+// MaxPods is the operator-configured ceiling from SYSTEM_CONFIG.max_concurrent_pods
+// and ActivePods is the count of TASK_ATTEMPTS whose status is 'Running' at the
+// moment the lock was held. Available is provided as a convenience and equals
+// max(0, MaxPods-ActivePods).
+type QuotaSnapshot struct {
+	MaxPods    int
+	ActivePods int
+	Available  int
+}
+
+// readQuotaSnapshotTx reads the cluster-wide pod accounting under the
+// transaction-scoped advisory lock. It is the single source of truth for both
+// quota enforcement and observability.
+func (s *Scheduler) readQuotaSnapshotTx(ctx context.Context, tx *sql.Tx) (QuotaSnapshot, error) {
 	if _, err := tx.ExecContext(ctx, QueryAcquireSchedulingLock); err != nil {
-		return err
+		return QuotaSnapshot{}, err
 	}
 
-	var maxPods int
-	if err := tx.QueryRowContext(ctx, QueryGetMaxConcurrentPods).Scan(&maxPods); err != nil {
+	var snap QuotaSnapshot
+	if err := tx.QueryRowContext(ctx, QueryGetMaxConcurrentPods).Scan(&snap.MaxPods); err != nil {
+		return QuotaSnapshot{}, err
+	}
+	if err := tx.QueryRowContext(ctx, QueryCountRunningAttempts).Scan(&snap.ActivePods); err != nil {
+		return QuotaSnapshot{}, err
+	}
+	if snap.MaxPods > snap.ActivePods {
+		snap.Available = snap.MaxPods - snap.ActivePods
+	}
+	return snap, nil
+}
+
+func (s *Scheduler) enforceQuotaTx(ctx context.Context, tx *sql.Tx) error {
+	snap, err := s.readQuotaSnapshotTx(ctx, tx)
+	if err != nil {
 		return err
 	}
-
-	var activePods int
-	if err := tx.QueryRowContext(ctx, QueryCountRunningAttempts).Scan(&activePods); err != nil {
-		return err
-	}
-
-	if activePods >= maxPods {
+	if snap.Available <= 0 {
 		return ErrQuotaExceeded
 	}
 	return nil
