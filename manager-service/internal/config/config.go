@@ -60,7 +60,16 @@ type Config struct {
 
 	// Manager internal endpoint
 	ManagerAddr string
+
+	// ManifestThresholdBytes is the maximum serialized TaskAssignment size (in
+	// bytes) before the Manager falls back to manifest mode and uploads the
+	// data_locations list to MinIO. Configurable via MANAGER_MANIFEST_THRESHOLD_BYTES.
+	ManifestThresholdBytes int
 }
+
+// DefaultManifestThresholdBytes is the default size threshold (2 MiB) at which
+// oversized TaskAssignment payloads are written as manifests in MinIO.
+const DefaultManifestThresholdBytes = 2 * 1024 * 1024
 
 // Load populates the [Config] struct from environment variables.
 //
@@ -89,6 +98,14 @@ func Load() (*Config, error) {
 		return nil, err
 	}
 
+	manifestThreshold, err := getEnvInt("MANAGER_MANIFEST_THRESHOLD_BYTES", DefaultManifestThresholdBytes)
+	if err != nil {
+		return nil, err
+	}
+	if manifestThreshold <= 0 {
+		return nil, fmt.Errorf("MANAGER_MANIFEST_THRESHOLD_BYTES must be positive, got %d", manifestThreshold)
+	}
+
 	cfg := &Config{
 		KeycloakBaseURL:                 keycloakBaseURL,
 		Realm:                           realm,
@@ -115,6 +132,7 @@ func Load() (*Config, error) {
 		EnableGRPCReflection:            getEnvBool("ENABLE_GRPC_REFLECTION", false),
 		AllowInsecureWorkerRPC:          getEnvBool("ALLOW_INSECURE_WORKER_RPC", false),
 		ManagerAddr:                     getEnv("MANAGER_ADDR", "manager-0.manager-hs.default.svc.cluster.local:8081"),
+		ManifestThresholdBytes:          manifestThreshold,
 	}
 	cfg.LeaseTTL = cfg.HeartbeatInterval * cfg.MaxMissedHeartbeats
 	return cfg, nil
