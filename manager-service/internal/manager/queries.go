@@ -33,12 +33,19 @@ const QueryCountFailedTasks = `SELECT COUNT(*) FROM TASKS WHERE job_id = $1 AND 
 // QuerySelectIdleTask atomically locks and retrieves the next schedulable task.
 // Uses PostgreSQL's FOR UPDATE SKIP LOCKED to prevent double-scheduling across
 // concurrent Manager replicas (Section 5.2: "Concurrency Control via Row-Level Locking").
+//
+// The ORDER BY (replica_index, task_id) clause makes the selection deterministic
+// FIFO: across any number of concurrent callers, idle tasks are consumed in a
+// stable order rather than the engine's physical heap order. This is the
+// fairness policy documented in package doc.go and is what bounds per-task
+// starvation by the number of pending sibling tasks.
 const QuerySelectIdleTask = `
 	SELECT task_id, job_id, task_type, replica_index FROM TASKS
 	WHERE job_id = $1
 	  AND status = 'Idle'
 	  AND task_type = $3
 	  AND ($3 = 'Reduce' OR replica_index = $2)
+	ORDER BY replica_index ASC, task_id ASC
 	FOR UPDATE SKIP LOCKED LIMIT 1`
 
 // QueryCountPendingTasksByType counts non-completed tasks of a given type.
