@@ -30,7 +30,7 @@ func setupMockServer(t *testing.T) (*sql.DB, sqlmock.Sqlmock, *WorkerServer) {
 		t.Fatalf("unexpected error creating scheduler: %v", err)
 	}
 
-	return db, mock, NewWorkerServer(scheduler, nil)
+	return db, mock, NewWorkerServer(scheduler, nil, 0)
 }
 
 type fakeManifestUploader struct {
@@ -326,10 +326,6 @@ func TestWorkerServer_Register_ManifestFallback(t *testing.T) {
 	db, mock, baseServer := setupMockServer(t)
 	defer db.Close()
 
-	origThreshold := maxTaskAssignmentSizeBytes
-	maxTaskAssignmentSizeBytes = 500
-	defer func() { maxTaskAssignmentSizeBytes = origThreshold }()
-
 	taskID := uuid.New().String()
 	jobID := uuid.New().String()
 	attemptID := uuid.New().String()
@@ -358,7 +354,7 @@ func TestWorkerServer_Register_ManifestFallback(t *testing.T) {
 			AddRow("worker-1", "lease123", time.Now(), time.Now()))
 
 	uploader := &fakeManifestUploader{uri: "s3://mapreduce-manifests/test-manifest.json"}
-	server := newWorkerServerWithManifestUploader(baseServer.scheduler, nil, uploader)
+	server := newWorkerServerWithManifestUploader(baseServer.scheduler, nil, uploader, 500)
 	resp, err := server.Register(context.Background(), &pb.RegisterRequest{
 		TaskId:    taskID,
 		AttemptId: attemptID,
@@ -383,10 +379,6 @@ func TestWorkerServer_Register_ManifestFallback(t *testing.T) {
 func TestWorkerServer_Register_ManifestUploadFailureReturnsError(t *testing.T) {
 	db, mock, baseServer := setupMockServer(t)
 	defer db.Close()
-
-	origThreshold := maxTaskAssignmentSizeBytes
-	maxTaskAssignmentSizeBytes = 500
-	defer func() { maxTaskAssignmentSizeBytes = origThreshold }()
 
 	taskID := uuid.New().String()
 	jobID := uuid.New().String()
@@ -415,7 +407,7 @@ func TestWorkerServer_Register_ManifestUploadFailureReturnsError(t *testing.T) {
 			AddRow("worker-1", "lease123", time.Now(), time.Now()))
 
 	uploader := &fakeManifestUploader{err: errors.New("upload failed")}
-	server := newWorkerServerWithManifestUploader(baseServer.scheduler, nil, uploader)
+	server := newWorkerServerWithManifestUploader(baseServer.scheduler, nil, uploader, 500)
 	_, err := server.Register(context.Background(), &pb.RegisterRequest{
 		TaskId:    taskID,
 		AttemptId: attemptID,

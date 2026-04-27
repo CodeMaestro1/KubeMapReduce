@@ -20,11 +20,12 @@ import (
 )
 
 // Thresholds for task assignment message size management.
-// When a TaskAssignment exceeds maxTaskAssignmentSizeBytes, the server
+// When a TaskAssignment exceeds the per-server threshold, the server
 // uploads the data_locations array to MinIO and returns a manifest URI instead.
 // If the manifest payload itself exceeds maxManifestPayloadSizeBytes, the request fails.
 //
-// These are package-level vars (not consts) to allow test injection.
+// maxTaskAssignmentSizeBytes is retained as the default threshold used when
+// callers pass <= 0 to NewWorkerServer (e.g. older tests).
 var (
 	maxTaskAssignmentSizeBytes  = 2 * 1024 * 1024 // 2 MB
 	maxManifestPayloadSizeBytes = 2 * 1024 * 1024 // 2 MB
@@ -36,9 +37,10 @@ var (
 // logic to the [manager.Scheduler].
 type WorkerServer struct {
 	pb.UnimplementedWorkerServiceServer
-	scheduler   *manager.Scheduler
-	minioClient *minio.Client
-	uploader    manifestUploader
+	scheduler              *manager.Scheduler
+	minioClient            *minio.Client
+	uploader               manifestUploader
+	manifestThresholdBytes int
 }
 
 // NewWorkerServer creates a new instance of the gRPC server.
@@ -47,12 +49,15 @@ type WorkerServer struct {
 // oversized [pb.TaskAssignment] messages. This is necessary because gRPC has a
 // default message size limit (typically 4MB), and a task with thousands of
 // input splits could exceed this.
-func NewWorkerServer(scheduler *manager.Scheduler, minioClient *minio.Client) *WorkerServer {
+//
+// manifestThresholdBytes overrides the default 2 MiB ceiling at which
+// assignments are uploaded as manifests. Pass <= 0 to keep the default.
+func NewWorkerServer(scheduler *manager.Scheduler, minioClient *minio.Client, manifestThresholdBytes int) *WorkerServer {
 	var uploader manifestUploader
 	if minioClient != nil {
 		uploader = &minioManifestUploader{client: minioClient}
 	}
-	return newWorkerServerWithManifestUploader(scheduler, minioClient, uploader)
+	return newWorkerServerWithManifestUploader(scheduler, minioClient, uploader, manifestThresholdBytes)
 }
 
 // Register is called by a Worker immediately after startup to claim its assignment.
@@ -115,7 +120,7 @@ func (s *WorkerServer) Register(ctx context.Context, req *pb.RegisterRequest) (*
 		}
 	}
 
-	if proto.Size(assignment) > maxTaskAssignmentSizeBytes {
+	if proto.Size(assignment) > s.manifestThresholdBytes {
 		if s.uploader == nil {
 			return nil, status.Errorf(codes.ResourceExhausted, "task assignment for task %s exceeds manifest threshold", task.ID)
 		}
@@ -142,7 +147,7 @@ func (s *WorkerServer) Register(ctx context.Context, req *pb.RegisterRequest) (*
 		assignment.IsManifest = false
 	}
 
-	if proto.Size(assignment) > maxTaskAssignmentSizeBytes {
+	if proto.Size(assignment) > s.manifestThresholdBytes {
 		// Defensive guard: after manifest replacement this should normally be below threshold,
 		// but keep the check for unexpectedly large metadata fields.
 		log.Printf("TaskAssignment for task %s still exceeds manifest threshold after manifest fallback", task.ID)
@@ -250,11 +255,15 @@ func (m *minioManifestUploader) UploadManifest(ctx context.Context, bucketName, 
 
 // newWorkerServerWithManifestUploader creates a WorkerServer with an explicit manifest uploader.
 // This is primarily used for testing with mock uploaders.
-func newWorkerServerWithManifestUploader(scheduler *manager.Scheduler, minioClient *minio.Client, uploader manifestUploader) *WorkerServer {
+func newWorkerServerWithManifestUploader(scheduler *manager.Scheduler, minioClient *minio.Client, uploader manifestUploader, manifestThresholdBytes int) *WorkerServer {
+	if manifestThresholdBytes <= 0 {
+		manifestThresholdBytes = maxTaskAssignmentSizeBytes
+	}
 	return &WorkerServer{
-		scheduler:   scheduler,
-		minioClient: minioClient,
-		uploader:    uploader,
+		scheduler:              scheduler,
+		minioClient:            minioClient,
+		uploader:               uploader,
+		manifestThresholdBytes: manifestThresholdBytes,
 	}
 }
 
