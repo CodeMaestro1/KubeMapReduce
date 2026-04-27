@@ -3,6 +3,8 @@ package grpc
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -141,8 +143,12 @@ func (s *WorkerServer) Register(ctx context.Context, req *pb.RegisterRequest) (*
 			log.Printf("Failed to upload manifest for task %s: %v", task.ID, err)
 			return nil, status.Errorf(codes.Unavailable, "failed to upload manifest: %v", err)
 		}
+		// Embed the SHA-256 digest of the uploaded payload as a URI fragment so the
+		// worker can validate manifest integrity without an additional gRPC field.
+		// Format: <uri>#sha256=<hex>
+		digest := sha256.Sum256(manifestBytes)
 		assignment.IsManifest = true
-		assignment.DataLocations = []string{manifestURL}
+		assignment.DataLocations = []string{fmt.Sprintf("%s#sha256=%s", manifestURL, hex.EncodeToString(digest[:]))}
 	} else {
 		assignment.IsManifest = false
 	}

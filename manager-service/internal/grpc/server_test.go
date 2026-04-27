@@ -2,7 +2,9 @@ package grpc
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"regexp"
@@ -18,6 +20,17 @@ import (
 	"kubemapreduce/manager-service/internal/manager"
 	pb "kubemapreduce/proto"
 )
+
+// splitManifestURIForTest parses a manifest URI of the form
+// "<uri>#sha256=<hex>" and returns the URI, hex checksum, and whether the
+// fragment was present.
+func splitManifestURIForTest(s string) (string, string, bool) {
+	idx := strings.Index(s, "#sha256=")
+	if idx < 0 {
+		return s, "", false
+	}
+	return s[:idx], s[idx+len("#sha256="):], true
+}
 
 func setupMockServer(t *testing.T) (*sql.DB, sqlmock.Sqlmock, *WorkerServer) {
 	db, mock, err := sqlmock.New()
@@ -365,8 +378,19 @@ func TestWorkerServer_Register_ManifestFallback(t *testing.T) {
 	if !resp.IsManifest {
 		t.Fatalf("expected manifest mode")
 	}
-	if len(resp.DataLocations) != 1 || resp.DataLocations[0] != uploader.uri {
-		t.Fatalf("expected manifest URI %q, got %+v", uploader.uri, resp.DataLocations)
+	if len(resp.DataLocations) != 1 {
+		t.Fatalf("expected exactly one manifest entry, got %+v", resp.DataLocations)
+	}
+	gotURI, gotChecksum, ok := splitManifestURIForTest(resp.DataLocations[0])
+	if !ok {
+		t.Fatalf("expected manifest URI with sha256 fragment, got %q", resp.DataLocations[0])
+	}
+	if gotURI != uploader.uri {
+		t.Fatalf("expected manifest URI %q, got %q", uploader.uri, gotURI)
+	}
+	wantDigest := sha256.Sum256(uploader.payload)
+	if gotChecksum != hex.EncodeToString(wantDigest[:]) {
+		t.Fatalf("expected sha256 fragment %x, got %s", wantDigest, gotChecksum)
 	}
 	if len(uploader.payload) == 0 {
 		t.Fatalf("expected manifest payload to be uploaded")
