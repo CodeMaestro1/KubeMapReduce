@@ -2,8 +2,10 @@ package manager
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"regexp"
+	"strings"
 	"sync"
 	"testing"
 
@@ -197,6 +199,130 @@ func TestScheduler_GetNextTask_QuotaExceededLeavesTaskIdle(t *testing.T) {
 	// Crucially: no UpdateTaskInProgress / InsertAttempt / Commit were expected
 	// above. ExpectationsWereMet would fail if the rejection path executed any
 	// state-mutating query.
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unfulfilled expectations: %v", err)
+	}
+}
+
+// TestScheduler_QuerySelectIdleTask_HasFifoOrdering is a documentation test:
+// it pins the SQL ordering clause that defines the fairness policy described
+// in package doc.go. If a future change drops the ORDER BY clause, this test
+// fails, prompting the author to update doc.go in lockstep.
+func TestScheduler_QuerySelectIdleTask_HasFifoOrdering(t *testing.T) {
+	q := strings.ToUpper(QuerySelectIdleTask)
+	if !strings.Contains(q, "ORDER BY REPLICA_INDEX ASC, TASK_ID ASC") {
+		t.Fatalf("QuerySelectIdleTask must declare deterministic FIFO ordering; got:\n%s", QuerySelectIdleTask)
+	}
+	if !strings.Contains(q, "FOR UPDATE SKIP LOCKED") {
+		t.Fatalf("QuerySelectIdleTask must use FOR UPDATE SKIP LOCKED; got:\n%s", QuerySelectIdleTask)
+	}
+}
+
+// TestScheduler_GetNextTask_ReducePhaseStarvationGuard simulates the case where
+// every Map task has been picked up but is still In-Progress. Reduce
+// scheduling must NOT be allowed in this state, otherwise reducers would race
+// mappers and read partial outputs. The scheduler must surface ErrNoIdleTasks
+// so the caller waits for the Map phase to finish.
+func TestScheduler_GetNextTask_ReducePhaseStarvationGuard(t *testing.T) {
+	db, mock, scheduler := setupMockDB(t)
+	defer db.Close()
+	jobID := uuid.NewString()
+
+	mock.ExpectBegin()
+	mock.ExpectQuery(regexp.QuoteMeta(QueryCountFailedTasks)).
+		WithArgs(jobID).
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
+	mock.ExpectQuery(regexp.QuoteMeta(QuerySelectIdleTask)).
+		WithArgs(jobID, 0, "Map").
+		WillReturnError(sql.ErrNoRows)
+	mock.ExpectQuery(regexp.QuoteMeta(QueryCountPendingTasksByType)).
+		WithArgs(jobID, "Map").
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(3))
+	mock.ExpectRollback()
+
+	_, err := scheduler.GetNextTask(context.Background(), jobID, "worker-1")
+	if !errors.Is(err, ErrNoIdleTasks) {
+		t.Fatalf("expected ErrNoIdleTasks while Map phase incomplete, got %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unfulfilled expectations: %v", err)
+	}
+}
+
+// TestScheduler_GetNextTask_FifoStarvationFreedom interleaves three IDLE-task
+// selections that each return a different candidate row; after all three are
+// drained, the fourth call must observe sql.ErrNoRows and surface
+// ErrJobCompleted (assuming no pending tasks). The point of this test is to
+// document that the scheduler's FIFO loop is starvation-free: every pending
+// idle task is eventually selected exactly once.
+func TestScheduler_GetNextTask_FifoStarvationFreedom(t *testing.T) {
+	db, mock, scheduler := setupMockDB(t)
+	defer db.Close()
+	jobUUID := uuid.New()
+	jobID := jobUUID.String()
+
+	taskIDs := []uuid.UUID{uuid.New(), uuid.New(), uuid.New()}
+
+	for _, tid := range taskIDs {
+		mock.ExpectBegin()
+		mock.ExpectQuery(regexp.QuoteMeta(QueryCountFailedTasks)).
+			WithArgs(jobID).
+			WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
+		mock.ExpectQuery(regexp.QuoteMeta(QuerySelectIdleTask)).
+			WithArgs(jobID, 0, "Map").
+			WillReturnRows(sqlmock.NewRows([]string{"task_id", "job_id", "task_type", "replica_index"}).
+				AddRow(tid, jobUUID, "Map", 0))
+		expectTaskMetadataQueries(mock, tid, "s3://map", "s3://reduce", 1)
+		mock.ExpectExec(regexp.QuoteMeta(QueryAcquireSchedulingLock)).
+			WillReturnResult(sqlmock.NewResult(1, 1))
+		mock.ExpectQuery(regexp.QuoteMeta(QueryGetMaxConcurrentPods)).
+			WillReturnRows(sqlmock.NewRows([]string{"max_concurrent_pods"}).AddRow(10))
+		mock.ExpectQuery(regexp.QuoteMeta(QueryCountRunningAttempts)).
+			WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
+		mock.ExpectExec(regexp.QuoteMeta(QueryUpdateTaskInProgress)).
+			WillReturnResult(sqlmock.NewResult(1, 1))
+		mock.ExpectExec(regexp.QuoteMeta(QueryInsertAttempt)).
+			WillReturnResult(sqlmock.NewResult(1, 1))
+		mock.ExpectExec(regexp.QuoteMeta(QueryUpdateJobStatus)).
+			WillReturnResult(sqlmock.NewResult(1, 1))
+		mock.ExpectCommit()
+	}
+
+	mock.ExpectBegin()
+	mock.ExpectQuery(regexp.QuoteMeta(QueryCountFailedTasks)).
+		WithArgs(jobID).
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
+	mock.ExpectQuery(regexp.QuoteMeta(QuerySelectIdleTask)).
+		WithArgs(jobID, 0, "Map").
+		WillReturnError(sql.ErrNoRows)
+	mock.ExpectQuery(regexp.QuoteMeta(QueryCountPendingTasksByType)).
+		WithArgs(jobID, "Map").
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
+	mock.ExpectQuery(regexp.QuoteMeta(QuerySelectIdleTask)).
+		WithArgs(jobID, 0, "Reduce").
+		WillReturnError(sql.ErrNoRows)
+	mock.ExpectQuery(regexp.QuoteMeta(QueryCountPendingTasksByType)).
+		WithArgs(jobID, "Reduce").
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
+	mock.ExpectRollback()
+
+	seen := make(map[string]int)
+	for range taskIDs {
+		task, err := scheduler.GetNextTask(context.Background(), jobID, "worker-1")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		seen[task.ID]++
+	}
+	for _, tid := range taskIDs {
+		if seen[tid.String()] != 1 {
+			t.Fatalf("task %s was scheduled %d times (expected exactly 1)", tid, seen[tid.String()])
+		}
+	}
+
+	if _, err := scheduler.GetNextTask(context.Background(), jobID, "worker-1"); !errors.Is(err, ErrJobCompleted) {
+		t.Fatalf("expected ErrJobCompleted after all tasks drained, got %v", err)
+	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatalf("unfulfilled expectations: %v", err)
 	}
