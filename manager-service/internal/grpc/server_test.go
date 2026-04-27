@@ -335,6 +335,59 @@ func TestWorkerServer_Register_ReduceUsesReplicaPartition(t *testing.T) {
 	}
 }
 
+// TestWorkerServer_Register_DirectModeUnderThreshold verifies that small
+// assignments bypass the manifest fallback entirely: IsManifest stays false,
+// the original data_locations are sent inline, and the uploader is never
+// invoked. This is the "direct mode" branch of the manifest protocol.
+func TestWorkerServer_Register_DirectModeUnderThreshold(t *testing.T) {
+	db, mock, baseServer := setupMockServer(t)
+	defer db.Close()
+
+	taskID := uuid.New().String()
+	jobID := uuid.New().String()
+	attemptID := uuid.New().String()
+
+	mock.ExpectQuery(regexp.QuoteMeta(manager.QueryGetTaskByID)).
+		WithArgs(taskID).
+		WillReturnRows(sqlmock.NewRows([]string{"task_id", "job_id", "task_type", "status", "current_attempt_id", "replica_index"}).
+			AddRow(taskID, jobID, "Map", "In-Progress", attemptID, 0))
+	mock.ExpectQuery(regexp.QuoteMeta(manager.QueryGetJobConfigByTask)).
+		WithArgs(taskID).
+		WillReturnRows(sqlmock.NewRows([]string{"mapper_uri", "reducer_uri", "combiner_uri", "r_tasks", "input_checksum"}).
+			AddRow("s3://code/mapper.py", "s3://code/reducer.py", "s3://code/combiner.py", 3, "sha256-input"))
+	mock.ExpectQuery(regexp.QuoteMeta(manager.QueryGetTaskInputs)).
+		WithArgs(taskID).
+		WillReturnRows(sqlmock.NewRows([]string{"input_uri", "byte_start", "byte_end", "split_checksum"}).
+			AddRow("s3://inputs/split-0.jsonl", 0, 128, "sha256-split-0"))
+	mock.ExpectQuery(regexp.QuoteMeta(manager.QueryGetAttemptDetails)).
+		WithArgs(attemptID).
+		WillReturnRows(sqlmock.NewRows([]string{"worker_id", "lease_id", "start_time", "last_renewed_at"}).
+			AddRow("worker-1", "lease123", time.Now(), time.Now()))
+
+	uploader := &fakeManifestUploader{uri: "s3://mapreduce-manifests/SHOULD-NOT-BE-USED"}
+	server := newWorkerServerWithManifestUploader(baseServer.scheduler, nil, uploader, 1<<20)
+
+	resp, err := server.Register(context.Background(), &pb.RegisterRequest{
+		TaskId:    taskID,
+		AttemptId: attemptID,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resp.IsManifest {
+		t.Fatalf("expected direct mode, got IsManifest=true")
+	}
+	if len(resp.DataLocations) != 1 || resp.DataLocations[0] != "s3://inputs/split-0.jsonl" {
+		t.Fatalf("expected inline data_locations, got %+v", resp.DataLocations)
+	}
+	if len(uploader.payload) != 0 {
+		t.Fatalf("expected uploader to not be invoked in direct mode")
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unfulfilled expectations: %v", err)
+	}
+}
+
 func TestWorkerServer_Register_ManifestFallback(t *testing.T) {
 	db, mock, baseServer := setupMockServer(t)
 	defer db.Close()
@@ -483,7 +536,7 @@ func TestWorkerServer_Register_ManifestTooLargeReturnsResourceExhausted(t *testi
 			AddRow("worker-1", "lease123", time.Now(), time.Now()))
 
 	uploader := &fakeManifestUploader{uri: "s3://mapreduce-manifests/test-manifest.json"}
-	server := newWorkerServerWithManifestUploader(baseServer.scheduler, nil, uploader)
+	server := newWorkerServerWithManifestUploader(baseServer.scheduler, nil, uploader, 0)
 	_, err := server.Register(context.Background(), &pb.RegisterRequest{
 		TaskId:    taskID,
 		AttemptId: attemptID,
