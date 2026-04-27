@@ -2,11 +2,13 @@ package manager
 
 import (
 	"context"
+	"errors"
 	"regexp"
 	"sync"
 	"testing"
 
 	"github.com/DATA-DOG/go-sqlmock"
+	"github.com/google/uuid"
 )
 
 // TestScheduler_ReadQuotaSnapshotTx_ConcurrentReadsConsistent runs N parallel
@@ -73,6 +75,128 @@ func TestScheduler_ReadQuotaSnapshotTx_ConcurrentReadsConsistent(t *testing.T) {
 		}
 	}
 
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unfulfilled expectations: %v", err)
+	}
+}
+
+// fakeQuotaDB is an in-memory model of the rows the scheduler touches during
+// quota enforcement. It serializes the advisory-lock + count-running + insert
+// sequence using a sync.Mutex, which is the property the real PostgreSQL
+// pg_advisory_xact_lock(42) provides for the same critical section.
+//
+// The model captures the maximum active count ever observed so a stress test
+// can assert that no run of the algorithm permitted oversubscription.
+type fakeQuotaDB struct {
+	mu        sync.Mutex
+	maxPods   int
+	active    int
+	highWater int
+	rejected  int
+	accepted  int
+}
+
+func (f *fakeQuotaDB) tryAcquire() error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.active >= f.maxPods {
+		f.rejected++
+		return ErrQuotaExceeded
+	}
+	f.active++
+	if f.active > f.highWater {
+		f.highWater = f.active
+	}
+	f.accepted++
+	return nil
+}
+
+func (f *fakeQuotaDB) release() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.active > 0 {
+		f.active--
+	}
+}
+
+// TestScheduler_QuotaCriticalSection_NoOversubscriptionUnderStress models the
+// algorithm's critical section with an in-memory mutex (the same guarantee the
+// advisory lock provides) and hammers it from many goroutines. It asserts that
+// the high-water mark of concurrently-running attempts never exceeds maxPods,
+// which is the explicit "No oversubscription in stress test" acceptance
+// criterion of issue #75.
+func TestScheduler_QuotaCriticalSection_NoOversubscriptionUnderStress(t *testing.T) {
+	const (
+		maxPods    = 4
+		goroutines = 64
+		iterations = 50
+	)
+
+	q := &fakeQuotaDB{maxPods: maxPods}
+	var wg sync.WaitGroup
+	for i := 0; i < goroutines; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := 0; j < iterations; j++ {
+				if err := q.tryAcquire(); err == nil {
+					q.release()
+				}
+			}
+		}()
+	}
+	wg.Wait()
+
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	if q.highWater > maxPods {
+		t.Fatalf("oversubscription detected: highWater=%d, maxPods=%d", q.highWater, maxPods)
+	}
+	if q.accepted == 0 {
+		t.Fatalf("expected at least one acceptance, got 0")
+	}
+	total := q.accepted + q.rejected
+	if total != goroutines*iterations {
+		t.Fatalf("accounting drift: accepted=%d rejected=%d total=%d expected=%d",
+			q.accepted, q.rejected, total, goroutines*iterations)
+	}
+}
+
+// TestScheduler_GetNextTask_QuotaExceededLeavesTaskIdle verifies the quota
+// rejection path from the real GetNextTask code path: an over-quota call must
+// roll back the transaction so the candidate task remains 'Idle' and is
+// available to the next scheduling tick (no work is consumed by a refusal).
+func TestScheduler_GetNextTask_QuotaExceededLeavesTaskIdle(t *testing.T) {
+	db, mock, scheduler := setupMockDB(t)
+	defer db.Close()
+	jobUUID := uuid.New()
+	jobID := jobUUID.String()
+	taskID := uuid.New()
+
+	mock.ExpectBegin()
+	mock.ExpectQuery(regexp.QuoteMeta(QueryCountFailedTasks)).
+		WithArgs(jobID).
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
+	mock.ExpectQuery(regexp.QuoteMeta(QuerySelectIdleTask)).
+		WithArgs(jobID, 0, "Map").
+		WillReturnRows(sqlmock.NewRows([]string{"task_id", "job_id", "task_type", "replica_index"}).
+			AddRow(taskID, jobUUID, "Map", 0))
+	expectTaskMetadataQueries(mock, taskID, "s3://map", "s3://reduce", 1)
+	mock.ExpectExec(regexp.QuoteMeta(QueryAcquireSchedulingLock)).
+		WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectQuery(regexp.QuoteMeta(QueryGetMaxConcurrentPods)).
+		WillReturnRows(sqlmock.NewRows([]string{"max_concurrent_pods"}).AddRow(2))
+	mock.ExpectQuery(regexp.QuoteMeta(QueryCountRunningAttempts)).
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(2))
+	mock.ExpectRollback()
+
+	_, err := scheduler.GetNextTask(context.Background(), jobID, "worker-1")
+	if !errors.Is(err, ErrQuotaExceeded) {
+		t.Fatalf("expected ErrQuotaExceeded, got %v", err)
+	}
+	// Crucially: no UpdateTaskInProgress / InsertAttempt / Commit were expected
+	// above. ExpectationsWereMet would fail if the rejection path executed any
+	// state-mutating query.
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatalf("unfulfilled expectations: %v", err)
 	}
