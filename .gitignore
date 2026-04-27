@@ -40,6 +40,11 @@ replay_pid*
 # Test binary, built with `go test -c`
 *.test
 
+# Compiled binaries
+manager-service/manager
+auth-service/auth-service
+cli-service/cli
+
 # Output of the go coverage tool, specifically when used with LiteIDE
 *.out
 
@@ -170,4 +175,4 @@ fabric.properties
 
 # End of https://www.toptal.com/developers/gitignore/api/goland,go
 
-graphify-outmanager-service/manager
+graphify-out/

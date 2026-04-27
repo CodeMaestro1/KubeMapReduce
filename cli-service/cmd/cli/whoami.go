@@ -12,6 +12,12 @@ import (
 
 // ── whoami ─────────────────────────────────────────────────
 
+// cmdWhoAmI displays information about the currently authenticated user.
+//
+// It extracts and prints the username, email, subject (UUID), and realm roles
+// from the locally stored JWT access token. This allows users to verify their
+// current identity and permissions without making a network request to the
+// auth server.
 func cmdWhoAmI() {
 	tokens, claims := loadTokensAndClaims("not logged in — run 'kubemapreduce login' first", "failed to read token")
 
@@ -37,6 +43,11 @@ func cmdWhoAmI() {
 
 // ── token inspect ──────────────────────────────────────────
 
+// cmdTokenInspect displays the raw, decoded JWT claims for the current access token.
+//
+// This is a diagnostic command used to inspect the full set of claims provided
+// by Keycloak. It is particularly useful for debugging role assignments,
+// audience mismatches, or token expiration issues.
 func cmdTokenInspect() {
 	tokens, claims := loadTokensAndClaims("not logged in — run 'kubemapreduce login' first", "failed to decode token")
 
@@ -62,21 +73,28 @@ func cmdTokenInspect() {
 
 // ── helpers ────────────────────────────────────────────────
 
-func loadTokensAndClaims(notLoggedInMsg string, decodeErrPrefix string) (*auth.StoredTokens, map[string]any) {
-	tokens, err := auth.LoadTokens()
+// loadTokensAndClaims loads stored tokens and decodes their claims.
+// If loading or decoding fails, it logs a fatal error with one of the provided messages.
+func loadTokensAndClaims(notLoggedInMsg, decodeFailMsg string) (*auth.StoredTokens, map[string]any) {
+	tokens, err := loadStoredTokens()
 	if err != nil {
 		log.Fatal(notLoggedInMsg)
 	}
 
 	claims, err := decodeTokenClaims(tokens.AccessToken)
 	if err != nil {
-		log.Fatalf("%s: %v", decodeErrPrefix, err)
+		log.Fatalf("%s: %v", decodeFailMsg, err)
 	}
 
 	return tokens, claims
 }
 
 // decodeTokenClaims decodes the JWT payload without verification.
+//
+// This function performs a manual base64 decoding of the JWT's second part.
+// It is intended for informational display purposes in the CLI; actual security
+// verification of the token is performed by the API server and the auth-service
+// using public keys from Keycloak.
 func decodeTokenClaims(token string) (map[string]any, error) {
 	parts := strings.Split(token, ".")
 	if len(parts) != 3 {

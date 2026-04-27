@@ -41,3 +41,44 @@ Note: No explicit per-call timeout recommendation exists in copilot-instructions
 Source: Best practice (Zero-trust service-to-service defaults)
 Fix: Added optional worker RPC token validation (`x-worker-token`), optional TLS cert/key server configuration, and disabled gRPC reflection by default unless explicitly enabled by environment.
 Note: copilot-instructions.md mandates RPC fencing fields and behavior but does not prescribe transport/auth hardening; this stronger protection was applied as an additive best practice.
+
+[#12] Register mismatch errors leaked current attempt identifiers
+Source: copilot-instructions.md
+Fix: Updated `WorkerServer.Register` to reject stale attempts with a generic `"attempt rejected"` message and server-side logging, aligning with the attempt-fencing rule that stale attempts should be rejected without exposing active credentials.
+
+[#13] Worker RPC security controls were still permissive by default
+Source: Best practice (Secure-by-default control plane hardening)
+Fix: Added explicit startup validation that requires worker token auth and/or TLS unless `ALLOW_INSECURE_WORKER_RPC=true` is intentionally set for local development, preventing accidental insecure deployments.
+
+[#14] Job listing endpoint returned unbounded result sets
+Source: Best practice (Defensive pagination and bounded responses)
+Fix: Added `limit`/`offset` pagination with validation and a server-side cap for `/jobs`, and wired pagination through `JobStore` (PostgreSQL and in-memory) to bound memory and latency under large histories.
+
+[#15] Scheduler quota path held a global config row lock
+Source: copilot-instructions.md
+Fix: Reverted quota config read to the documented pattern (read `SYSTEM_CONFIG.max_concurrent_pods` + running attempts) without `FOR UPDATE`, reducing lock contention and improving assignment throughput under concurrent schedulers.
+
+[#16] Task assignment transactions could hang indefinitely under DB latency
+Source: Best practice (Bounded operation timeouts)
+Fix: Added a bounded context timeout to `Scheduler.GetNextTask` so assignment transactions fail fast instead of holding open DB resources indefinitely when the database is slow or unresponsive.
+
+[#17] Scheduler recovery path had no overall deadline for startup reconciliation
+Source: Best practice (Startup deadline budgeting)
+Fix: Added a global timeout to `Scheduler.Recover` and deadline-aware spawn loop behavior so startup recovery remains bounded and defers remaining work to the stale-task reaper instead of running unbounded.
+
+[#18] Expired orphan attempts could remain `Running` and leak global quota
+Source: Best practice (Lease lifecycle consistency)
+Fix: Added `QueryFailOrphanExpiredAttempts` and executed it during `FailStaleTasks` transactions to close expired running attempts no longer referenced by `TASKS.current_attempt_id`, preventing quota leakage from stale orphan records.
+
+[#19] API handlers accepted unbounded JSON request bodies
+Source: Best practice (Defensive request size limits)
+Fix: Added bounded JSON body decoding with `http.MaxBytesReader` across JSON-mutating handlers and return `413 Request Entity Too Large` for oversized payloads.
+
+[#20] Invalid `job_id` values were treated as not-found instead of invalid input
+Source: Best practice (Explicit input validation errors)
+Fix: Introduced `ErrInvalidJobID` in `PostgresJobStore.GetJob` for malformed UUIDs and mapped this in handlers to `400 Bad Request` for `/jobs/{job_id}` and `/jobs/{job_id}/results`.
+
+[#21] Manifest fallback could upload oversized manifest payloads
+Source: copilot-instructions.md (gRPC Message Scalability manifest threshold)
+Fix: Added a post-serialization manifest size check before upload in `WorkerServer.Register`; if marshaled manifest exceeds threshold, return `ResourceExhausted` and skip upload.
+

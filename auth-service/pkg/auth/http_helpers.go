@@ -15,10 +15,11 @@ import (
 const (
 	defaultRetryAttempts  = 3
 	defaultRetryBaseDelay = 200 * time.Millisecond
+	maxAuthResponseBytes  = 1 << 20 // 1 MiB
 )
 
-// isRetryableStatus returns true for HTTP status codes that indicate a
-// transient server-side failure worth retrying.
+// isRetryableStatus determines if an HTTP status code represents a transient
+// failure.
 func isRetryableStatus(status int) bool {
 	switch status {
 	case http.StatusTooManyRequests, http.StatusInternalServerError, http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout:
@@ -28,8 +29,8 @@ func isRetryableStatus(status int) bool {
 	}
 }
 
-// isRetryableError returns true when the error is a network-level issue that
-// may resolve on retry.
+// isRetryableError determines if a Go error represents a transient network
+// issue.
 func isRetryableError(err error) bool {
 	var netErr net.Error
 	if errors.As(err, &netErr) {
@@ -50,7 +51,7 @@ func isRetryableError(err error) bool {
 	return false
 }
 
-// sleepWithContext pauses for the given duration, returning early if the
+// sleepWithContext pauses execution until either a timer expires or the
 // context is cancelled.
 func sleepWithContext(ctx context.Context, delay time.Duration) error {
 	timer := time.NewTimer(delay)
@@ -64,14 +65,16 @@ func sleepWithContext(ctx context.Context, delay time.Duration) error {
 	}
 }
 
-// ensureStatus reads the response body and returns a descriptive error when
-// the status code does not match the expected value.
+// ensureStatus returns an error if the response status is not the expected one.
+//
+// It reads the response body to provide a descriptive error message from the
+// server.
 func ensureStatus(resp *http.Response, expectedStatus int, operation string) error {
 	if resp.StatusCode == expectedStatus {
 		return nil
 	}
 
-	body, err := io.ReadAll(resp.Body)
+	body, err := readBoundedResponseBody(resp.Body)
 	if err != nil {
 		return fmt.Errorf("failed to %s: status %d (failed to read response body: %v)", operation, resp.StatusCode, err)
 	}
@@ -79,7 +82,25 @@ func ensureStatus(resp *http.Response, expectedStatus int, operation string) err
 	return fmt.Errorf("failed to %s: status %d: %s", operation, resp.StatusCode, string(body))
 }
 
-// ensureCallStatus checks a pre-read response body against an expected status.
+// readBoundedResponseBody reads the entire response body while enforcing a
+// safety limit.
+//
+// This prevents memory exhaustion attacks or bugs from oversized responses,
+// capping memory usage at [maxAuthResponseBytes].
+func readBoundedResponseBody(body io.Reader) ([]byte, error) {
+	limited := io.LimitReader(body, maxAuthResponseBytes+1)
+	data, err := io.ReadAll(limited)
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(data)) > maxAuthResponseBytes {
+		return nil, fmt.Errorf("response body exceeds limit (%d bytes)", maxAuthResponseBytes)
+	}
+
+	return data, nil
+}
+
+// ensureCallStatus checks a pre-read response status.
 func ensureCallStatus(status int, body []byte, expectedStatus int, operation string) error {
 	if status == expectedStatus {
 		return nil
@@ -88,8 +109,10 @@ func ensureCallStatus(status int, body []byte, expectedStatus int, operation str
 	return fmt.Errorf("failed to %s: status %d: %s", operation, status, string(body))
 }
 
-// extractUserIDFromLocation extracts the trailing path segment (user ID) from
-// a Keycloak Location header value.
+// extractUserIDFromLocation parses the User ID from a Keycloak Location header.
+//
+// Keycloak returns the newly created resource's URL (e.g., /users/{id}) in the
+// Location header of a 201 Created response.
 func extractUserIDFromLocation(location string) (string, error) {
 	if location == "" {
 		return "", fmt.Errorf("missing Location header for created user")

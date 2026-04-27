@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"log"
 	"net"
@@ -32,6 +33,17 @@ import (
 	pb "kubemapreduce/proto"
 )
 
+// main bootstraps the MapReduce Manager Service.
+//
+// The bootstrapping sequence follows these steps:
+//  1. Load configuration and connect to the PostgreSQL database (DDS).
+//  2. Resolve the replica index from the hostname (StatefulSet ordinal) for task partitioning.
+//  3. Initialize the Kubernetes Orchestrator (or a mock if running locally).
+//  4. Initialize the Scheduler and recover any interrupted tasks from the database.
+//  5. Start background maintenance loops: Cleanup Reconciler and the Active Reaper (stale task cleanup).
+//  6. Start the HTTP server for health/readiness probes and internal job cancellation.
+//  7. Start the gRPC server for Worker communication (Register, Heartbeat, etc.) with optional TLS and token auth.
+//  8. Handle graceful shutdown by stopping background loops and draining gRPC/HTTP connections.
 func main() {
 	cfg, err := config.Load()
 	if err != nil {
@@ -81,7 +93,20 @@ func main() {
 		port = "50051"
 	}
 	managerAddr := resolveManagerAddr(hostname, headlessService, namespace, port)
-	scheduler, err := manager.NewScheduler(db, replicaIndex, cfg.TotalReplicas, orchestrator, managerAddr, cfg.LeaseTTL)
+	var stagingCleaner manager.StagingCleaner
+	if cfg.MinioEndpoint != "" && cfg.MinioAccessKey != "" && cfg.MinioSecretKey != "" {
+		mc, mcErr := minio.New(cfg.MinioEndpoint, &minio.Options{
+			Creds:  credentials.NewStaticV4(cfg.MinioAccessKey, cfg.MinioSecretKey, ""),
+			Secure: cfg.MinioUseSSL,
+		})
+		if mcErr != nil {
+			log.Printf("staging cleaner: failed to create minio client: %v", mcErr)
+		} else {
+			stagingCleaner = manager.NewMinioStagingCleaner(mc)
+		}
+	}
+
+	scheduler, err := manager.NewScheduler(db, replicaIndex, cfg.TotalReplicas, orchestrator, managerAddr, cfg.LeaseTTL, stagingCleaner)
 	if err != nil {
 		log.Fatalf("failed to create scheduler: %v", err)
 	}
@@ -103,7 +128,9 @@ func main() {
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				recovered, err := scheduler.FailStaleTasks()
+				reaperCtx, reaperCancel := context.WithTimeout(ctx, 30*time.Second)
+				recovered, err := scheduler.FailStaleTasks(reaperCtx)
+				reaperCancel()
 				if err != nil {
 					log.Printf("reaper error: %v", err)
 				} else if recovered > 0 {
@@ -116,7 +143,7 @@ func main() {
 	// 4. Start HTTP Server for Health & Readiness
 	mux := http.NewServeMux()
 	mux.HandleFunc("DELETE /internal/jobs/{job_id}", func(w http.ResponseWriter, r *http.Request) {
-		if !isAuthorizedInternalCancel(r, cfg.InternalAPIKey) {
+		if !isAuthorizedInternalCancel(r, cfg.InternalAPIKey, cfg.AllowInsecureInternalCancelAuth) {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
@@ -125,12 +152,50 @@ func main() {
 			http.Error(w, "missing job_id", http.StatusBadRequest)
 			return
 		}
-		if err := scheduler.CancelJob(jobID); err != nil {
+		cancelCtx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+		defer cancel()
+		if err := scheduler.CancelJob(cancelCtx, jobID); err != nil {
 			log.Printf("failed to cancel job %s: %v", jobID, err)
 			http.Error(w, "failed to cancel job", http.StatusInternalServerError)
 			return
 		}
 		w.WriteHeader(http.StatusAccepted)
+	})
+	mux.HandleFunc("POST /internal/schedule", func(w http.ResponseWriter, r *http.Request) {
+		if !isAuthorizedInternalCancel(r, cfg.InternalAPIKey, cfg.AllowInsecureInternalCancelAuth) {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		var req manager.ScheduleJobRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "invalid payload", http.StatusBadRequest)
+			return
+		}
+		schedCtx, schedCancel := context.WithTimeout(r.Context(), 30*time.Second)
+		defer schedCancel()
+		if err := scheduler.ScheduleJob(schedCtx, req); err != nil {
+			log.Printf("failed to schedule job %s: %v", req.JobID, err)
+			http.Error(w, "failed to schedule job", http.StatusInternalServerError)
+			return
+		}
+		w.WriteHeader(http.StatusAccepted)
+	})
+	mux.HandleFunc("PUT /internal/config", func(w http.ResponseWriter, r *http.Request) {
+		if !isAuthorizedInternalCancel(r, cfg.InternalAPIKey, cfg.AllowInsecureInternalCancelAuth) {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		var update manager.SystemConfigUpdate
+		if err := json.NewDecoder(r.Body).Decode(&update); err != nil {
+			http.Error(w, "invalid payload", http.StatusBadRequest)
+			return
+		}
+		if err := scheduler.UpsertSystemConfig(r.Context(), update); err != nil {
+			log.Printf("failed to update system config: %v", err)
+			http.Error(w, "failed to update config", http.StatusInternalServerError)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
 	})
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -146,8 +211,12 @@ func main() {
 	})
 
 	httpSrv := &http.Server{
-		Addr:    cfg.ServerAddr,
-		Handler: mux,
+		Addr:              cfg.ServerAddr,
+		Handler:           mux,
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       15 * time.Second,
+		WriteTimeout:      30 * time.Second,
+		IdleTimeout:       60 * time.Second,
 	}
 	go func() {
 		log.Printf("HTTP health server running on %s", cfg.ServerAddr)
@@ -175,14 +244,14 @@ func main() {
 		log.Printf("minio endpoint configured without credentials; manifest fallback disabled")
 	}
 
-	if minioClient != nil {
-		scheduler.SetStagingCleaner(newMinioStagingCleaner(minioClient, cfg.MinioBucket))
-		log.Printf("staging cleaner configured for bucket %q", cfg.MinioBucket)
-	}
-
 	grpcOpts := []grpc.ServerOption{
 		grpc.UnaryInterceptor(workerAuthUnaryInterceptor(cfg.WorkerRPCToken)),
 	}
+	if err := validateWorkerRPCSecurityConfig(cfg); err != nil {
+		log.Fatalf("insecure worker RPC configuration: %v", err)
+	}
+	emitWorkerRPCSecurityWarnings(cfg)
+
 	useTLS := strings.TrimSpace(cfg.GRPCTLSCertFile) != "" || strings.TrimSpace(cfg.GRPCTLSKeyFile) != ""
 	if useTLS {
 		if strings.TrimSpace(cfg.GRPCTLSCertFile) == "" || strings.TrimSpace(cfg.GRPCTLSKeyFile) == "" {
@@ -266,12 +335,12 @@ func resolveManagerAddr(hostname, headlessService, namespace, port string) strin
 	return net.JoinHostPort(podName+"."+headlessService+"."+namespace+".svc.cluster.local", port)
 }
 
-func isAuthorizedInternalCancel(r *http.Request, expectedToken string) bool {
+func isAuthorizedInternalCancel(r *http.Request, expectedToken string, allowInsecureLoopback bool) bool {
 	expectedToken = strings.TrimSpace(expectedToken)
 	if expectedToken != "" {
 		return r.Header.Get("X-Internal-Token") == expectedToken
 	}
-	return isLoopbackRemoteAddr(r.RemoteAddr)
+	return allowInsecureLoopback && isLoopbackRemoteAddr(r.RemoteAddr)
 }
 
 func isLoopbackRemoteAddr(remoteAddr string) bool {
@@ -312,4 +381,36 @@ func isAuthorizedWorkerRPC(ctx context.Context, expectedToken string) bool {
 		return false
 	}
 	return values[0] == expectedToken
+}
+
+func validateWorkerRPCSecurityConfig(cfg *config.Config) error {
+	if cfg == nil {
+		return errors.New("config is nil")
+	}
+	hasWorkerToken := strings.TrimSpace(cfg.WorkerRPCToken) != ""
+	hasCert := strings.TrimSpace(cfg.GRPCTLSCertFile) != ""
+	hasKey := strings.TrimSpace(cfg.GRPCTLSKeyFile) != ""
+	useTLS := hasCert || hasKey
+
+	if !hasWorkerToken && !useTLS && !cfg.AllowInsecureWorkerRPC {
+		return errors.New("set MANAGER_WORKER_RPC_TOKEN and/or GRPC_TLS_CERT_FILE+GRPC_TLS_KEY_FILE (or explicitly set ALLOW_INSECURE_WORKER_RPC=true for local development only)")
+	}
+	if useTLS && (!hasCert || !hasKey) {
+		return errors.New("both GRPC_TLS_CERT_FILE and GRPC_TLS_KEY_FILE must be set to enable gRPC TLS")
+	}
+	return nil
+}
+
+func emitWorkerRPCSecurityWarnings(cfg *config.Config) {
+	hasWorkerToken := strings.TrimSpace(cfg.WorkerRPCToken) != ""
+	useTLS := strings.TrimSpace(cfg.GRPCTLSCertFile) != "" || strings.TrimSpace(cfg.GRPCTLSKeyFile) != ""
+	if !hasWorkerToken && useTLS {
+		log.Printf("[WARN] worker RPC token is not configured; relying on transport-level TLS controls only")
+	}
+	if hasWorkerToken && !useTLS {
+		log.Printf("[WARN] gRPC TLS is not configured; worker token is enforced over plaintext transport")
+	}
+	if cfg.AllowInsecureWorkerRPC && !hasWorkerToken && !useTLS {
+		log.Printf("[WARN] ALLOW_INSECURE_WORKER_RPC=true: worker RPC is running without token auth and without TLS")
+	}
 }

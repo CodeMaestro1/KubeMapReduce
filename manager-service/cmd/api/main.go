@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"log"
 	"net/http"
@@ -11,11 +12,27 @@ import (
 	"syscall"
 	"time"
 
+	_ "github.com/lib/pq"
+
 	"kubemapreduce/auth-service/pkg/auth"
 	"kubemapreduce/manager-service/internal/api"
 	"kubemapreduce/manager-service/internal/config"
+
+	"github.com/minio/minio-go/v7"
+	"github.com/minio/minio-go/v7/pkg/credentials"
 )
 
+// main bootstraps the UI Service API server.
+//
+// The bootstrapping sequence follows these steps:
+//  1. Load configuration from environment variables via [config.Load].
+//  2. Initialize the JWT Validator using Keycloak's JWKS endpoint to secure all routes.
+//  3. (Optional) Initialize the Keycloak Admin Client if credentials are provided, enabling user management.
+//  4. Connect to the PostgreSQL database for job metadata storage.
+//  5. Initialize the Job Store and HTTP handlers.
+//  6. Register routes and start the HTTP server with production-grade timeouts.
+//  7. Listen for termination signals (SIGINT, SIGTERM) to initiate a graceful shutdown,
+//     allowing in-flight requests 15 seconds to complete before forcing exit.
 func main() {
 	cfg, err := config.Load()
 	if err != nil {
@@ -44,14 +61,40 @@ func main() {
 		log.Printf("admin credentials not configured; /admin/* endpoints will return %d", http.StatusServiceUnavailable)
 	}
 
-	handlers := api.NewHandlers(adminClient)
+	db, err := sql.Open("postgres", cfg.DatabaseDSN)
+	if err != nil {
+		log.Fatalf("failed to open database: %v", err)
+	}
+	defer db.Close()
+
+	if err := db.Ping(); err != nil {
+		log.Fatalf("failed to ping database: %v", err)
+	}
+
+	var minioClient *minio.Client
+	if cfg.MinioEndpoint != "" && cfg.MinioAccessKey != "" && cfg.MinioSecretKey != "" {
+		minioClient, err = minio.New(cfg.MinioEndpoint, &minio.Options{
+			Creds:  credentials.NewStaticV4(cfg.MinioAccessKey, cfg.MinioSecretKey, ""),
+			Secure: cfg.MinioUseSSL,
+		})
+		if err != nil {
+			log.Printf("failed to initialize minio client: %v", err)
+		}
+	}
+
+	store := api.NewPostgresJobStore(db)
+	handlers := api.NewHandlers(adminClient, store, minioClient, cfg.ManagerAddr, cfg.InternalAPIKey)
 
 	mux := http.NewServeMux()
 	api.RegisterRoutes(mux, handlers, validator)
 
 	srv := &http.Server{
-		Addr:    cfg.ServerAddr,
-		Handler: mux,
+		Addr:              cfg.ServerAddr,
+		Handler:           mux,
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       15 * time.Second,
+		WriteTimeout:      30 * time.Second,
+		IdleTimeout:       60 * time.Second,
 	}
 
 	errCh := make(chan error, 1)

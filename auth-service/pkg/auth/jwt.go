@@ -14,14 +14,26 @@ import (
 // preventing collisions with keys defined in other packages.
 type contextKey string
 
+// claimsKey is the key used to store [jwt.MapClaims] in the request context.
+// Exported via helper functions rather than directly to maintain encapsulation.
 const claimsKey contextKey = "claims"
 
+// JWTValidator manages the validation of OpenID Connect (OIDC) Bearer tokens.
+//
+// It caches the public keys (JWKS) from the identity provider to perform
+// local, cryptographic signature verification without per-request network calls.
 type JWTValidator struct {
 	jwks     keyfunc.Keyfunc
 	issuer   string
 	audience string
 }
 
+// NewJWTValidator initializes a [JWTValidator] by fetching the JWKS from the
+// specified URL.
+//
+// This is normally called once during service bootstrap. If the JWKS cannot
+// be reached, it returns an error, preventing the service from starting in an
+// insecure or non-functional state.
 func NewJWTValidator(jwksURL string, issuer string, audience string) (*JWTValidator, error) {
 	jwks, err := keyfunc.NewDefaultCtx(context.Background(), []string{jwksURL})
 	if err != nil {
@@ -35,6 +47,14 @@ func NewJWTValidator(jwksURL string, issuer string, audience string) (*JWTValida
 	}, nil
 }
 
+// Middleware returns an [http.Handler] that validates the Authorization header.
+//
+// It expects a "Bearer <token>" format. If valid, it extracts the claims and
+// injects them into the request context using [claimsKey]. If invalid or missing,
+// it terminates the request with 401 Unauthorized.
+//
+// This middleware ensures that downstream handlers can assume a valid,
+// authenticated identity is present in the context.
 func (v *JWTValidator) Middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		authHeader := r.Header.Get("Authorization")

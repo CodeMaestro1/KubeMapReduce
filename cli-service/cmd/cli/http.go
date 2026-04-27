@@ -61,6 +61,13 @@ func resolveServerURL(tokens *auth.StoredTokens) (string, bool) {
 	return tokens.ServerURL, true
 }
 
+// getValidToken retrieves a valid access token, refreshing it if necessary.
+//
+// It encapsulates the token lifecycle management for the CLI. If the stored access
+// token is expired, it automatically attempts a refresh using the refresh token
+// against Keycloak. This ensures that the user remains authenticated during
+// long-running operations or multiple sequential commands without manual re-login.
+// It also returns the resolved server URL associated with the session.
 func getValidToken() (token string, serverURL string) {
 	tokens, err := loadStoredTokens()
 	if err != nil {
@@ -108,6 +115,10 @@ func getValidToken() (token string, serverURL string) {
 
 // ── HTTP helpers ───────────────────────────────────────────
 
+// doAuthRequest executes an authenticated HTTP request using the provided token.
+//
+// It provides a high-level wrapper around [doAuthRequestWithContext], using a
+// default timeout context.
 func doAuthRequest(method, reqURL, token string, body []byte) (*http.Response, error) {
 	ctx, cancel := cliRequestContext()
 	defer cancel()
@@ -115,6 +126,11 @@ func doAuthRequest(method, reqURL, token string, body []byte) (*http.Response, e
 	return doAuthRequestWithContext(ctx, method, reqURL, token, body)
 }
 
+// doAuthRequestWithContext executes an authenticated HTTP request with a specific context.
+//
+// This function enforces security invariants: it ensures the token is non-empty,
+// restricts requests to HTTP/HTTPS schemes to prevent credential leakage to
+// local files or other protocols, and sets the Bearer Authorization header.
 func doAuthRequestWithContext(ctx context.Context, method, reqURL, token string, body []byte) (*http.Response, error) {
 	trimmedToken := strings.TrimSpace(token)
 	if trimmedToken == "" {
@@ -152,6 +168,12 @@ func doAuthRequestWithContext(ctx context.Context, method, reqURL, token string,
 	return cliHTTPClient.Do(req)
 }
 
+// doAuthRequestExpect executes an authenticated request and fails if the status code is unexpected.
+//
+// This is a "fail-fast" helper used by CLI commands that expect a specific
+// success code (e.g., 201 Created for user creation). It ensures that the CLI
+// provides immediate and clear feedback to the user when an operation fails
+// at the API level.
 func doAuthRequestExpect(method, reqURL, token string, body []byte, expectedStatus int, failPrefix string) *http.Response {
 	resp, err := doAuthRequest(method, reqURL, token, body)
 	if err != nil {
@@ -170,6 +192,7 @@ func doAuthRequestExpect(method, reqURL, token string, body []byte, expectedStat
 	return resp
 }
 
+// printResponse reads and prints the response body, formatting it as JSON if possible.
 func printResponse(resp *http.Response) {
 	body, err := readResponseBody(resp.Body)
 	if err != nil {
@@ -184,6 +207,11 @@ func printResponse(resp *http.Response) {
 	}
 }
 
+// readResponseBody reads the response body up to a predefined limit.
+//
+// This limit prevents the CLI from being overwhelmed by excessively large
+// response bodies (e.g., a multi-gigabyte log file returned by mistake),
+// protecting the system's memory integrity.
 func readResponseBody(body io.Reader) ([]byte, error) {
 	// Cap body reads so large/malicious responses cannot exhaust CLI memory.
 	payload, err := io.ReadAll(io.LimitReader(body, maxCLIResponseBodyBytes+1))

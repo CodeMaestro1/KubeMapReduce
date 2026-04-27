@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"strings"
 	"testing"
 	"time"
 
@@ -24,7 +25,7 @@ func setupMockServer(t *testing.T) (*sql.DB, sqlmock.Sqlmock, *WorkerServer) {
 		t.Fatalf("an error '%s' was not expected when opening a stub database connection", err)
 	}
 
-	scheduler, err := manager.NewScheduler(db, 0, 1, &manager.MockOrchestrator{}, "manager-0:50051", 30)
+	scheduler, err := manager.NewScheduler(db, 0, 1, &manager.MockOrchestrator{}, "manager-0:50051", 30, nil)
 	if err != nil {
 		t.Fatalf("unexpected error creating scheduler: %v", err)
 	}
@@ -100,6 +101,64 @@ func TestWorkerServer_Register_Success(t *testing.T) {
 	}
 }
 
+func TestWorkerServer_Register_RuntimeEnvInferredFromExtension(t *testing.T) {
+	cases := []struct {
+		mapperURI   string
+		wantRuntime string
+	}{
+		{"s3://code/mapper.py", "python"},
+		{"s3://code/mapper.jar", "java"},
+		{"s3://code/mapper.c", "c"},
+		{"s3://code/mapper.cpp", "cpp"},
+		{"s3://code/mapper.cc", "cpp"},
+		{"s3://code/mapper.cxx", "cpp"},
+		{"s3://code/mapper", ""},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.mapperURI, func(t *testing.T) {
+			db, mock, server := setupMockServer(t)
+			defer db.Close()
+
+			taskID := uuid.New().String()
+			jobID := uuid.New().String()
+			attemptID := uuid.New().String()
+
+			mock.ExpectQuery(regexp.QuoteMeta(manager.QueryGetTaskByID)).
+				WithArgs(taskID).
+				WillReturnRows(sqlmock.NewRows([]string{"task_id", "job_id", "task_type", "status", "current_attempt_id", "replica_index"}).
+					AddRow(taskID, jobID, "Map", "In-Progress", attemptID, 0))
+
+			mock.ExpectQuery(regexp.QuoteMeta(manager.QueryGetJobConfigByTask)).
+				WithArgs(taskID).
+				WillReturnRows(sqlmock.NewRows([]string{"mapper_uri", "reducer_uri", "combiner_uri", "r_tasks", "input_checksum"}).
+					AddRow(tc.mapperURI, "s3://code/reducer.py", "", 1, ""))
+
+			mock.ExpectQuery(regexp.QuoteMeta(manager.QueryGetTaskInputs)).
+				WithArgs(taskID).
+				WillReturnRows(sqlmock.NewRows([]string{"input_uri", "byte_start", "byte_end", "split_checksum"}).
+					AddRow("s3://inputs/data.jsonl", 0, 0, ""))
+
+			mock.ExpectQuery(regexp.QuoteMeta(manager.QueryGetAttemptDetails)).
+				WithArgs(attemptID).
+				WillReturnRows(sqlmock.NewRows([]string{"worker_id", "lease_id", "start_time", "last_renewed_at"}).
+					AddRow("worker-1", "lease-abc", time.Now(), time.Now()))
+
+			resp, err := server.Register(context.Background(), &pb.RegisterRequest{
+				TaskId:    taskID,
+				AttemptId: attemptID,
+			})
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if resp.RuntimeEnv != tc.wantRuntime {
+				t.Errorf("mapper=%s: want RuntimeEnv=%q, got %q", tc.mapperURI, tc.wantRuntime, resp.RuntimeEnv)
+			}
+		})
+	}
+}
+
 func TestWorkerServer_Register_PermissionDenied(t *testing.T) {
 	db, mock, server := setupMockServer(t)
 	defer db.Close()
@@ -141,6 +200,9 @@ func TestWorkerServer_Register_PermissionDenied(t *testing.T) {
 	st, ok := status.FromError(err)
 	if !ok || st.Code() != codes.PermissionDenied {
 		t.Errorf("expected PermissionDenied, got %v", err)
+	}
+	if strings.Contains(st.Message(), attemptID) {
+		t.Fatalf("permission denied message must not leak expected attempt_id")
 	}
 }
 
@@ -364,6 +426,61 @@ func TestWorkerServer_Register_ManifestUploadFailureReturnsError(t *testing.T) {
 	st, ok := status.FromError(err)
 	if !ok || st.Code() != codes.Unavailable {
 		t.Fatalf("expected Unavailable, got %v", err)
+	}
+}
+
+func TestWorkerServer_Register_ManifestTooLargeReturnsResourceExhausted(t *testing.T) {
+	db, mock, baseServer := setupMockServer(t)
+	defer db.Close()
+
+	origThreshold := maxTaskAssignmentSizeBytes
+	maxTaskAssignmentSizeBytes = 100
+	defer func() { maxTaskAssignmentSizeBytes = origThreshold }()
+	origManifestThreshold := maxManifestPayloadSizeBytes
+	maxManifestPayloadSizeBytes = 100
+	defer func() { maxManifestPayloadSizeBytes = origManifestThreshold }()
+
+	taskID := uuid.New().String()
+	jobID := uuid.New().String()
+	attemptID := uuid.New().String()
+
+	mock.ExpectQuery(regexp.QuoteMeta(manager.QueryGetTaskByID)).
+		WithArgs(taskID).
+		WillReturnRows(sqlmock.NewRows([]string{"task_id", "job_id", "task_type", "status", "current_attempt_id", "replica_index"}).
+			AddRow(taskID, jobID, "Map", "In-Progress", attemptID, 0))
+	mock.ExpectQuery(regexp.QuoteMeta(manager.QueryGetJobConfigByTask)).
+		WithArgs(taskID).
+		WillReturnRows(sqlmock.NewRows([]string{"mapper_uri", "reducer_uri", "combiner_uri", "r_tasks", "input_checksum"}).
+			AddRow("s3://code/mapper.py", "s3://code/reducer.py", "s3://code/combiner.py", 3, "sha256-input"))
+	mock.ExpectQuery(regexp.QuoteMeta(manager.QueryGetTaskInputs)).
+		WithArgs(taskID).
+		WillReturnRows(func() *sqlmock.Rows {
+			rows := sqlmock.NewRows([]string{"input_uri", "byte_start", "byte_end", "split_checksum"})
+			for i := 0; i < 15; i++ {
+				rows.AddRow(fmt.Sprintf("s3://inputs/split-%d.jsonl", i), int64(i*128), int64((i+1)*128), fmt.Sprintf("sha256-split-%d", i))
+			}
+			return rows
+		}())
+	mock.ExpectQuery(regexp.QuoteMeta(manager.QueryGetAttemptDetails)).
+		WithArgs(attemptID).
+		WillReturnRows(sqlmock.NewRows([]string{"worker_id", "lease_id", "start_time", "last_renewed_at"}).
+			AddRow("worker-1", "lease123", time.Now(), time.Now()))
+
+	uploader := &fakeManifestUploader{uri: "s3://mapreduce-manifests/test-manifest.json"}
+	server := newWorkerServerWithManifestUploader(baseServer.scheduler, nil, uploader)
+	_, err := server.Register(context.Background(), &pb.RegisterRequest{
+		TaskId:    taskID,
+		AttemptId: attemptID,
+	})
+	if err == nil {
+		t.Fatalf("expected error, got nil")
+	}
+	st, ok := status.FromError(err)
+	if !ok || st.Code() != codes.ResourceExhausted {
+		t.Fatalf("expected ResourceExhausted, got %v", err)
+	}
+	if len(uploader.payload) != 0 {
+		t.Fatalf("expected no manifest upload when marshaled manifest exceeds threshold")
 	}
 }
 

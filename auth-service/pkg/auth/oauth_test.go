@@ -86,6 +86,22 @@ func TestRequestTokens_InvalidJSON(t *testing.T) {
 	}
 }
 
+func TestRequestTokens_ResponseTooLarge(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(strings.Repeat("a", maxAuthResponseBytes+1)))
+	}))
+	defer server.Close()
+
+	_, err := RequestTokens(server.URL, "testrealm", "my-client", "alice", "pw")
+	if err == nil {
+		t.Fatal("expected error for oversized response, got nil")
+	}
+	if !strings.Contains(err.Error(), "response body exceeds limit") {
+		t.Fatalf("expected bounded read error, got %v", err)
+	}
+}
+
 func TestRequestTokens_ConnectionError(t *testing.T) {
 	_, err := RequestTokens("http://127.0.0.1:1", "testrealm", "my-client", "alice", "pw")
 	if err == nil {
@@ -160,6 +176,22 @@ func TestRefreshTokens_HTTPError(t *testing.T) {
 	_, err := RefreshTokens(server.URL, "testrealm", "my-client", "expired-token")
 	if err == nil {
 		t.Fatal("expected error for 400 response, got nil")
+	}
+}
+
+func TestRefreshTokens_ErrorResponseTooLarge(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(strings.Repeat("x", maxAuthResponseBytes+1)))
+	}))
+	defer server.Close()
+
+	_, err := RefreshTokens(server.URL, "testrealm", "my-client", "expired-token")
+	if err == nil {
+		t.Fatal("expected error for oversized response, got nil")
+	}
+	if !strings.Contains(err.Error(), "response body exceeds limit") {
+		t.Fatalf("expected bounded read error, got %v", err)
 	}
 }
 

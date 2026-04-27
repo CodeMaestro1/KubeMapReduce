@@ -62,6 +62,13 @@ func inferLanguage(path string) string {
 	}
 }
 
+// cmdJobsSubmit handles the 'jobs submit' command.
+//
+// It parses job specification flags (mapper, reducer, input, etc.) and constructs
+// a JSON payload to send to the API server. This command is designed to be
+// metadata-only: it tells the system where to find the code and data, but does
+// not upload the files themselves, assuming a shared storage environment or
+// pre-staged artifacts.
 func cmdJobsSubmit(args []string) {
 	fs := flag.NewFlagSet("jobs submit", flag.ExitOnError)
 	mapperPath := fs.String("mapper", "", "path to mapper file (required)")
@@ -139,6 +146,11 @@ func cmdJobsSubmit(args []string) {
 
 // ── jobs list ──────────────────────────────────────────────
 
+// cmdJobsList fetches and displays a summary of all jobs in the system.
+//
+// This command provides a tabular view of job IDs, statuses, and creation times.
+// It allows users to quickly monitor the overall state of the MapReduce cluster
+// and identify jobs that require further investigation.
 func cmdJobsList() {
 	token, serverURL := jobsListGetValidToken()
 	resp := jobsListDoAuthRequestExpect(
@@ -190,41 +202,11 @@ func cmdJobsList() {
 
 // ── jobs download ─────────────────────────────────────────
 
-func jobRequestPath(jobID, suffix string) string {
-	normalizedJobID := strings.TrimSpace(jobID)
-	return "/jobs/" + url.PathEscape(normalizedJobID) + suffix
-}
-
-func safeJobResultFilename(jobID string) string {
-	normalizedJobID := strings.TrimSpace(jobID)
-	if normalizedJobID == "" {
-		return "job.json"
-	}
-
-	var builder strings.Builder
-	for _, r := range normalizedJobID {
-		switch {
-		case r >= 'a' && r <= 'z':
-			builder.WriteRune(r)
-		case r >= 'A' && r <= 'Z':
-			builder.WriteRune(r)
-		case r >= '0' && r <= '9':
-			builder.WriteRune(r)
-		case r == '-' || r == '_' || r == '.':
-			builder.WriteRune(r)
-		default:
-			builder.WriteRune('_')
-		}
-	}
-
-	filename := strings.Trim(builder.String(), "._")
-	if filename == "" {
-		filename = "job"
-	}
-
-	return filename + ".json"
-}
-
+// cmdJobsDownload retrieves the output results for a completed job.
+//
+// Results are saved as a JSON file in the specified output directory. This
+// command interacts with the API's results endpoint, which aggregates or streams
+// data from the underlying storage (e.g., MinIO) back to the user's local machine.
 func cmdJobsDownload(args []string) {
 	fs := flag.NewFlagSet("jobs download", flag.ExitOnError)
 	jobID := fs.String("id", "", "job ID whose results to download (required)")
@@ -278,6 +260,11 @@ func cmdJobsDownload(args []string) {
 
 // ── jobs status ────────────────────────────────────────────
 
+// cmdJobsStatus displays detailed status information for a specific job.
+//
+// It returns a JSON object containing the current phase (e.g., Mapping, Reducing),
+// task completion counts, and any error messages if the job failed. This is the
+// primary tool for debugging job execution issues.
 func cmdJobsStatus(args []string) {
 	fs := flag.NewFlagSet("jobs status", flag.ExitOnError)
 	jobID := fs.String("id", "", "job ID to query (required)")
@@ -306,4 +293,49 @@ func cmdJobsStatus(args []string) {
 	defer resp.Body.Close()
 
 	printResponse(resp)
+}
+
+// ── jobs helpers ───────────────────────────────────────────
+
+// jobRequestPath constructs a safe API path for a job request.
+// It URL-escapes the jobID to prevent path traversal attacks and appends the given suffix.
+// Example: jobRequestPath("../jobs/abc 123", "/results") → "/jobs/..%2Fjobs%2Fabc%20123/results"
+func jobRequestPath(jobID, suffix string) string {
+	escaped := url.PathEscape(jobID)
+	return fmt.Sprintf("/jobs/%s%s", escaped, suffix)
+}
+
+// safeJobResultFilename sanitizes a job ID to create a safe filesystem filename.
+// It removes path separators and special characters that could cause traversal attacks,
+// then appends ".json". If the input is empty or whitespace, it returns "job.json".
+// Example: safeJobResultFilename("../windows\\system32:evil") → "windows_system32_evil.json"
+func safeJobResultFilename(jobID string) string {
+	normalized := strings.TrimSpace(jobID)
+	if normalized == "" {
+		return "job.json"
+	}
+
+	// Replace dangerous characters: /, \, :, etc. with underscore
+	dangerous := []string{"/", "\\", ":", "..", ".", "~"}
+	for _, char := range dangerous {
+		normalized = strings.ReplaceAll(normalized, char, "_")
+	}
+
+	// Remove any remaining non-alphanumeric characters except underscore and hyphen
+	var safe strings.Builder
+	for _, ch := range normalized {
+		if (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9') || ch == '_' || ch == '-' {
+			safe.WriteRune(ch)
+		} else {
+			safe.WriteRune('_')
+		}
+	}
+
+	result := safe.String()
+	// Trim leading/trailing underscores that may have resulted from sanitization
+	result = strings.Trim(result, "_")
+	if result == "" {
+		result = "job"
+	}
+	return result + ".json"
 }

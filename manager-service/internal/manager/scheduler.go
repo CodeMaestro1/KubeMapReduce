@@ -13,7 +13,13 @@ import (
 	"github.com/google/uuid"
 )
 
+// MaxTaskAttempts defines the maximum number of times a single task will be retried
+// before the entire job is marked as Failed.
 const MaxTaskAttempts = 3
+const (
+	cleanupReconcileWorkers   = 4
+	cleanupReconcileBatchSize = 64
+)
 
 var (
 	ErrNoIdleTasks            = errors.New("no idle tasks available right now, please wait")
@@ -29,16 +35,21 @@ var (
 	ErrQuotaExceeded          = errors.New("global worker pod quota exceeded")
 )
 
+// Scheduler manages the lifecycle of MapReduce jobs and their constituent tasks.
+//
+// It is the central authority for task assignment, state transitions, and lease-based
+// fencing. The Scheduler uses a Distributed Data Store (DDS) to maintain consistency
+// across multiple Manager replicas.
 type Scheduler struct {
 	db             *sql.DB
 	replicaIndex   int
 	totalReplicas  int
 	orchestrator   WorkerOrchestrator
-	stagingCleaner StagingCleaner
 	managerAddr    string
 	leaseTTL       int
+	staging        StagingCleaner
 	cleanupMu      sync.Mutex
-	pendingCleanup map[string]struct{}
+	pendingCleanup map[string]string
 }
 
 type taskMetadataQuerier interface {
@@ -46,7 +57,12 @@ type taskMetadataQuerier interface {
 	QueryRowContext(context.Context, string, ...any) *sql.Row
 }
 
-func NewScheduler(db *sql.DB, replicaIndex int, totalReplicas int, orchestrator WorkerOrchestrator, managerAddr string, leaseTTL int) (*Scheduler, error) {
+// NewScheduler initializes a new Scheduler instance.
+//
+// Callers must provide a valid *sql.DB connection and an implementation of WorkerOrchestrator.
+// The leaseTTL (in seconds) determines how long a worker can go without a heartbeat before
+// being considered stale by the Active Reaper. staging may be nil to disable MinIO cleanup.
+func NewScheduler(db *sql.DB, replicaIndex int, totalReplicas int, orchestrator WorkerOrchestrator, managerAddr string, leaseTTL int, staging StagingCleaner) (*Scheduler, error) {
 	if db == nil {
 		return nil, errors.New("db cannot be nil")
 	}
@@ -66,12 +82,17 @@ func NewScheduler(db *sql.DB, replicaIndex int, totalReplicas int, orchestrator 
 		orchestrator:   orchestrator,
 		managerAddr:    managerAddr,
 		leaseTTL:       leaseTTL,
-		pendingCleanup: make(map[string]struct{}),
+		staging:        staging,
+		pendingCleanup: make(map[string]string),
 	}, nil
 }
 
 // Recover reconciles active attempts assigned to this replica and re-spawns workers.
-// It should be called on startup to resume orchestration after a crash.
+//
+// This method should be called immediately after Manager startup. it queries the DDS
+// for tasks that are "In-Progress" and bound to this replica index, then uses the
+// orchestrator to ensure a physical worker process exists for each. This ensures
+// continuity across Manager crashes without losing progress.
 func (s *Scheduler) Recover(ctx context.Context) error {
 	rows, err := s.db.QueryContext(ctx, QuerySelectRecoverableAttempts, s.replicaIndex)
 	if err != nil {
@@ -135,7 +156,12 @@ func (s *Scheduler) prepareRetryAttemptTx(ctx context.Context, tx *sql.Tx, taskI
 	return attemptID.String(), nil
 }
 
-func (s *Scheduler) GetNextTask(jobID string, workerID string) (*Task, error) {
+// GetNextTask atomically selects and assigns the next schedulable task for a job.
+//
+// It enforces phase sequencing: all Map tasks must complete before any Reduce tasks
+// are scheduled. It also performs Resource Quota Enforcement by checking against the
+// global max_concurrent_pods limit before assigning a new task.
+func (s *Scheduler) GetNextTask(ctx context.Context, jobID string, workerID string) (*Task, error) {
 	if jobID == "" {
 		return nil, ErrEmptyJobID
 	}
@@ -146,28 +172,13 @@ func (s *Scheduler) GetNextTask(jobID string, workerID string) (*Task, error) {
 		return nil, ErrEmptyWorkerID
 	}
 
-	ctx := context.Background()
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, err
 	}
 	defer tx.Rollback()
 
-	// 1. Quota Enforcement
-	var maxPods, activePods int
-	err = tx.QueryRowContext(ctx, QueryGetMaxConcurrentPods).Scan(&maxPods)
-	if err != nil {
-		return nil, err
-	}
-	err = tx.QueryRowContext(ctx, QueryCountRunningAttempts).Scan(&activePods)
-	if err != nil {
-		return nil, err
-	}
-	if activePods >= maxPods {
-		return nil, ErrQuotaExceeded
-	}
-
-	// 2. Check for failed job tasks
+	// 1. Check for failed job tasks
 	var failedCount int
 	err = tx.QueryRowContext(ctx, QueryCountFailedTasks, jobID).Scan(&failedCount)
 	if err != nil {
@@ -177,7 +188,7 @@ func (s *Scheduler) GetNextTask(jobID string, workerID string) (*Task, error) {
 		return nil, ErrJobFailed
 	}
 
-	// 3. Try to schedule Map tasks first
+	// 2. Try to schedule Map tasks first
 	task, err := s.tryAssignTask(ctx, tx, jobID, workerID, "Map")
 	if err == nil {
 		if err := s.updateJobStatusTx(ctx, tx, jobID, "Running"); err != nil {
@@ -192,7 +203,7 @@ func (s *Scheduler) GetNextTask(jobID string, workerID string) (*Task, error) {
 		return nil, err
 	}
 
-	// 4. Check if Map phase is completed
+	// 3. Check if Map phase is completed
 	var pendingMapTasks int
 	err = tx.QueryRowContext(ctx, QueryCountPendingTasksByType, jobID, "Map").Scan(&pendingMapTasks)
 	if err != nil {
@@ -202,7 +213,7 @@ func (s *Scheduler) GetNextTask(jobID string, workerID string) (*Task, error) {
 		return nil, ErrNoIdleTasks
 	}
 
-	// 5. Try to schedule Reduce tasks
+	// 4. Try to schedule Reduce tasks
 	task, err = s.tryAssignTask(ctx, tx, jobID, workerID, "Reduce")
 	if err == nil {
 		if err := s.updateJobStatusTx(ctx, tx, jobID, "Running"); err != nil {
@@ -217,7 +228,7 @@ func (s *Scheduler) GetNextTask(jobID string, workerID string) (*Task, error) {
 		return nil, err
 	}
 
-	// 6. Check if Reduce phase is completed
+	// 5. Check if Reduce phase is completed
 	var pendingReduceTasks int
 	err = tx.QueryRowContext(ctx, QueryCountPendingTasksByType, jobID, "Reduce").Scan(&pendingReduceTasks)
 	if err != nil {
@@ -266,6 +277,8 @@ func (s *Scheduler) tryAssignTask(ctx context.Context, tx *sql.Tx, requestedJobI
 	t.LeaseID = leaseID.String()
 	t.State = InProgress
 	now := time.Now()
+	// NOTE: These are in-memory values for the caller's convenience (gRPC response).
+	// The DB-authoritative timestamps are set via NOW() in QueryInsertAttempt.
 	t.startTime = now
 	t.LastHeartbeat = now
 	requestedUUID, err := uuid.Parse(requestedJobID)
@@ -276,6 +289,9 @@ func (s *Scheduler) tryAssignTask(ctx context.Context, tx *sql.Tx, requestedJobI
 		return nil, fmt.Errorf("scheduled task %s belongs to unexpected job %s", t.ID, t.JobID)
 	}
 	if err := s.hydrateTaskMetadata(ctx, tx, &t); err != nil {
+		return nil, err
+	}
+	if err := s.enforceQuotaTx(ctx, tx); err != nil {
 		return nil, err
 	}
 
@@ -296,6 +312,27 @@ func (s *Scheduler) tryAssignTask(ctx context.Context, tx *sql.Tx, requestedJobI
 	}
 
 	return &t, nil
+}
+
+func (s *Scheduler) enforceQuotaTx(ctx context.Context, tx *sql.Tx) error {
+	if _, err := tx.ExecContext(ctx, QueryAcquireSchedulingLock); err != nil {
+		return err
+	}
+
+	var maxPods int
+	if err := tx.QueryRowContext(ctx, QueryGetMaxConcurrentPods).Scan(&maxPods); err != nil {
+		return err
+	}
+
+	var activePods int
+	if err := tx.QueryRowContext(ctx, QueryCountRunningAttempts).Scan(&activePods); err != nil {
+		return err
+	}
+
+	if activePods >= maxPods {
+		return ErrQuotaExceeded
+	}
+	return nil
 }
 
 func (s *Scheduler) hydrateTaskMetadata(ctx context.Context, q taskMetadataQuerier, t *Task) error {
@@ -362,8 +399,12 @@ func (s *Scheduler) hydrateTaskMetadata(ctx context.Context, q taskMetadataQueri
 	return nil
 }
 
-func (s *Scheduler) ScheduleJob(req ScheduleJobRequest) error {
-	ctx := context.Background()
+// ScheduleJob initializes a new MapReduce job in the DDS.
+//
+// It validates the job request, persists the job configuration, and creates the
+// set of "Idle" tasks ready for assignment. This method ensures that all tasks for
+// a specific job are assigned to a consistent Manager replica based on the jobID hash.
+func (s *Scheduler) ScheduleJob(ctx context.Context, req ScheduleJobRequest) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -415,9 +456,8 @@ func (s *Scheduler) ScheduleJob(req ScheduleJobRequest) error {
 	if err != nil {
 		return err
 	}
-	now := time.Now()
 
-	if _, err := tx.ExecContext(ctx, QueryInsertJob, jobID, userID, now, now); err != nil {
+	if _, err := tx.ExecContext(ctx, QueryInsertJob, jobID, userID); err != nil {
 		return err
 	}
 	if _, err := tx.ExecContext(ctx, QueryInsertJobConfig,
@@ -484,14 +524,65 @@ func (s *Scheduler) ScheduleJob(req ScheduleJobRequest) error {
 	return nil
 }
 
-func (s *Scheduler) UpsertSystemConfig(req SystemConfigUpdate) error {
-	ctx := context.Background()
-	_, err := s.db.ExecContext(ctx, QueryUpsertSystemConfig, req.MaxConcurrentPods, req.CPULimit, req.MemoryLimit, time.Now())
+// GetSystemConfig retrieves the current cluster configuration.
+func (s *Scheduler) GetSystemConfig(ctx context.Context) (SystemConfigUpdate, error) {
+	var cfg SystemConfigUpdate
+	err := s.db.QueryRowContext(ctx, QueryGetSystemConfig).Scan(
+		&cfg.MaxConcurrentPods,
+		&cfg.CPULimit,
+		&cfg.MemoryLimit,
+		&cfg.WorkerReplicas,
+		&cfg.MaxJobsPerNode,
+	)
+	if err == sql.ErrNoRows {
+		// Return defaults if not configured
+		return SystemConfigUpdate{
+			MaxConcurrentPods: 10,
+			CPULimit:          "500m",
+			MemoryLimit:       "1Gi",
+			WorkerReplicas:    1,
+			MaxJobsPerNode:    1,
+		}, nil
+	}
+	return cfg, err
+}
+
+// UpsertSystemConfig updates cluster-wide operational parameters.
+func (s *Scheduler) UpsertSystemConfig(ctx context.Context, req SystemConfigUpdate) error {
+	_, err := s.db.ExecContext(ctx, QueryUpsertSystemConfig,
+		req.MaxConcurrentPods,
+		req.CPULimit,
+		req.MemoryLimit,
+		req.WorkerReplicas,
+		req.MaxJobsPerNode,
+	)
 	return err
 }
 
 func (s *Scheduler) updateJobStatusTx(ctx context.Context, tx *sql.Tx, jobID string, status string) error {
-	_, err := tx.ExecContext(ctx, QueryUpdateJobStatus, jobID, status, time.Now())
+	_, err := tx.ExecContext(ctx, QueryUpdateJobStatus, jobID, status)
+	return err
+}
+
+// applyJobTransitionTx reads the current job status with FOR UPDATE, validates the
+// transition via ValidateJobTransition, and applies QueryUpdateJobStatus.
+// If the current status already equals to, it returns nil (idempotent no-op).
+func (s *Scheduler) applyJobTransitionTx(ctx context.Context, tx *sql.Tx, jobID string, to string) error {
+	var current string
+	err := tx.QueryRowContext(ctx, QueryGetJobStatusForUpdate, jobID).Scan(&current)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrTaskNotFound
+		}
+		return err
+	}
+	if current == to {
+		return nil
+	}
+	if err := ValidateJobTransition(current, to); err != nil {
+		return err
+	}
+	_, err = tx.ExecContext(ctx, QueryUpdateJobStatus, jobID, to)
 	return err
 }
 
@@ -507,7 +598,12 @@ func (s *Scheduler) validateLeaseTx(ctx context.Context, tx *sql.Tx, attemptID s
 	return nil
 }
 
-func (s *Scheduler) CompleteTask(taskID string, attemptID string, leaseID string, outputURIs []string, outputChecksums []string) error {
+// CompleteTask transitions a task to the "Completed" state and persists its output references.
+//
+// This is a fenced operation: it validates that the attemptID and leaseID are still valid
+// before committing. This prevents a "zombie" worker (one whose lease has expired) from
+// overwriting the work of a newer attempt.
+func (s *Scheduler) CompleteTask(ctx context.Context, taskID string, attemptID string, leaseID string, outputURIs []string, outputChecksums []string) error {
 	if len(outputURIs) != len(outputChecksums) {
 		return ErrOutputMismatch
 	}
@@ -518,7 +614,6 @@ func (s *Scheduler) CompleteTask(taskID string, attemptID string, leaseID string
 	safeChecksums := make([]string, len(outputChecksums))
 	copy(safeChecksums, outputChecksums)
 
-	ctx := context.Background()
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -584,19 +679,21 @@ func (s *Scheduler) CompleteTask(taskID string, attemptID string, leaseID string
 	}
 
 	if jobCompleted {
-		s.cleanStagingAndFinalizeJob(jobID, "Completed")
 		go func() {
-			cancelCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+			cancelCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Minute)
 			defer cancel()
-			s.tryCancelJob(cancelCtx, jobID, "completed")
+			s.finalizeJob(cancelCtx, jobID, "Completed")
 		}()
 	}
 
 	return nil
 }
 
-func (s *Scheduler) RenewLease(taskID string, attemptID string, leaseID string) error {
-	ctx := context.Background()
+// RenewLease extends the validity window of a task attempt.
+//
+// Workers must call this periodically (via Heartbeat) to signal they are still alive.
+// Failure to renew the lease allows the Active Reaper to reclaim the task for a new attempt.
+func (s *Scheduler) RenewLease(ctx context.Context, taskID string, attemptID string, leaseID string) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -632,15 +729,15 @@ func (s *Scheduler) RenewLease(taskID string, attemptID string, leaseID string) 
 	return tx.Commit()
 }
 
-func (s *Scheduler) CancelJob(jobID string) error {
-	ctx := context.Background()
+// CancelJob marks a job as "Cancelled" and terminates all associated worker processes.
+func (s *Scheduler) CancelJob(ctx context.Context, jobID string) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
 
-	if err := s.updateJobStatusTx(ctx, tx, jobID, "Cancelled"); err != nil {
+	if err := s.updateJobStatusTx(ctx, tx, jobID, "Cleaning"); err != nil {
 		return err
 	}
 
@@ -658,16 +755,19 @@ func (s *Scheduler) CancelJob(jobID string) error {
 	}
 
 	go func() {
-		cancelCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		cancelCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Minute)
 		defer cancel()
-		s.tryCancelJob(cancelCtx, jobID, "cancelled")
+		s.finalizeJob(cancelCtx, jobID, "Cancelled")
 	}()
 
 	return nil
 }
 
-func (s *Scheduler) FailTask(taskID string, attemptID string, leaseID string, reason string) error {
-	ctx := context.Background()
+// FailTask marks a task attempt as "Failed" and decides whether to retry or abort.
+//
+// If the task has not exceeded MaxTaskAttempts, it is returned to the "Idle" state for
+// another worker to pick up. Otherwise, the entire job is transitioned to "Failed".
+func (s *Scheduler) FailTask(ctx context.Context, taskID string, attemptID string, leaseID string, reason string) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -738,15 +838,17 @@ func (s *Scheduler) FailTask(taskID string, attemptID string, leaseID string, re
 	}
 
 	if newState == "Failed" {
-		s.cleanStagingAndFinalizeJob(jobID, "Failed")
 		go func() {
-			cancelCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+			cancelCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Minute)
 			defer cancel()
-			s.tryCancelJob(cancelCtx, jobID, "failed")
+			s.finalizeJob(cancelCtx, jobID, "Failed")
 		}()
 	} else if newState == "Idle" {
-		spawnCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		spawnCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
 		defer cancel()
+		if err := s.orchestrator.DeleteWorkerJob(spawnCtx, taskID); err != nil {
+			log.Printf("Failed to delete stale K8s Job for task %s before retry: %v", taskID, err)
+		}
 		if err := s.orchestrator.SpawnWorker(spawnCtx, taskID, jobID, retryAttemptID, s.managerAddr); err != nil {
 			log.Printf("Failed to respawn worker for failed task %s (attempt %s): %v", taskID, retryAttemptID, err)
 		}
@@ -755,8 +857,12 @@ func (s *Scheduler) FailTask(taskID string, attemptID string, leaseID string, re
 	return nil
 }
 
-func (s *Scheduler) FailStaleTasks() (int, error) {
-	ctx := context.Background()
+// FailStaleTasks identifies and reclaims tasks whose worker leases have expired.
+//
+// This is the implementation of the "Active Reaper" (Section 5.1). It runs as a background
+// process, scanning for "In-Progress" tasks that haven't sent a heartbeat within the
+// leaseTTL window. Stale tasks are either returned to "Idle" or marked as "Failed".
+func (s *Scheduler) FailStaleTasks(ctx context.Context) (int, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return 0, err
@@ -791,12 +897,7 @@ func (s *Scheduler) FailStaleTasks() (int, error) {
 		attemptID string
 		jobID     string
 	}
-	type zombieWorker struct {
-		taskID    string
-		attemptID string
-	}
 	var respawnTasks []retrySpawn
-	var zombies []zombieWorker
 	failedJobs := make(map[string]struct{})
 	for _, rec := range stales {
 		var jobID string
@@ -824,12 +925,9 @@ func (s *Scheduler) FailStaleTasks() (int, error) {
 		if err != nil {
 			return 0, fmt.Errorf("failing attempt %s: %w", rec.attemptID, err)
 		}
-		zombies = append(zombies, zombieWorker{taskID: rec.taskID, attemptID: rec.attemptID})
 		if newState == "Failed" {
-			if _, alreadyCleaning := failedJobs[jobID]; !alreadyCleaning {
-				if err := s.updateJobStatusTx(ctx, tx, jobID, "Cleaning"); err != nil {
-					return 0, fmt.Errorf("marking job %s Cleaning: %w", jobID, err)
-				}
+			if err := s.updateJobStatusTx(ctx, tx, jobID, "Cleaning"); err != nil {
+				return 0, fmt.Errorf("marking job %s failed: %w", jobID, err)
 			}
 			failedJobs[jobID] = struct{}{}
 		} else if newState == "Idle" {
@@ -847,34 +945,17 @@ func (s *Scheduler) FailStaleTasks() (int, error) {
 		return 0, err
 	}
 
-	// Reap zombie worker pods/jobs for each stale attempt. The DDS row is already
-	// authoritative (attempt marked Failed, task reset or failed), so any lingering
-	// pod's RPCs would be rejected by the fencing check; deleting the K8s Job here
-	// prevents zombie compute from consuming cluster resources. Deletes are best
-	// effort and idempotent (already-gone jobs are treated as success).
-	reapCtx, reapCancel := context.WithTimeout(context.Background(), 2*time.Minute)
-	defer reapCancel()
-	for _, z := range zombies {
-		if err := s.orchestrator.DeleteWorker(reapCtx, z.taskID, z.attemptID); err != nil {
-			log.Printf("Failed to delete zombie worker for task %s (attempt %s): %v", z.taskID, z.attemptID, err)
-		}
-	}
-
-	// Delete staging data and finalize each failed job through the Cleaning phase
-	// before marking it Failed. This is done before K8s cancellation so that
-	// any lingering workers RPCs will be rejected by fencing.
 	for jobID := range failedJobs {
-		s.cleanStagingAndFinalizeJob(jobID, "Failed")
-	}
-
-	cancelCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-	defer cancel()
-	for jobID := range failedJobs {
-		s.tryCancelJob(cancelCtx, jobID, "failed")
+		finalizeCtx, finalizeCancel := context.WithTimeout(ctx, 2*time.Minute)
+		s.finalizeJob(finalizeCtx, jobID, "Failed")
+		finalizeCancel()
 	}
 
 	for _, rec := range respawnTasks {
-		spawnCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		spawnCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		if err := s.orchestrator.DeleteWorkerJob(spawnCtx, rec.taskID); err != nil {
+			log.Printf("Failed to delete stale K8s Job for task %s before retry: %v", rec.taskID, err)
+		}
 		if err := s.orchestrator.SpawnWorker(spawnCtx, rec.taskID, rec.jobID, rec.attemptID, s.managerAddr); err != nil {
 			log.Printf("Failed to respawn worker for stale task %s (attempt %s): %v", rec.taskID, rec.attemptID, err)
 		}
@@ -884,8 +965,8 @@ func (s *Scheduler) FailStaleTasks() (int, error) {
 	return recoveredCount, nil
 }
 
-func (s *Scheduler) GetMapOutputs(jobID string) ([]string, error) {
-	ctx := context.Background()
+// GetMapOutputs retrieves output URIs from all successfully completed Map tasks for a job.
+func (s *Scheduler) GetMapOutputs(ctx context.Context, jobID string) ([]string, error) {
 	rows, err := s.db.QueryContext(ctx, QueryGetMapOutputs, jobID)
 	if err != nil {
 		return nil, err
@@ -906,8 +987,8 @@ func (s *Scheduler) GetMapOutputs(jobID string) ([]string, error) {
 	return outputs, nil
 }
 
-func (s *Scheduler) GetReduceOutputs(jobID string) ([]string, error) {
-	ctx := context.Background()
+// GetReduceOutputs retrieves output URIs from all successfully completed Reduce tasks for a job.
+func (s *Scheduler) GetReduceOutputs(ctx context.Context, jobID string) ([]string, error) {
 	rows, err := s.db.QueryContext(ctx, QueryGetReduceOutputs, jobID)
 	if err != nil {
 		return nil, err
@@ -928,22 +1009,22 @@ func (s *Scheduler) GetReduceOutputs(jobID string) ([]string, error) {
 	return outputs, nil
 }
 
-func (s *Scheduler) AllMapTasksCompleted(jobID string) bool {
-	ctx := context.Background()
+// AllMapTasksCompleted returns true if every Map task associated with the job is in the "Completed" state.
+func (s *Scheduler) AllMapTasksCompleted(ctx context.Context, jobID string) bool {
 	var pending int
 	err := s.db.QueryRowContext(ctx, QueryCountPendingMapTasks, jobID).Scan(&pending)
 	return err == nil && pending == 0
 }
 
-func (s *Scheduler) IsJobFinished(jobID string) bool {
-	ctx := context.Background()
+// IsJobFinished returns true if all tasks (Map and Reduce) for a job have reached the "Completed" state.
+func (s *Scheduler) IsJobFinished(ctx context.Context, jobID string) bool {
 	var pending int
 	err := s.db.QueryRowContext(ctx, QueryCountAllPendingTasks, jobID).Scan(&pending)
 	return err == nil && pending == 0
 }
 
-func (s *Scheduler) GetTaskStatus(taskID string) (TaskState, error) {
-	ctx := context.Background()
+// GetTaskStatus retrieves the current state of a specific task.
+func (s *Scheduler) GetTaskStatus(ctx context.Context, taskID string) (TaskState, error) {
 	var status string
 	err := s.db.QueryRowContext(ctx, QueryGetTaskStatus, taskID).Scan(&status)
 	if err != nil {
@@ -966,8 +1047,8 @@ func (s *Scheduler) GetTaskStatus(taskID string) (TaskState, error) {
 	}
 }
 
-func (s *Scheduler) GetTaskByID(taskID string) (*Task, error) {
-	ctx := context.Background()
+// GetTaskByID retrieves full metadata for a task, including its current attempt details if active.
+func (s *Scheduler) GetTaskByID(ctx context.Context, taskID string) (*Task, error) {
 	var t Task
 	var jobID uuid.UUID
 	var dbType string
@@ -1022,70 +1103,106 @@ func (s *Scheduler) GetTaskByID(taskID string) (*Task, error) {
 	return &t, nil
 }
 
-func (s *Scheduler) enqueueCleanup(jobID string) {
+func (s *Scheduler) enqueueCleanup(jobID, terminalState string) {
 	if strings.TrimSpace(jobID) == "" {
 		return
 	}
 	s.cleanupMu.Lock()
-	s.pendingCleanup[jobID] = struct{}{}
+	s.pendingCleanup[jobID] = terminalState
 	s.cleanupMu.Unlock()
 }
 
-// SetStagingCleaner registers a StagingCleaner implementation that will be
-// invoked during the Cleaning phase of a job before it is transitioned to
-// a terminal state (Completed or Failed). Calling this is optional; when not
-// set the Cleaning phase still transitions correctly but no staging objects
-// are removed (relying on the bucket lifecycle policy instead).
-func (s *Scheduler) SetStagingCleaner(c StagingCleaner) {
-	s.stagingCleaner = c
-}
-
-// cleanStagingAndFinalizeJob runs the Cleaning phase for a job: it bulk-deletes
-// the shuffle staging prefix (staging/<jobID>/) then marks the job with the
-// given terminal status. If staging deletion fails the error is logged and
-// finalization continues to prevent the job from being stuck in Cleaning.
-func (s *Scheduler) cleanStagingAndFinalizeJob(jobID, terminalStatus string) {
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-	defer cancel()
-
-	if s.stagingCleaner != nil {
-		if err := s.stagingCleaner.DeleteStagingPrefix(ctx, jobID); err != nil {
-			log.Printf("staging cleanup failed for job %s (finalizing as %s anyway): %v", jobID, terminalStatus, err)
-		}
-	}
-
-	if _, err := s.db.ExecContext(ctx, QueryUpdateJobStatus, jobID, terminalStatus, time.Now()); err != nil {
-		log.Printf("failed to finalize job %s as %s: %v", jobID, terminalStatus, err)
-	}
-}
-
-func (s *Scheduler) popPendingCleanup() []string {
+func (s *Scheduler) popPendingCleanup(limit int) map[string]string {
 	s.cleanupMu.Lock()
 	defer s.cleanupMu.Unlock()
 	if len(s.pendingCleanup) == 0 {
 		return nil
 	}
-	jobs := make([]string, 0, len(s.pendingCleanup))
-	for jobID := range s.pendingCleanup {
-		jobs = append(jobs, jobID)
+	if limit <= 0 || limit > len(s.pendingCleanup) {
+		limit = len(s.pendingCleanup)
+	}
+	jobs := make(map[string]string, limit)
+	popped := 0
+	for jobID, terminalState := range s.pendingCleanup {
+		jobs[jobID] = terminalState
 		delete(s.pendingCleanup, jobID)
+		popped++
+		if popped >= limit {
+			break
+		}
 	}
 	return jobs
 }
 
-func (s *Scheduler) tryCancelJob(ctx context.Context, jobID, reason string) {
+func (s *Scheduler) finalizeJob(ctx context.Context, jobID, terminalState string) {
 	if err := s.orchestrator.CancelJob(ctx, jobID); err != nil {
-		log.Printf("Failed to cleanup K8s worker jobs for %s job %s: %v", reason, jobID, err)
-		s.enqueueCleanup(jobID)
+		log.Printf("Failed to cleanup K8s worker jobs for job %s: %v", jobID, err)
+		s.enqueueCleanup(jobID, terminalState)
+		return
+	}
+
+	if s.staging != nil {
+		if err := s.staging.DeleteStagingObjects(ctx, jobID); err != nil {
+			log.Printf("Failed to delete staging objects for job %s: %v", jobID, err)
+			s.enqueueCleanup(jobID, terminalState)
+			return
+		}
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		log.Printf("Failed to begin tx for terminal status update of job %s: %v", jobID, err)
+		s.enqueueCleanup(jobID, terminalState)
+		return
+	}
+	defer tx.Rollback()
+
+	if err := s.applyJobTransitionTx(ctx, tx, jobID, terminalState); err != nil {
+		log.Printf("Failed to update terminal status of job %s: %v", jobID, err)
+		s.enqueueCleanup(jobID, terminalState)
+		return
+	}
+	if err := tx.Commit(); err != nil {
+		log.Printf("Failed to commit terminal status update of job %s: %v", jobID, err)
+		s.enqueueCleanup(jobID, terminalState)
+		return
 	}
 }
 
 // StartCleanupReconciler retries failed Kubernetes worker cleanup requests.
-// It should run for the process lifetime with a cancellable context.
+//
+// It should run for the process lifetime with a cancellable context. It periodically
+// pops failed cleanup requests from an internal queue and retries the finalizeJob flow.
 func (s *Scheduler) StartCleanupReconciler(ctx context.Context, interval time.Duration) {
 	if interval <= 0 {
 		interval = 15 * time.Second
 	}
+
+	// Recovery: Deduce terminal state for jobs stuck in Cleaning
+	rows, err := s.db.QueryContext(ctx, "SELECT job_id FROM JOBS WHERE status = 'Cleaning'")
+	if err == nil {
+		defer rows.Close()
+		for rows.Next() {
+			var jobID string
+			if err := rows.Scan(&jobID); err != nil {
+				log.Printf("Warning: failed to scan Cleaning job row during recovery: %v", err)
+				continue
+			}
+			terminalState, deriveErr := s.determineCleaningTerminalState(ctx, jobID)
+			if deriveErr != nil {
+				log.Printf("Warning: failed to determine terminal state for Cleaning job %s during recovery: %v", jobID, deriveErr)
+				s.enqueueCleanup(jobID, "")
+				continue
+			}
+			s.enqueueCleanup(jobID, terminalState)
+		}
+		if err := rows.Err(); err != nil {
+			log.Printf("Warning: failed iterating Cleaning jobs during recovery: %v", err)
+		}
+	} else {
+		log.Printf("Warning: failed to recover Cleaning jobs: %v", err)
+	}
+
 	ticker := time.NewTicker(interval)
 	go func() {
 		defer ticker.Stop()
@@ -1094,12 +1211,55 @@ func (s *Scheduler) StartCleanupReconciler(ctx context.Context, interval time.Du
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				for _, jobID := range s.popPendingCleanup() {
-					retryCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-					s.tryCancelJob(retryCtx, jobID, "retry")
-					cancel()
+				jobs := s.popPendingCleanup(cleanupReconcileBatchSize)
+				if len(jobs) == 0 {
+					continue
 				}
+
+				sem := make(chan struct{}, cleanupReconcileWorkers)
+				var wg sync.WaitGroup
+				for jobID, terminalState := range jobs {
+					wg.Add(1)
+					sem <- struct{}{}
+					go func(jobID, terminalState string) {
+						defer wg.Done()
+						defer func() { <-sem }()
+
+						retryCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+						defer cancel()
+						if strings.TrimSpace(terminalState) == "" {
+							var deriveErr error
+							terminalState, deriveErr = s.determineCleaningTerminalState(retryCtx, jobID)
+							if deriveErr != nil {
+								log.Printf("Warning: retrying cleanup for job %s after terminal-state recovery error: %v", jobID, deriveErr)
+								s.enqueueCleanup(jobID, "")
+								return
+							}
+						}
+						s.finalizeJob(retryCtx, jobID, terminalState)
+					}(jobID, terminalState)
+				}
+				wg.Wait()
 			}
 		}
 	}()
+}
+
+func (s *Scheduler) determineCleaningTerminalState(ctx context.Context, jobID string) (string, error) {
+	var failedCount int
+	if err := s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM TASKS WHERE job_id = $1 AND status = 'Failed'", jobID).Scan(&failedCount); err != nil {
+		return "", fmt.Errorf("query failed task count for job %s: %w", jobID, err)
+	}
+	if failedCount > 0 {
+		return "Failed", nil
+	}
+
+	var pending int
+	if err := s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM TASKS WHERE job_id = $1 AND status != 'Completed'", jobID).Scan(&pending); err != nil {
+		return "", fmt.Errorf("query pending task count for job %s: %w", jobID, err)
+	}
+	if pending > 0 {
+		return "Failed", nil
+	}
+	return "Completed", nil
 }

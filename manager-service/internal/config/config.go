@@ -7,37 +7,66 @@ import (
 	"strings"
 )
 
+// Config holds all environment-sourced configuration for the Manager Service.
+//
+// This central struct ensures that all external dependencies (Keycloak, Postgres,
+// MinIO) and internal tunables (Lease TTL, Heartbeat intervals) are validated
+// and typed before the service starts.
 type Config struct {
-	KeycloakBaseURL     string
-	Realm               string
-	JWKSURL             string
-	Issuer              string
-	Audience            string
-	ServerAddr          string
-	AdminUsername       string
-	AdminPassword       string
-	DatabaseDSN         string
-	GRPCAddr            string
-	TotalReplicas       int
-	HeartbeatInterval   int
+	// Keycloak configuration for user authentication and admin operations.
+	KeycloakBaseURL string
+	Realm           string
+	JWKSURL         string
+	Issuer          string
+	Audience        string
+	AdminUsername   string
+	AdminPassword   string
+
+	// Server addresses for REST and gRPC interfaces.
+	ServerAddr string
+	GRPCAddr   string
+
+	// Persistence layer connection string.
+	DatabaseDSN string
+
+	// Distributed scheduling parameters.
+	// TotalReplicas matches the K8s StatefulSet replica count for hashing logic.
+	TotalReplicas int
+	// HeartbeatInterval defines how often workers must check in.
+	HeartbeatInterval int
+	// MaxMissedHeartbeats is the tolerance before a worker is marked as failed.
 	MaxMissedHeartbeats int
-	LeaseTTL            int
-	MinioEndpoint       string
+	// LeaseTTL is calculated as HeartbeatInterval * MaxMissedHeartbeats.
+	LeaseTTL int
+
+	// Object storage configuration for input and intermediate data.
+	MinioEndpoint string
 	// MinioAccessKey and MinioSecretKey are expected to be injected via environment
-	// variables (typically from Kubernetes Secrets) when manifest fallback is enabled.
+	// variables (typically from Kubernetes Secrets).
 	MinioAccessKey string
 	MinioSecretKey string
 	MinioUseSSL    bool
-	// MinioBucket is the name of the primary object-storage bucket used for job
-	// inputs, outputs, and shuffle staging data.
-	MinioBucket          string
-	InternalAPIKey       string
-	WorkerRPCToken       string
-	GRPCTLSCertFile      string
-	GRPCTLSKeyFile       string
-	EnableGRPCReflection bool
+
+	// Security tokens for internal and worker communication.
+	InternalAPIKey                  string
+	AllowInsecureInternalCancelAuth bool
+	WorkerRPCToken                  string
+
+	// gRPC security and reflection settings.
+	GRPCTLSCertFile        string
+	GRPCTLSKeyFile         string
+	EnableGRPCReflection   bool
+	AllowInsecureWorkerRPC bool
+
+	// Manager internal endpoint
+	ManagerAddr string
 }
 
+// Load populates the [Config] struct from environment variables.
+//
+// It applies sensible defaults for local development but expects specific
+// overrides in production (e.g. via Helm chart env sections). Returns an error
+// if critical numeric values are malformed.
 func Load() (*Config, error) {
 	keycloakBaseURL := getEnv("KEYCLOAK_BASE_URL", "http://localhost:8080")
 	realm := getEnv("KEYCLOAK_REALM", "mapreduce")
@@ -61,29 +90,31 @@ func Load() (*Config, error) {
 	}
 
 	cfg := &Config{
-		KeycloakBaseURL:      keycloakBaseURL,
-		Realm:                realm,
-		JWKSURL:              getEnv("KEYCLOAK_JWKS_URL", keycloakBaseURL+"/realms/"+realm+"/protocol/openid-connect/certs"),
-		Issuer:               getEnv("KEYCLOAK_ISSUER", keycloakBaseURL+"/realms/"+realm),
-		Audience:             audience,
-		ServerAddr:           getEnv("SERVER_ADDR", ":8081"),
-		AdminUsername:        adminUsername,
-		AdminPassword:        adminPassword,
-		DatabaseDSN:          getEnv("DATABASE_DSN", "postgres://user:pass@localhost:5432/mapreduce?sslmode=disable"),
-		GRPCAddr:             getEnv("GRPC_ADDR", getEnv("GRPC_PORT", ":50051")),
-		TotalReplicas:        totalReplicas,
-		HeartbeatInterval:    hbInterval,
-		MaxMissedHeartbeats:  maxMissed,
-		MinioEndpoint:        getEnv("MINIO_ENDPOINT", ""),
-		MinioAccessKey:       getEnv("MINIO_ACCESS_KEY", ""),
-		MinioSecretKey:       getEnv("MINIO_SECRET_KEY", ""),
-		MinioUseSSL:          getEnvBool("MINIO_USE_SSL", false),
-		MinioBucket:          getEnv("MINIO_BUCKET", "mapreduce"),
-		InternalAPIKey:       getEnv("MANAGER_INTERNAL_API_KEY", ""),
-		WorkerRPCToken:       getEnv("MANAGER_WORKER_RPC_TOKEN", ""),
-		GRPCTLSCertFile:      getEnv("GRPC_TLS_CERT_FILE", ""),
-		GRPCTLSKeyFile:       getEnv("GRPC_TLS_KEY_FILE", ""),
-		EnableGRPCReflection: getEnvBool("ENABLE_GRPC_REFLECTION", false),
+		KeycloakBaseURL:                 keycloakBaseURL,
+		Realm:                           realm,
+		JWKSURL:                         getEnv("KEYCLOAK_JWKS_URL", keycloakBaseURL+"/realms/"+realm+"/protocol/openid-connect/certs"),
+		Issuer:                          getEnv("KEYCLOAK_ISSUER", keycloakBaseURL+"/realms/"+realm),
+		Audience:                        audience,
+		ServerAddr:                      getEnv("SERVER_ADDR", ":8081"),
+		AdminUsername:                   adminUsername,
+		AdminPassword:                   adminPassword,
+		DatabaseDSN:                     getEnv("DATABASE_DSN", "postgres://user:pass@localhost:5432/mapreduce?sslmode=disable"),
+		GRPCAddr:                        getEnv("GRPC_ADDR", getEnv("GRPC_PORT", ":50051")),
+		TotalReplicas:                   totalReplicas,
+		HeartbeatInterval:               hbInterval,
+		MaxMissedHeartbeats:             maxMissed,
+		MinioEndpoint:                   getEnv("MINIO_ENDPOINT", ""),
+		MinioAccessKey:                  getEnv("MINIO_ACCESS_KEY", ""),
+		MinioSecretKey:                  getEnv("MINIO_SECRET_KEY", ""),
+		MinioUseSSL:                     getEnvBool("MINIO_USE_SSL", false),
+		InternalAPIKey:                  getEnv("MANAGER_INTERNAL_API_KEY", ""),
+		AllowInsecureInternalCancelAuth: getEnvBool("ALLOW_INSECURE_INTERNAL_CANCEL_AUTH", false),
+		WorkerRPCToken:                  getEnv("MANAGER_WORKER_RPC_TOKEN", ""),
+		GRPCTLSCertFile:                 getEnv("GRPC_TLS_CERT_FILE", ""),
+		GRPCTLSKeyFile:                  getEnv("GRPC_TLS_KEY_FILE", ""),
+		EnableGRPCReflection:            getEnvBool("ENABLE_GRPC_REFLECTION", false),
+		AllowInsecureWorkerRPC:          getEnvBool("ALLOW_INSECURE_WORKER_RPC", false),
+		ManagerAddr:                     getEnv("MANAGER_ADDR", "manager-0.manager-hs.default.svc.cluster.local:8081"),
 	}
 	cfg.LeaseTTL = cfg.HeartbeatInterval * cfg.MaxMissedHeartbeats
 	return cfg, nil

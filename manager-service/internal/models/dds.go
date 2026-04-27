@@ -6,42 +6,77 @@ import (
 	"github.com/google/uuid"
 )
 
+// JobStatus represents the high-level lifecycle state of a MapReduce job.
+//
+// These states are used by the Manager to determine whether a job is eligible for
+// scheduling, cleaning, or reporting to the user. Transitions are typically
+// one-way toward terminal states ([JobCompleted], [JobFailed], [JobCancelled]).
 type JobStatus string
 
 const (
-	JobPending   JobStatus = "Pending"
-	JobRunning   JobStatus = "Running"
+	// JobPending indicates the job has been accepted and stored but not yet
+	// picked up by the orchestrator.
+	JobPending JobStatus = "Pending"
+	// JobRunning indicates the orchestrator is actively managing the job lifecycle.
+	JobRunning JobStatus = "Running"
+	// JobCompleted indicates the job finished successfully and all output is ready.
 	JobCompleted JobStatus = "Completed"
+	// JobCancelled indicates the job was stopped by user intervention.
 	JobCancelled JobStatus = "Cancelled"
-	JobFailed    JobStatus = "Failed"
-	JobCleaning  JobStatus = "Cleaning"
+	// JobFailed indicates the job stopped due to an unrecoverable error.
+	JobFailed JobStatus = "Failed"
+	// JobCleaning indicates the job has finished and the system is reclaiming
+	// resources (e.g. temporary MinIO buckets).
+	JobCleaning JobStatus = "Cleaning"
 )
 
+// TaskType distinguishes between the two primary phases of a MapReduce job.
 type TaskType string
 
 const (
-	TaskTypeMap    TaskType = "Map"
+	// TaskTypeMap represents a mapper task that processes input splits.
+	TaskTypeMap TaskType = "Map"
+	// TaskTypeReduce represents a reducer task that aggregates intermediate results.
 	TaskTypeReduce TaskType = "Reduce"
 )
 
+// TaskStatus represents the state of an individual unit of work.
+//
+// While a [Task] might have multiple [TaskAttempt]s, this status reflects the
+// aggregate state. A task is only "Completed" if at least one attempt succeeded.
 type TaskStatus string
 
 const (
-	TaskIdle       TaskStatus = "Idle"
+	// TaskIdle indicates the task is ready to be assigned to a worker.
+	TaskIdle TaskStatus = "Idle"
+	// TaskInProgress indicates a worker has claimed the task and a lease is active.
 	TaskInProgress TaskStatus = "In-Progress"
-	TaskCompleted  TaskStatus = "Completed"
-	TaskFailed     TaskStatus = "Failed"
+	// TaskCompleted indicates the task output has been verified and committed.
+	TaskCompleted TaskStatus = "Completed"
+	// TaskFailed indicates the task reached its maximum retry limit.
+	TaskFailed TaskStatus = "Failed"
 )
 
+// AttemptStatus tracks the status of a specific worker's execution of a task.
+//
+// This level of granularity is necessary to handle worker failures and "zombie"
+// workers. The Manager only accepts output from an attempt that matches the
+// task's [CurrentAttemptID].
 type AttemptStatus string
 
 const (
+	// AttemptRunning indicates the worker is actively heartbeating.
 	AttemptRunning AttemptStatus = "Running"
+	// AttemptSuccess indicates the worker reported success before the lease expired.
 	AttemptSuccess AttemptStatus = "Success"
-	AttemptFailed  AttemptStatus = "Failed"
+	// AttemptFailed indicates the worker reported a failure or the lease timed out.
+	AttemptFailed AttemptStatus = "Failed"
 )
 
-// Job corresponds to the JOBS table.
+// Job corresponds to the JOBS table in the Distributed Data Store (DDS).
+//
+// It serves as the root entity for all MapReduce operations, linking a user to
+// their submitted work.
 type Job struct {
 	JobID     uuid.UUID `db:"job_id" json:"jobId"`
 	UserID    uuid.UUID `db:"user_id" json:"userId"`
@@ -51,6 +86,10 @@ type Job struct {
 }
 
 // JobConfig corresponds to the JOB_CONFIGS table.
+//
+// This struct stores the immutable parameters provided by the user at submission.
+// Keeping these in a separate table from [Job] maintains a clean audit trail and
+// prevents the main JOBS table from becoming bloated with large URI strings.
 type JobConfig struct {
 	JobID         uuid.UUID `db:"job_id" json:"jobId"`
 	InputURI      string    `db:"input_uri" json:"inputUri"`
@@ -63,6 +102,10 @@ type JobConfig struct {
 }
 
 // Task corresponds to the TASKS table.
+//
+// A Task represents a logical partition of a [Job]. Fencing is managed via
+// the [CurrentAttemptID], which ensures that only the most recently assigned
+// worker can commit results to the DDS.
 type Task struct {
 	TaskID           uuid.UUID  `db:"task_id" json:"taskId"`
 	JobID            uuid.UUID  `db:"job_id" json:"jobId"`
@@ -73,6 +116,10 @@ type Task struct {
 }
 
 // TaskInput corresponds to the TASK_INPUTS table.
+//
+// It defines exactly which part of a file or intermediate data a task should
+// process. The [ByteStart] and [ByteEnd] fields allow for efficient range-based
+// reads from shared storage (MinIO).
 type TaskInput struct {
 	InputAssignmentID int64     `db:"input_assignment_id" json:"inputAssignmentId"`
 	TaskID            uuid.UUID `db:"task_id" json:"taskId"`
@@ -83,6 +130,10 @@ type TaskInput struct {
 }
 
 // TaskAttempt corresponds to the TASK_ATTEMPTS table.
+//
+// Each attempt represents one execution instance of a [Task]. The [LeaseID] and
+// [LastRenewedAt] fields are critical for the Active Reaper to identify and
+// reclaim tasks from crashed workers.
 type TaskAttempt struct {
 	AttemptID     uuid.UUID     `db:"attempt_id" json:"attemptId"`
 	TaskID        uuid.UUID     `db:"task_id" json:"taskId"`
@@ -96,6 +147,10 @@ type TaskAttempt struct {
 }
 
 // TaskOutput corresponds to the TASK_OUTPUTS table.
+//
+// It records the location and integrity [Checksum] of data produced by a
+// [Task]. These records are consumed by the Shuffle phase to prepare inputs for
+// Reducer tasks.
 type TaskOutput struct {
 	OutputID       int64     `db:"output_id" json:"outputId"`
 	TaskID         uuid.UUID `db:"task_id" json:"taskId"`
@@ -104,23 +159,19 @@ type TaskOutput struct {
 	Checksum       string    `db:"checksum" json:"checksum"`
 }
 
-// LeaseExpired checks if this attempt's lease has expired by computing
-// last_renewed_at + lease_ttl and comparing against the current time.
-// This follows the design document's runtime lease expiry computation
-// (Section 5.1: "Lease expiry is computed at runtime as last_renewed_at + lease_ttl").
-func (ta *TaskAttempt) LeaseExpired() bool {
-	expiry := ta.LastRenewedAt.Add(time.Duration(ta.LeaseTTL) * time.Second)
-	return time.Now().After(expiry)
-}
-
 // IsTerminal returns true if the job has reached a final state
 // (Completed, Failed, or Cancelled) and will not transition further.
-// Used by the Manager to trigger the Cleaning phase and garbage collection.
+//
+// This is used by the Manager to trigger the Cleaning phase and garbage collection
+// of ephemeral K8s resources.
 func (j *Job) IsTerminal() bool {
 	return j.Status == JobCompleted || j.Status == JobFailed || j.Status == JobCancelled
 }
 
 // SystemConfig corresponds to the SYSTEM_CONFIG table.
+//
+// It stores global platform limits that are applied to all jobs. These values
+// are typically managed by the Admin CLI to perform live tuning of the cluster.
 type SystemConfig struct {
 	ConfigID          int       `db:"config_id" json:"configId"`
 	MaxConcurrentPods int       `db:"max_concurrent_pods" json:"maxConcurrentPods"`

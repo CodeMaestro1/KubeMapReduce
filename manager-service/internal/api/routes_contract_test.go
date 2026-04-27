@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"kubemapreduce/auth-service/pkg/auth"
 )
@@ -11,7 +12,8 @@ import (
 // Keep API admin routes aligned with CLI expectations to prevent integration drift.
 func TestCLIAdminRoutes_MatchAPIRoutes(t *testing.T) {
 	mux := http.NewServeMux()
-	h := NewHandlers(nil)
+	store := NewMemoryJobStore(24*time.Hour, 10000, nil)
+	h := NewHandlers(nil, store, nil, "", "")
 	v := new(auth.JWTValidator)
 	RegisterRoutes(mux, h, v)
 
@@ -20,10 +22,10 @@ func TestCLIAdminRoutes_MatchAPIRoutes(t *testing.T) {
 		path   string
 		cmd    string
 	}{
-		{http.MethodPut, "/admin/workers/config", "admin worker-config"},
-		{http.MethodPut, "/admin/nodes/config", "admin configure-nodes"},
-		{http.MethodPost, "/admin/users", "admin create-user"},
-		{http.MethodDelete, "/admin/users/testuser", "admin delete-user"},
+		{http.MethodPut, "/api/v1/admin/workers/config", "admin worker-config"},
+		{http.MethodPut, "/api/v1/admin/nodes/config", "admin configure-nodes"},
+		{http.MethodPost, "/api/v1/admin/users", "admin create-user"},
+		{http.MethodDelete, "/api/v1/admin/users/testuser", "admin delete-user"},
 	}
 
 	for _, tc := range cliAdminPaths {

@@ -14,23 +14,46 @@ import (
 	"k8s.io/client-go/kubernetes"
 )
 
+// WorkerOrchestrator defines the interface for managing the lifecycle of physical worker processes.
+//
+// This abstraction allows the Manager to remain agnostic of the underlying execution platform
+// (e.g., Kubernetes, local Docker, or bare processes), facilitating easier testing and
+// future-proofing against platform migrations.
 type WorkerOrchestrator interface {
+	// SpawnWorker initiates a new worker process for a specific task attempt.
+	//
+	// Callers must provide a unique attemptID which acts as the fencing token in the gRPC layer.
+	// The orchestrator is responsible for ensuring environment variables are correctly set so
+	// the worker can dial back to the managerAddr and identify itself.
 	SpawnWorker(ctx context.Context, taskID string, jobID string, attemptID string, managerAddr string) error
+
+	// CancelJob terminates all active worker processes associated with a specific job.
+	//
+	// This is used during job cancellation or failure to immediately reclaim cluster resources.
+	// Implementation should be idempotent and handle cases where some workers might already be dead.
 	CancelJob(ctx context.Context, jobID string) error
-	// DeleteWorker removes the Kubernetes Job (and its pod) associated with a single
-	// worker attempt. It is used by the Active Reaper to reap zombie workers whose
-	// lease has expired before the task is reset or failed in the DDS.
-	// Implementations must be idempotent: deleting a worker that is already gone
-	// must not return an error.
-	DeleteWorker(ctx context.Context, taskID string, attemptID string) error
+
+	// DeleteWorkerJob removes the K8s Job (and its pod) for a specific task, identified by
+	// the task_id label. Called before SpawnWorker on retry paths so the old pod is
+	// evicted before the new attempt starts, preventing two pods from running concurrently.
+	// Implementation must be idempotent: no error when no matching job exists.
+	DeleteWorkerJob(ctx context.Context, taskID string) error
 }
 
+// KubeOrchestrator implements WorkerOrchestrator using Kubernetes Jobs.
+//
+// Each worker is wrapped in a K8s Job with a restartPolicy of Never. This ensures that
+// task retries are controlled exclusively by the Manager's scheduler logic rather than
+// the K8s kubelet, preventing "zombie" retries from interfering with new attempts.
 type KubeOrchestrator struct {
 	clientset   kubernetes.Interface
 	namespace   string
 	workerImage string
 }
 
+// NewKubeOrchestrator creates a new Kubernetes-backed orchestrator.
+//
+// It defaults to the "default" namespace and "kubemapreduce-worker:latest" image if not specified.
 func NewKubeOrchestrator(clientset kubernetes.Interface, namespace, workerImage string) *KubeOrchestrator {
 	if namespace == "" {
 		namespace = "default"
@@ -45,6 +68,11 @@ func NewKubeOrchestrator(clientset kubernetes.Interface, namespace, workerImage 
 	}
 }
 
+// SpawnWorker creates a K8s Job for a task attempt.
+//
+// It uses a deterministic naming scheme (worker-[taskID]-[hash]) to prevent duplicate jobs
+// for the same attempt. The backoffLimit is set to 0 because the Manager handles retries
+// at the application level to maintain strict state consistency in the DDS.
 func (k *KubeOrchestrator) SpawnWorker(ctx context.Context, taskID string, jobID string, attemptID string, managerAddr string) error {
 	sanitizedTaskID := sanitizeForDNSLabel(taskID)
 	sanitizedJobID := sanitizeForDNSLabel(jobID)
@@ -105,6 +133,10 @@ func (k *KubeOrchestrator) SpawnWorker(ctx context.Context, taskID string, jobID
 	return nil
 }
 
+// CancelJob deletes all K8s Jobs tagged with the job_id label.
+//
+// PropagationPolicy is set to Background to allow the API call to return quickly while
+// K8s cleans up the underlying pods asynchronously.
 func (k *KubeOrchestrator) CancelJob(ctx context.Context, jobID string) error {
 	sanitizedJobID := sanitizeForDNSLabel(jobID)
 	policy := metav1.DeletePropagationBackground
@@ -114,20 +146,35 @@ func (k *KubeOrchestrator) CancelJob(ctx context.Context, jobID string) error {
 	)
 }
 
-// DeleteWorker deletes the K8s Job (and its pod, via background propagation)
-// belonging to a specific worker attempt. Missing jobs are treated as success
-// so reaper retries remain idempotent.
-func (k *KubeOrchestrator) DeleteWorker(ctx context.Context, taskID string, attemptID string) error {
+// DeleteWorkerJob removes all K8s Jobs tagged with task_id=<taskID>, freeing the
+// pod slot before a new attempt is spawned. It lists matching jobs and deletes
+// each individually (rather than DeleteCollection) so unrelated jobs are never
+// affected and per-job errors can be reported precisely.
+// PropagationPolicy Background lets pods be reaped asynchronously.
+// NotFound on any individual job is silently ignored (idempotent).
+func (k *KubeOrchestrator) DeleteWorkerJob(ctx context.Context, taskID string) error {
 	sanitizedTaskID := sanitizeForDNSLabel(taskID)
-	jobName := buildWorkerJobName(sanitizedTaskID, attemptID)
-	policy := metav1.DeletePropagationBackground
-	err := k.clientset.BatchV1().Jobs(k.namespace).Delete(ctx, jobName, metav1.DeleteOptions{PropagationPolicy: &policy})
-	if err == nil || apierrors.IsNotFound(err) {
-		return nil
+	jobs, err := k.clientset.BatchV1().Jobs(k.namespace).List(ctx, metav1.ListOptions{
+		LabelSelector: fmt.Sprintf("task_id=%s", sanitizedTaskID),
+	})
+	if err != nil {
+		if apierrors.IsNotFound(err) {
+			return nil
+		}
+		return fmt.Errorf("list jobs for task %s: %w", taskID, err)
 	}
-	return err
+	policy := metav1.DeletePropagationBackground
+	for i := range jobs.Items {
+		delErr := k.clientset.BatchV1().Jobs(k.namespace).Delete(ctx, jobs.Items[i].Name,
+			metav1.DeleteOptions{PropagationPolicy: &policy})
+		if delErr != nil && !apierrors.IsNotFound(delErr) {
+			return fmt.Errorf("delete job %s: %w", jobs.Items[i].Name, delErr)
+		}
+	}
+	return nil
 }
 
+// MockOrchestrator is a no-op implementation for unit testing.
 type MockOrchestrator struct{}
 
 func (m *MockOrchestrator) SpawnWorker(ctx context.Context, taskID string, jobID string, attemptID string, managerAddr string) error {
@@ -138,7 +185,7 @@ func (m *MockOrchestrator) CancelJob(ctx context.Context, jobID string) error {
 	return nil
 }
 
-func (m *MockOrchestrator) DeleteWorker(ctx context.Context, taskID string, attemptID string) error {
+func (m *MockOrchestrator) DeleteWorkerJob(ctx context.Context, taskID string) error {
 	return nil
 }
 
