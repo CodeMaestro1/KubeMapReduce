@@ -93,7 +93,20 @@ func main() {
 		port = "50051"
 	}
 	managerAddr := resolveManagerAddr(hostname, headlessService, namespace, port)
-	scheduler, err := manager.NewScheduler(db, replicaIndex, cfg.TotalReplicas, orchestrator, managerAddr, cfg.LeaseTTL)
+	var stagingCleaner manager.StagingCleaner
+	if cfg.MinioEndpoint != "" && cfg.MinioAccessKey != "" && cfg.MinioSecretKey != "" {
+		mc, mcErr := minio.New(cfg.MinioEndpoint, &minio.Options{
+			Creds:  credentials.NewStaticV4(cfg.MinioAccessKey, cfg.MinioSecretKey, ""),
+			Secure: cfg.MinioUseSSL,
+		})
+		if mcErr != nil {
+			log.Printf("staging cleaner: failed to create minio client: %v", mcErr)
+		} else {
+			stagingCleaner = manager.NewMinioStagingCleaner(mc)
+		}
+	}
+
+	scheduler, err := manager.NewScheduler(db, replicaIndex, cfg.TotalReplicas, orchestrator, managerAddr, cfg.LeaseTTL, stagingCleaner)
 	if err != nil {
 		log.Fatalf("failed to create scheduler: %v", err)
 	}
@@ -144,6 +157,25 @@ func main() {
 		if err := scheduler.CancelJob(cancelCtx, jobID); err != nil {
 			log.Printf("failed to cancel job %s: %v", jobID, err)
 			http.Error(w, "failed to cancel job", http.StatusInternalServerError)
+			return
+		}
+		w.WriteHeader(http.StatusAccepted)
+	})
+	mux.HandleFunc("POST /internal/schedule", func(w http.ResponseWriter, r *http.Request) {
+		if !isAuthorizedInternalCancel(r, cfg.InternalAPIKey, cfg.AllowInsecureInternalCancelAuth) {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		var req manager.ScheduleJobRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "invalid payload", http.StatusBadRequest)
+			return
+		}
+		schedCtx, schedCancel := context.WithTimeout(r.Context(), 30*time.Second)
+		defer schedCancel()
+		if err := scheduler.ScheduleJob(schedCtx, req); err != nil {
+			log.Printf("failed to schedule job %s: %v", req.JobID, err)
+			http.Error(w, "failed to schedule job", http.StatusInternalServerError)
 			return
 		}
 		w.WriteHeader(http.StatusAccepted)

@@ -43,6 +43,10 @@ func (o *TrackingOrchestrator) CancelJob(ctx context.Context, jobID string) erro
 	return nil
 }
 
+func (o *TrackingOrchestrator) DeleteWorkerJob(ctx context.Context, taskID string) error {
+	return nil
+}
+
 // SpawnCount returns the number of SpawnWorker calls recorded so far.
 func (o *TrackingOrchestrator) SpawnCount() int {
 	o.mu.Lock()
@@ -78,7 +82,7 @@ func setupE2ETest(t *testing.T) (*sql.DB, sqlmock.Sqlmock, *Scheduler, *Tracking
 	}
 
 	orch := &TrackingOrchestrator{}
-	s, err := NewScheduler(db, 0, 1, orch, "localhost:50051", 30)
+	s, err := NewScheduler(db, 0, 1, orch, "localhost:50051", 30, nil)
 	if err != nil {
 		t.Fatalf("failed to create scheduler: %v", err)
 	}
@@ -109,7 +113,7 @@ func TestE2E_WorkerKillDuringMapTask(t *testing.T) {
 	mock.ExpectExec(regexp.QuoteMeta(QueryUpdateTaskInProgress)).WithArgs(sqlmock.AnyArg(), taskID).WillReturnResult(sqlmock.NewResult(1, 1))
 	mock.ExpectExec(regexp.QuoteMeta(QueryInsertAttempt)).WithArgs(sqlmock.AnyArg(), taskID, workerID, sqlmock.AnyArg(), s.leaseTTL).WillReturnResult(sqlmock.NewResult(1, 1))
 	// update job status
-	mock.ExpectExec(regexp.QuoteMeta(QueryUpdateJobStatus)).WithArgs(jobID, "Running", sqlmock.AnyArg()).WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectExec(regexp.QuoteMeta(QueryUpdateJobStatus)).WithArgs(jobID, "Running").WillReturnResult(sqlmock.NewResult(1, 1))
 	mock.ExpectCommit()
 
 	task, err := s.GetNextTask(context.Background(), jobID, workerID)
@@ -190,12 +194,15 @@ func TestE2E_TripleFailure_MaxAttemptsExhaustion(t *testing.T) {
 	mock.ExpectExec(regexp.QuoteMeta(QueryUpdateTaskStatus)).WithArgs("Failed", taskID).WillReturnResult(sqlmock.NewResult(1, 1))
 	mock.ExpectExec(regexp.QuoteMeta(QueryFailAttempt)).WithArgs(attemptID3).WillReturnResult(sqlmock.NewResult(1, 1))
 	// updateJobStatusTx to Cleaning
-	mock.ExpectExec(regexp.QuoteMeta(QueryUpdateJobStatus)).WithArgs(jobID, "Cleaning", sqlmock.AnyArg()).WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectExec(regexp.QuoteMeta(QueryUpdateJobStatus)).WithArgs(jobID, "Cleaning").WillReturnResult(sqlmock.NewResult(1, 1))
 	mock.ExpectCommit()
 
 	// finalizeJob mock (called synchronously in FailStaleTasks)
 	mock.ExpectBegin()
-	mock.ExpectExec(regexp.QuoteMeta(QueryUpdateJobStatus)).WithArgs(jobID, "Failed", sqlmock.AnyArg()).WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectQuery(regexp.QuoteMeta(QueryGetJobStatusForUpdate)).
+		WithArgs(jobID).
+		WillReturnRows(sqlmock.NewRows([]string{"status"}).AddRow("Cleaning"))
+	mock.ExpectExec(regexp.QuoteMeta(QueryUpdateJobStatus)).WithArgs(jobID, "Failed").WillReturnResult(sqlmock.NewResult(1, 1))
 	mock.ExpectCommit()
 
 	recovered, err := s.FailStaleTasks(context.Background())
@@ -214,14 +221,17 @@ func TestE2E_CancellationDuringExecution(t *testing.T) {
 	jobID := uuid.New().String()
 
 	mock.ExpectBegin()
-	mock.ExpectExec(regexp.QuoteMeta(QueryUpdateJobStatus)).WithArgs(jobID, "Cleaning", sqlmock.AnyArg()).WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectExec(regexp.QuoteMeta(QueryUpdateJobStatus)).WithArgs(jobID, "Cleaning").WillReturnResult(sqlmock.NewResult(1, 1))
 	mock.ExpectExec(regexp.QuoteMeta("UPDATE TASKS SET status = 'Failed' WHERE job_id = $1 AND status != 'Completed'")).WithArgs(jobID).WillReturnResult(sqlmock.NewResult(1, 1))
 	mock.ExpectExec(regexp.QuoteMeta(QueryFailRunningAttemptsByJob)).WithArgs(jobID).WillReturnResult(sqlmock.NewResult(1, 1))
 	mock.ExpectCommit()
 
 	// finalizeJob mock (called in goroutine)
 	mock.ExpectBegin()
-	mock.ExpectExec(regexp.QuoteMeta(QueryUpdateJobStatus)).WithArgs(jobID, "Cancelled", sqlmock.AnyArg()).WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectQuery(regexp.QuoteMeta(QueryGetJobStatusForUpdate)).
+		WithArgs(jobID).
+		WillReturnRows(sqlmock.NewRows([]string{"status"}).AddRow("Cleaning"))
+	mock.ExpectExec(regexp.QuoteMeta(QueryUpdateJobStatus)).WithArgs(jobID, "Cancelled").WillReturnResult(sqlmock.NewResult(1, 1))
 	mock.ExpectCommit()
 
 	err := s.CancelJob(context.Background(), jobID)
@@ -229,10 +239,13 @@ func TestE2E_CancellationDuringExecution(t *testing.T) {
 		t.Fatalf("CancelJob failed: %v", err)
 	}
 
-	// Poll with mutex-safe accessor until the async finalizeJob goroutine completes.
-	deadline := time.Now().Add(500 * time.Millisecond)
+	// Poll until the async finalizeJob goroutine has both called orchestrator.CancelJob
+	// AND committed its DB transaction. Checking only CancelCount > 0 is insufficient:
+	// CancelJob is called before the DB operations, so the expectations may not yet be
+	// met when the poll breaks — especially under -race where goroutine scheduling is slower.
+	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
-		if orch.CancelCount() > 0 {
+		if orch.CancelCount() > 0 && mock.ExpectationsWereMet() == nil {
 			break
 		}
 		time.Sleep(10 * time.Millisecond)

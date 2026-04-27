@@ -53,6 +53,65 @@ func TestKubeOrchestrator_SpawnWorker_SetsJobLabels(t *testing.T) {
 	}
 }
 
+func TestKubeOrchestrator_DeleteWorkerJob_DeletesJobsByTaskID(t *testing.T) {
+	taskID := "Task-A"
+	sanitized := sanitizeForDNSLabel(taskID)
+
+	job1 := &batchv1.Job{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "worker-" + sanitized + "-attempt-1",
+			Namespace: "default",
+			Labels:    map[string]string{"task_id": sanitized},
+		},
+	}
+	job2 := &batchv1.Job{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "worker-" + sanitized + "-attempt-2",
+			Namespace: "default",
+			Labels:    map[string]string{"task_id": sanitized},
+		},
+	}
+	// unrelated job that must survive
+	other := &batchv1.Job{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "worker-other-task",
+			Namespace: "default",
+			Labels:    map[string]string{"task_id": "other-task"},
+		},
+	}
+	client := fake.NewSimpleClientset(job1, job2, other)
+	orchestrator := NewKubeOrchestrator(client, "default", "worker:latest")
+
+	if err := orchestrator.DeleteWorkerJob(context.Background(), taskID); err != nil {
+		t.Fatalf("DeleteWorkerJob failed: %v", err)
+	}
+
+	remaining, err := client.BatchV1().Jobs("default").List(context.Background(), metav1.ListOptions{
+		LabelSelector: "task_id=" + sanitized,
+	})
+	if err != nil {
+		t.Fatalf("list jobs: %v", err)
+	}
+	if len(remaining.Items) != 0 {
+		t.Errorf("expected 0 jobs for task_id=%s after delete, got %d", sanitized, len(remaining.Items))
+	}
+
+	// Unrelated job must still exist.
+	_, err = client.BatchV1().Jobs("default").Get(context.Background(), "worker-other-task", metav1.GetOptions{})
+	if err != nil {
+		t.Errorf("unrelated job was incorrectly deleted: %v", err)
+	}
+}
+
+func TestKubeOrchestrator_DeleteWorkerJob_NoJobsIsIdempotent(t *testing.T) {
+	client := fake.NewSimpleClientset()
+	orchestrator := NewKubeOrchestrator(client, "default", "worker:latest")
+
+	if err := orchestrator.DeleteWorkerJob(context.Background(), "nonexistent-task"); err != nil {
+		t.Fatalf("expected no error deleting nonexistent task jobs, got: %v", err)
+	}
+}
+
 func TestKubeOrchestrator_SpawnWorker_AlreadyExistsIsIdempotent(t *testing.T) {
 	taskID := "task-id"
 	attemptID := "attempt-id"

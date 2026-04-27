@@ -14,11 +14,15 @@ import (
 // JobRecord holds the persisted state for a single job, mapping to the JOBS
 // and JOB_CONFIGS DDS tables.
 type JobRecord struct {
-	JobID     string
-	Status    string
-	Filename  string
-	Reducers  int
-	CreatedAt time.Time
+	JobID       string
+	Status      string
+	Filename    string
+	Reducers    int
+	CreatedAt   time.Time
+	MapperURI   string
+	ReducerURI  string
+	CombinerURI string
+	MTasks      int
 }
 
 // ErrInvalidJobID is returned when a provided job ID is not a valid UUID.
@@ -47,7 +51,7 @@ const (
 
 	queryInsertAPIJobConfig = `
 		INSERT INTO JOB_CONFIGS (job_id, input_uri, mapper_uri, reducer_uri, combiner_uri, m_tasks, r_tasks, input_checksum)
-		VALUES ($1, $2, '', '', '', 0, $3, '')`
+		VALUES ($1, $2, $3, $4, $5, $6, $7, '')`
 
 	queryListAPIJobs = `
 		SELECT j.job_id, j.status, COALESCE(jc.input_uri, ''), COALESCE(jc.r_tasks, 0), j.created_at
@@ -97,7 +101,7 @@ func (s *PostgresJobStore) CreateJob(ctx context.Context, rec JobRecord) error {
 	if _, err := tx.ExecContext(ctx, queryInsertAPIJob, jobUUID, uuid.Nil, now, now); err != nil {
 		return err
 	}
-	if _, err := tx.ExecContext(ctx, queryInsertAPIJobConfig, jobUUID, rec.Filename, rec.Reducers); err != nil {
+	if _, err := tx.ExecContext(ctx, queryInsertAPIJobConfig, jobUUID, rec.Filename, rec.MapperURI, rec.ReducerURI, rec.CombinerURI, rec.MTasks, rec.Reducers); err != nil {
 		return err
 	}
 

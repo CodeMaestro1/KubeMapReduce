@@ -7,6 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"path"
+	"strings"
 
 	"github.com/minio/minio-go/v7"
 	"google.golang.org/grpc/codes"
@@ -85,7 +87,7 @@ func (s *WorkerServer) Register(ctx context.Context, req *pb.RegisterRequest) (*
 		JobId:            task.JobID,
 		CodeLocation:     task.CodeURI,
 		CombinerLocation: task.CombinerURI,
-		RuntimeEnv:       "",
+		RuntimeEnv:       runtimeEnvFromCodeURI(task.CodeURI),
 		ByteStart:        task.ByteStart,
 		ByteEnd:          task.ByteEnd,
 		PartitionId:      0,
@@ -261,6 +263,23 @@ type splitInfo struct {
 	ByteStart     int64
 	ByteEnd       int64
 	SplitChecksum string
+}
+
+// runtimeEnvFromCodeURI infers the worker runtime from the file extension of the
+// code artifact URI (e.g. "s3://bucket/mapper.py" → "python").
+func runtimeEnvFromCodeURI(codeURI string) string {
+	switch strings.ToLower(path.Ext(codeURI)) {
+	case ".py":
+		return "python"
+	case ".jar":
+		return "java"
+	case ".c":
+		return "c"
+	case ".cpp", ".cc", ".cxx":
+		return "cpp"
+	default:
+		return ""
+	}
 }
 
 // findMapSplitForTask selects the first input split from a map task.

@@ -47,6 +47,7 @@ type Scheduler struct {
 	orchestrator   WorkerOrchestrator
 	managerAddr    string
 	leaseTTL       int
+	staging        StagingCleaner
 	cleanupMu      sync.Mutex
 	pendingCleanup map[string]string
 }
@@ -60,8 +61,8 @@ type taskMetadataQuerier interface {
 //
 // Callers must provide a valid *sql.DB connection and an implementation of WorkerOrchestrator.
 // The leaseTTL (in seconds) determines how long a worker can go without a heartbeat before
-// being considered stale by the Active Reaper.
-func NewScheduler(db *sql.DB, replicaIndex int, totalReplicas int, orchestrator WorkerOrchestrator, managerAddr string, leaseTTL int) (*Scheduler, error) {
+// being considered stale by the Active Reaper. staging may be nil to disable MinIO cleanup.
+func NewScheduler(db *sql.DB, replicaIndex int, totalReplicas int, orchestrator WorkerOrchestrator, managerAddr string, leaseTTL int, staging StagingCleaner) (*Scheduler, error) {
 	if db == nil {
 		return nil, errors.New("db cannot be nil")
 	}
@@ -81,6 +82,7 @@ func NewScheduler(db *sql.DB, replicaIndex int, totalReplicas int, orchestrator 
 		orchestrator:   orchestrator,
 		managerAddr:    managerAddr,
 		leaseTTL:       leaseTTL,
+		staging:        staging,
 		pendingCleanup: make(map[string]string),
 	}, nil
 }
@@ -275,6 +277,8 @@ func (s *Scheduler) tryAssignTask(ctx context.Context, tx *sql.Tx, requestedJobI
 	t.LeaseID = leaseID.String()
 	t.State = InProgress
 	now := time.Now()
+	// NOTE: These are in-memory values for the caller's convenience (gRPC response).
+	// The DB-authoritative timestamps are set via NOW() in QueryInsertAttempt.
 	t.startTime = now
 	t.LastHeartbeat = now
 	requestedUUID, err := uuid.Parse(requestedJobID)
@@ -452,9 +456,8 @@ func (s *Scheduler) ScheduleJob(ctx context.Context, req ScheduleJobRequest) err
 	if err != nil {
 		return err
 	}
-	now := time.Now()
 
-	if _, err := tx.ExecContext(ctx, QueryInsertJob, jobID, userID, now, now); err != nil {
+	if _, err := tx.ExecContext(ctx, QueryInsertJob, jobID, userID); err != nil {
 		return err
 	}
 	if _, err := tx.ExecContext(ctx, QueryInsertJobConfig,
@@ -552,13 +555,34 @@ func (s *Scheduler) UpsertSystemConfig(ctx context.Context, req SystemConfigUpda
 		req.MemoryLimit,
 		req.WorkerReplicas,
 		req.MaxJobsPerNode,
-		time.Now(),
 	)
 	return err
 }
 
 func (s *Scheduler) updateJobStatusTx(ctx context.Context, tx *sql.Tx, jobID string, status string) error {
-	_, err := tx.ExecContext(ctx, QueryUpdateJobStatus, jobID, status, time.Now())
+	_, err := tx.ExecContext(ctx, QueryUpdateJobStatus, jobID, status)
+	return err
+}
+
+// applyJobTransitionTx reads the current job status with FOR UPDATE, validates the
+// transition via ValidateJobTransition, and applies QueryUpdateJobStatus.
+// If the current status already equals to, it returns nil (idempotent no-op).
+func (s *Scheduler) applyJobTransitionTx(ctx context.Context, tx *sql.Tx, jobID string, to string) error {
+	var current string
+	err := tx.QueryRowContext(ctx, QueryGetJobStatusForUpdate, jobID).Scan(&current)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrTaskNotFound
+		}
+		return err
+	}
+	if current == to {
+		return nil
+	}
+	if err := ValidateJobTransition(current, to); err != nil {
+		return err
+	}
+	_, err = tx.ExecContext(ctx, QueryUpdateJobStatus, jobID, to)
 	return err
 }
 
@@ -822,6 +846,9 @@ func (s *Scheduler) FailTask(ctx context.Context, taskID string, attemptID strin
 	} else if newState == "Idle" {
 		spawnCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
 		defer cancel()
+		if err := s.orchestrator.DeleteWorkerJob(spawnCtx, taskID); err != nil {
+			log.Printf("Failed to delete stale K8s Job for task %s before retry: %v", taskID, err)
+		}
 		if err := s.orchestrator.SpawnWorker(spawnCtx, taskID, jobID, retryAttemptID, s.managerAddr); err != nil {
 			log.Printf("Failed to respawn worker for failed task %s (attempt %s): %v", taskID, retryAttemptID, err)
 		}
@@ -926,6 +953,9 @@ func (s *Scheduler) FailStaleTasks(ctx context.Context) (int, error) {
 
 	for _, rec := range respawnTasks {
 		spawnCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		if err := s.orchestrator.DeleteWorkerJob(spawnCtx, rec.taskID); err != nil {
+			log.Printf("Failed to delete stale K8s Job for task %s before retry: %v", rec.taskID, err)
+		}
 		if err := s.orchestrator.SpawnWorker(spawnCtx, rec.taskID, rec.jobID, rec.attemptID, s.managerAddr); err != nil {
 			log.Printf("Failed to respawn worker for stale task %s (attempt %s): %v", rec.taskID, rec.attemptID, err)
 		}
@@ -1111,6 +1141,14 @@ func (s *Scheduler) finalizeJob(ctx context.Context, jobID, terminalState string
 		return
 	}
 
+	if s.staging != nil {
+		if err := s.staging.DeleteStagingObjects(ctx, jobID); err != nil {
+			log.Printf("Failed to delete staging objects for job %s: %v", jobID, err)
+			s.enqueueCleanup(jobID, terminalState)
+			return
+		}
+	}
+
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		log.Printf("Failed to begin tx for terminal status update of job %s: %v", jobID, err)
@@ -1119,7 +1157,7 @@ func (s *Scheduler) finalizeJob(ctx context.Context, jobID, terminalState string
 	}
 	defer tx.Rollback()
 
-	if err := s.updateJobStatusTx(ctx, tx, jobID, terminalState); err != nil {
+	if err := s.applyJobTransitionTx(ctx, tx, jobID, terminalState); err != nil {
 		log.Printf("Failed to update terminal status of job %s: %v", jobID, err)
 		s.enqueueCleanup(jobID, terminalState)
 		return

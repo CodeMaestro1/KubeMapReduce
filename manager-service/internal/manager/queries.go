@@ -214,15 +214,19 @@ const QueryCountPendingMapTasks = `SELECT COUNT(*) FROM TASKS WHERE job_id = $1 
 // Job lifecycle and bootstrap queries
 // ---------------------------------------------------------------------------
 
-// QueryInsertJob creates a new job record.
+// QueryInsertJob creates a new job record, skipping if the job was already
+// inserted by the API layer (idempotent when called from ScheduleJob).
 const QueryInsertJob = `
 	INSERT INTO JOBS (job_id, user_id, status, created_at, updated_at)
-	VALUES ($1, $2, 'Pending', $3, $4)`
+	VALUES ($1, $2, 'Pending', NOW(), NOW())
+	ON CONFLICT (job_id) DO NOTHING`
 
-// QueryInsertJobConfig persists immutable job configuration.
+// QueryInsertJobConfig persists immutable job configuration, skipping if the
+// API layer already inserted a config row for this job.
 const QueryInsertJobConfig = `
 	INSERT INTO JOB_CONFIGS (job_id, input_uri, mapper_uri, reducer_uri, combiner_uri, m_tasks, r_tasks, input_checksum)
-	VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`
+	VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+	ON CONFLICT (job_id) DO NOTHING`
 
 // QueryInsertTask creates a new task record.
 const QueryInsertTask = `
@@ -234,17 +238,21 @@ const QueryInsertTaskInput = `
 	INSERT INTO TASK_INPUTS (task_id, input_uri, byte_start, byte_end, split_checksum)
 	VALUES ($1, $2, $3, $4, $5)`
 
+// QueryGetJobStatusForUpdate reads the current job status under a row-level lock.
+// Used by applyJobTransitionTx to enforce the state machine before any UPDATE.
+const QueryGetJobStatusForUpdate = `SELECT status FROM JOBS WHERE job_id = $1 FOR UPDATE`
+
 // QueryUpdateJobStatus transitions a job to a new lifecycle state.
-const QueryUpdateJobStatus = `UPDATE JOBS SET status = $2, updated_at = $3 WHERE job_id = $1`
+const QueryUpdateJobStatus = `UPDATE JOBS SET status = $2, updated_at = NOW() WHERE job_id = $1`
 
 // QueryUpsertSystemConfig updates global cluster configuration.
 const QueryUpsertSystemConfig = `
 	INSERT INTO SYSTEM_CONFIG (config_id, max_concurrent_pods, cpu_limit, memory_limit, worker_replicas, max_jobs_per_node, updated_at)
-	VALUES (1, $1, $2, $3, $4, $5, $6)
+	VALUES (1, $1, $2, $3, $4, $5, NOW())
 	ON CONFLICT (config_id) DO UPDATE
 	SET max_concurrent_pods = EXCLUDED.max_concurrent_pods,
 	    cpu_limit = EXCLUDED.cpu_limit,
 	    memory_limit = EXCLUDED.memory_limit,
 	    worker_replicas = EXCLUDED.worker_replicas,
 	    max_jobs_per_node = EXCLUDED.max_jobs_per_node,
-	    updated_at = EXCLUDED.updated_at`
+	    updated_at = NOW()`
