@@ -296,7 +296,12 @@ func (h *Handlers) HandleJobsGet(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	rec, err := h.store.GetJob(r.Context(), userID, jobID)
+	var rec *JobRecord
+	if auth.HasRole(r, "ADMIN") {
+		rec, err = h.store.GetAnyJob(r.Context(), jobID)
+	} else {
+		rec, err = h.store.GetJob(r.Context(), userID, jobID)
+	}
 	if err != nil {
 		if errors.Is(err, ErrInvalidJobID) {
 			httputil.WriteErrorJSON(w, http.StatusBadRequest, "invalid job id")
@@ -350,7 +355,12 @@ func (h *Handlers) HandleJobsDownload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	rec, err := h.store.GetJob(r.Context(), userID, jobID)
+	var rec *JobRecord
+	if auth.HasRole(r, "ADMIN") {
+		rec, err = h.store.GetAnyJob(r.Context(), jobID)
+	} else {
+		rec, err = h.store.GetJob(r.Context(), userID, jobID)
+	}
 	if err != nil {
 		if errors.Is(err, ErrInvalidJobID) {
 			httputil.WriteErrorJSON(w, http.StatusBadRequest, "invalid job id")
