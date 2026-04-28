@@ -213,7 +213,12 @@ func (h *Handlers) HandleJobsList(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	records, err := h.store.ListJobs(r.Context(), userID, limit, offset)
+	var records []JobRecord
+	if auth.HasRole(r, "ADMIN") {
+		records, err = h.store.ListAllJobs(r.Context(), limit, offset)
+	} else {
+		records, err = h.store.ListJobs(r.Context(), userID, limit, offset)
+	}
 	if err != nil {
 		if errors.Is(err, ErrInvalidUserID) {
 			httputil.WriteErrorJSON(w, http.StatusForbidden, "forbidden: invalid subject")
