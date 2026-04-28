@@ -86,4 +86,46 @@ CREATE TABLE IF NOT EXISTS TASK_INPUTS (
     CHECK (byte_end >= byte_start)
 );
 
+-- ---------------------------------------------------------------------------
+-- TASK_ATTEMPTS
+-- ---------------------------------------------------------------------------
+-- Per-execution lease + fencing record. Lease expiry is computed at runtime
+-- as last_renewed_at + lease_ttl seconds; never pre-computed.
+CREATE TABLE IF NOT EXISTS TASK_ATTEMPTS (
+    attempt_id      UUID        PRIMARY KEY,
+    task_id         UUID        NOT NULL
+        REFERENCES TASKS(task_id) ON DELETE CASCADE,
+    worker_id       TEXT        NOT NULL,
+    lease_id        UUID        NOT NULL,
+    last_renewed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    lease_ttl       INTEGER     NOT NULL CHECK (lease_ttl > 0),
+    start_time      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    end_time        TIMESTAMPTZ,
+    status          VARCHAR(8)  NOT NULL
+        CHECK (status IN ('Running', 'Success', 'Failed'))
+);
+
+-- Now that TASK_ATTEMPTS exists, attach the fence pointer FK from TASKS.
+-- ON DELETE SET NULL preserves the task row when an attempt row is reaped.
+ALTER TABLE TASKS
+    ADD CONSTRAINT tasks_current_attempt_fk
+    FOREIGN KEY (current_attempt_id)
+    REFERENCES TASK_ATTEMPTS(attempt_id)
+    ON DELETE SET NULL
+    DEFERRABLE INITIALLY DEFERRED;
+
+-- ---------------------------------------------------------------------------
+-- TASK_OUTPUTS
+-- ---------------------------------------------------------------------------
+-- Worker-produced output shards (1NF). Reduce tasks have NULL partition_index
+-- because their output is the final job result rather than a shuffle bucket.
+CREATE TABLE IF NOT EXISTS TASK_OUTPUTS (
+    output_id       BIGSERIAL PRIMARY KEY,
+    task_id         UUID NOT NULL
+        REFERENCES TASKS(task_id) ON DELETE CASCADE,
+    partition_index INTEGER CHECK (partition_index IS NULL OR partition_index >= 0),
+    output_uri      TEXT NOT NULL,
+    checksum        TEXT NOT NULL DEFAULT ''
+);
+
 COMMIT;
