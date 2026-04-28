@@ -81,3 +81,22 @@ func TestKubeOrchestrator_SpawnWorker_DefaultResourceLimits(t *testing.T) {
 	// keeps the import valid without affecting behaviour.
 	_ = errors.New
 }
+
+// TestKubeOrchestrator_SpawnWorker_ProviderResourceLimits verifies that the
+// admin-configured cpu_limit / memory_limit values surfaced by a
+// ResourceConfigProvider land verbatim on the worker container spec. This
+// satisfies the "Admin configure-nodes changes reflected in next spawned
+// workers" acceptance criterion in issue #91.
+func TestKubeOrchestrator_SpawnWorker_ProviderResourceLimits(t *testing.T) {
+	client := fake.NewSimpleClientset()
+	provider := &stubResourceProvider{cpu: "750m", mem: "1Gi"}
+	orch := NewKubeOrchestrator(client, "default", "worker:latest", "test-secrets").
+		WithResourceProvider(provider)
+
+	c := spawnAndFetchContainer(t, orch)
+
+	expectQuantity(t, c.Resources.Limits, corev1.ResourceCPU, "750m")
+	expectQuantity(t, c.Resources.Limits, corev1.ResourceMemory, "1Gi")
+	expectQuantity(t, c.Resources.Requests, corev1.ResourceCPU, "750m")
+	expectQuantity(t, c.Resources.Requests, corev1.ResourceMemory, "1Gi")
+}
