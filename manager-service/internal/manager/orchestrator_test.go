@@ -211,9 +211,11 @@ func TestKubeOrchestrator_SpawnWorker_InjectsRequiredEnv(t *testing.T) {
 			t.Errorf("env %s: got secret key %q, want %q", name, envMap[name].secretKey, wantKey)
 		}
 	}
+}
+
 func TestKubeOrchestrator_SpawnWorker_SecurityHardening(t *testing.T) {
 	client := fake.NewSimpleClientset()
-	orchestrator := NewKubeOrchestrator(client, "default", "worker:latest")
+	orchestrator := NewKubeOrchestrator(client, "default", "worker:latest", "")
 
 	if err := orchestrator.SpawnWorker(context.Background(), "task-sec", "job-sec", "attempt-sec", "manager:50051"); err != nil {
 		t.Fatalf("spawn worker failed: %v", err)
