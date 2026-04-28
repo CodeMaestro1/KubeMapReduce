@@ -1,0 +1,83 @@
+package manager
+
+import (
+	"context"
+	"errors"
+	"testing"
+
+	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/kubernetes/fake"
+)
+
+// stubResourceProvider is a deterministic ResourceConfigProvider used to drive
+// orchestrator tests without standing up a real database. It either returns
+// the configured cpu/mem strings or, when err is non-nil, propagates that
+// error to exercise the orchestrator's fallback path.
+type stubResourceProvider struct {
+	cpu string
+	mem string
+	err error
+}
+
+func (s *stubResourceProvider) GetWorkerResourceLimits(_ context.Context) (string, string, error) {
+	return s.cpu, s.mem, s.err
+}
+
+// spawnAndFetchContainer is a small helper that runs SpawnWorker against the
+// fake K8s client and returns the resulting container so individual tests
+// can assert on resource limits without re-deriving the job name each time.
+func spawnAndFetchContainer(t *testing.T, orch *KubeOrchestrator) corev1.Container {
+	t.Helper()
+	taskID := "task-resources"
+	attemptID := "attempt-resources"
+	if err := orch.SpawnWorker(context.Background(), taskID, "job-resources", attemptID, "manager:50051"); err != nil {
+		t.Fatalf("SpawnWorker failed: %v", err)
+	}
+	jobName := buildWorkerJobName(sanitizeForDNSLabel(taskID), attemptID)
+	job, err := orch.clientset.BatchV1().Jobs("default").Get(context.Background(), jobName, metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("failed to get job %q: %v", jobName, err)
+	}
+	if len(job.Spec.Template.Spec.Containers) == 0 {
+		t.Fatal("expected at least one container in worker pod spec")
+	}
+	return job.Spec.Template.Spec.Containers[0]
+}
+
+// expectQuantity fails the test unless the given ResourceList contains the
+// expected resource name with the expected canonical Quantity value.
+func expectQuantity(t *testing.T, list corev1.ResourceList, name corev1.ResourceName, want string) {
+	t.Helper()
+	got, ok := list[name]
+	if !ok {
+		t.Fatalf("resource %q missing from ResourceList %#v", name, list)
+	}
+	wantQty := resource.MustParse(want)
+	if got.Cmp(wantQty) != 0 {
+		t.Errorf("resource %q: got %s, want %s", name, got.String(), wantQty.String())
+	}
+}
+
+// TestKubeOrchestrator_SpawnWorker_DefaultResourceLimits asserts that a worker
+// pod is never spawned without resource limits, even when the orchestrator
+// has no ResourceConfigProvider configured. This guards the regression
+// described in issue #91 directly: the failure mode there was an empty
+// container.Resources field producing unbounded pods.
+func TestKubeOrchestrator_SpawnWorker_DefaultResourceLimits(t *testing.T) {
+	client := fake.NewSimpleClientset()
+	orch := NewKubeOrchestrator(client, "default", "worker:latest", "test-secrets")
+
+	c := spawnAndFetchContainer(t, orch)
+
+	expectQuantity(t, c.Resources.Limits, corev1.ResourceCPU, DefaultWorkerCPULimit)
+	expectQuantity(t, c.Resources.Limits, corev1.ResourceMemory, DefaultWorkerMemoryLimit)
+	expectQuantity(t, c.Resources.Requests, corev1.ResourceCPU, DefaultWorkerCPULimit)
+	expectQuantity(t, c.Resources.Requests, corev1.ResourceMemory, DefaultWorkerMemoryLimit)
+
+	// sanity check: errors imported above must be referenced somewhere in the
+	// file once subsequent test commits land. A blank-identifier reference
+	// keeps the import valid without affecting behaviour.
+	_ = errors.New
+}
