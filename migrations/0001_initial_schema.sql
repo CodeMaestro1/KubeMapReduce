@@ -50,4 +50,40 @@ CREATE TABLE IF NOT EXISTS JOB_CONFIGS (
     input_checksum TEXT NOT NULL DEFAULT ''
 );
 
+-- ---------------------------------------------------------------------------
+-- TASKS
+-- ---------------------------------------------------------------------------
+-- Logical Map/Reduce work units. The current_attempt_id column is the
+-- denormalized fence pointer used by Manager commit-time validation
+-- (Section 5.1, Attempt-Based Commit Protocol). The FK to TASK_ATTEMPTS is
+-- added later in this migration, after TASK_ATTEMPTS exists, to break the
+-- circular dependency.
+CREATE TABLE IF NOT EXISTS TASKS (
+    task_id            UUID        PRIMARY KEY,
+    job_id             UUID        NOT NULL
+        REFERENCES JOBS(job_id) ON DELETE CASCADE,
+    task_type          VARCHAR(8)  NOT NULL
+        CHECK (task_type IN ('Map', 'Reduce')),
+    status             VARCHAR(16) NOT NULL
+        CHECK (status IN ('Idle', 'In-Progress', 'Completed', 'Failed')),
+    replica_index      INTEGER     NOT NULL CHECK (replica_index >= 0),
+    current_attempt_id UUID
+);
+
+-- ---------------------------------------------------------------------------
+-- TASK_INPUTS
+-- ---------------------------------------------------------------------------
+-- Byte-range input split assignments. Surrogate BIGSERIAL key preserves the
+-- insertion order used by QueryGetTaskInputs (ORDER BY input_assignment_id).
+CREATE TABLE IF NOT EXISTS TASK_INPUTS (
+    input_assignment_id BIGSERIAL PRIMARY KEY,
+    task_id             UUID NOT NULL
+        REFERENCES TASKS(task_id) ON DELETE CASCADE,
+    input_uri           TEXT    NOT NULL,
+    byte_start          BIGINT  NOT NULL CHECK (byte_start >= 0),
+    byte_end            BIGINT  NOT NULL,
+    split_checksum      TEXT    NOT NULL DEFAULT '',
+    CHECK (byte_end >= byte_start)
+);
+
 COMMIT;
