@@ -141,74 +141,7 @@ func main() {
 	}()
 
 	// 4. Start HTTP Server for Health & Readiness
-	mux := http.NewServeMux()
-	mux.HandleFunc("DELETE /internal/jobs/{job_id}", func(w http.ResponseWriter, r *http.Request) {
-		if !isAuthorizedInternalCancel(r, cfg.InternalAPIKey, cfg.AllowInsecureInternalCancelAuth) {
-			http.Error(w, "unauthorized", http.StatusUnauthorized)
-			return
-		}
-		jobID := r.PathValue("job_id")
-		if jobID == "" {
-			http.Error(w, "missing job_id", http.StatusBadRequest)
-			return
-		}
-		cancelCtx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
-		defer cancel()
-		if err := scheduler.CancelJob(cancelCtx, jobID); err != nil {
-			log.Printf("failed to cancel job %s: %v", jobID, err)
-			http.Error(w, "failed to cancel job", http.StatusInternalServerError)
-			return
-		}
-		w.WriteHeader(http.StatusAccepted)
-	})
-	mux.HandleFunc("POST /internal/schedule", func(w http.ResponseWriter, r *http.Request) {
-		if !isAuthorizedInternalCancel(r, cfg.InternalAPIKey, cfg.AllowInsecureInternalCancelAuth) {
-			http.Error(w, "unauthorized", http.StatusUnauthorized)
-			return
-		}
-		var req manager.ScheduleJobRequest
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			http.Error(w, "invalid payload", http.StatusBadRequest)
-			return
-		}
-		schedCtx, schedCancel := context.WithTimeout(r.Context(), 30*time.Second)
-		defer schedCancel()
-		if err := scheduler.ScheduleJob(schedCtx, req); err != nil {
-			log.Printf("failed to schedule job %s: %v", req.JobID, err)
-			http.Error(w, "failed to schedule job", http.StatusInternalServerError)
-			return
-		}
-		w.WriteHeader(http.StatusAccepted)
-	})
-	mux.HandleFunc("PUT /internal/config", func(w http.ResponseWriter, r *http.Request) {
-		if !isAuthorizedInternalCancel(r, cfg.InternalAPIKey, cfg.AllowInsecureInternalCancelAuth) {
-			http.Error(w, "unauthorized", http.StatusUnauthorized)
-			return
-		}
-		var update manager.SystemConfigUpdate
-		if err := json.NewDecoder(r.Body).Decode(&update); err != nil {
-			http.Error(w, "invalid payload", http.StatusBadRequest)
-			return
-		}
-		if err := scheduler.UpsertSystemConfig(r.Context(), update); err != nil {
-			log.Printf("failed to update system config: %v", err)
-			http.Error(w, "failed to update config", http.StatusInternalServerError)
-			return
-		}
-		w.WriteHeader(http.StatusOK)
-	})
-	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("OK"))
-	})
-	mux.HandleFunc("/ready", func(w http.ResponseWriter, r *http.Request) {
-		if err := db.Ping(); err != nil {
-			http.Error(w, "Database not ready", http.StatusServiceUnavailable)
-			return
-		}
-		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("OK"))
-	})
+	mux := setupInternalMux(scheduler, db, cfg)
 
 	httpSrv := &http.Server{
 		Addr:              cfg.ServerAddr,
@@ -413,4 +346,90 @@ func emitWorkerRPCSecurityWarnings(cfg *config.Config) {
 	if cfg.AllowInsecureWorkerRPC && !hasWorkerToken && !useTLS {
 		log.Printf("[WARN] ALLOW_INSECURE_WORKER_RPC=true: worker RPC is running without token auth and without TLS")
 	}
+}
+
+// JobScheduler defines the interface for scheduler operations used by HTTP handlers.
+type JobScheduler interface {
+	CancelJob(ctx context.Context, jobID string) error
+	ScheduleJob(ctx context.Context, req manager.ScheduleJobRequest) error
+	UpsertSystemConfig(ctx context.Context, update manager.SystemConfigUpdate) error
+}
+
+// Pingable abstracts the database ping method.
+type Pingable interface {
+	Ping() error
+}
+
+func setupInternalMux(scheduler JobScheduler, db Pingable, cfg *config.Config) *http.ServeMux {
+	mux := http.NewServeMux()
+	mux.HandleFunc("DELETE /internal/jobs/{job_id}", func(w http.ResponseWriter, r *http.Request) {
+		if !isAuthorizedInternalCancel(r, cfg.InternalAPIKey, cfg.AllowInsecureInternalCancelAuth) {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		jobID := r.PathValue("job_id")
+		if jobID == "" {
+			http.Error(w, "missing job_id", http.StatusBadRequest)
+			return
+		}
+		cancelCtx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+		defer cancel()
+		if err := scheduler.CancelJob(cancelCtx, jobID); err != nil {
+			log.Printf("failed to cancel job %s: %v", jobID, err)
+			http.Error(w, "failed to cancel job", http.StatusInternalServerError)
+			return
+		}
+		w.WriteHeader(http.StatusAccepted)
+	})
+	mux.HandleFunc("POST /internal/schedule", func(w http.ResponseWriter, r *http.Request) {
+		if !isAuthorizedInternalCancel(r, cfg.InternalAPIKey, cfg.AllowInsecureInternalCancelAuth) {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		var req manager.ScheduleJobRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "invalid payload", http.StatusBadRequest)
+			return
+		}
+		schedCtx, schedCancel := context.WithTimeout(r.Context(), 30*time.Second)
+		defer schedCancel()
+		if err := scheduler.ScheduleJob(schedCtx, req); err != nil {
+			log.Printf("failed to schedule job %s: %v", req.JobID, err)
+			http.Error(w, "failed to schedule job", http.StatusInternalServerError)
+			return
+		}
+		w.WriteHeader(http.StatusAccepted)
+	})
+	mux.HandleFunc("PUT /internal/config", func(w http.ResponseWriter, r *http.Request) {
+		if !isAuthorizedInternalCancel(r, cfg.InternalAPIKey, cfg.AllowInsecureInternalCancelAuth) {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		var update manager.SystemConfigUpdate
+		if err := json.NewDecoder(r.Body).Decode(&update); err != nil {
+			http.Error(w, "invalid payload", http.StatusBadRequest)
+			return
+		}
+		if err := scheduler.UpsertSystemConfig(r.Context(), update); err != nil {
+			log.Printf("failed to update system config: %v", err)
+			http.Error(w, "failed to update config", http.StatusInternalServerError)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	})
+	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("OK"))
+	})
+	mux.HandleFunc("/readyz", func(w http.ResponseWriter, r *http.Request) {
+		if db != nil {
+			if err := db.Ping(); err != nil {
+				http.Error(w, "Database not ready", http.StatusServiceUnavailable)
+				return
+			}
+		}
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("OK"))
+	})
+	return mux
 }
