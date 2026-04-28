@@ -75,11 +75,25 @@ func TestKubeOrchestrator_SpawnWorker_DefaultResourceLimits(t *testing.T) {
 	expectQuantity(t, c.Resources.Limits, corev1.ResourceMemory, DefaultWorkerMemoryLimit)
 	expectQuantity(t, c.Resources.Requests, corev1.ResourceCPU, DefaultWorkerCPULimit)
 	expectQuantity(t, c.Resources.Requests, corev1.ResourceMemory, DefaultWorkerMemoryLimit)
+}
 
-	// sanity check: errors imported above must be referenced somewhere in the
-	// file once subsequent test commits land. A blank-identifier reference
-	// keeps the import valid without affecting behaviour.
-	_ = errors.New
+// TestKubeOrchestrator_SpawnWorker_ProviderErrorFallsBackToDefaults asserts
+// that a transient ResourceConfigProvider failure does not leave the worker
+// pod with empty resource limits. The orchestrator must log the error and
+// fall back to DefaultWorker* values so a brief DDS outage cannot regress to
+// the unbounded-pod state described in issue #91.
+func TestKubeOrchestrator_SpawnWorker_ProviderErrorFallsBackToDefaults(t *testing.T) {
+	client := fake.NewSimpleClientset()
+	provider := &stubResourceProvider{err: errors.New("simulated DDS outage")}
+	orch := NewKubeOrchestrator(client, "default", "worker:latest", "test-secrets").
+		WithResourceProvider(provider)
+
+	c := spawnAndFetchContainer(t, orch)
+
+	expectQuantity(t, c.Resources.Limits, corev1.ResourceCPU, DefaultWorkerCPULimit)
+	expectQuantity(t, c.Resources.Limits, corev1.ResourceMemory, DefaultWorkerMemoryLimit)
+	expectQuantity(t, c.Resources.Requests, corev1.ResourceCPU, DefaultWorkerCPULimit)
+	expectQuantity(t, c.Resources.Requests, corev1.ResourceMemory, DefaultWorkerMemoryLimit)
 }
 
 // TestKubeOrchestrator_SpawnWorker_ProviderResourceLimits verifies that the
