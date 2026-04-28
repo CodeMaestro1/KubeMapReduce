@@ -114,3 +114,51 @@ func TestKubeOrchestrator_SpawnWorker_ProviderResourceLimits(t *testing.T) {
 	expectQuantity(t, c.Resources.Requests, corev1.ResourceCPU, "750m")
 	expectQuantity(t, c.Resources.Requests, corev1.ResourceMemory, "1Gi")
 }
+
+// TestKubeOrchestrator_SpawnWorker_InvalidQuantityFallsBackToDefaults asserts
+// that malformed cpu_limit / memory_limit values supplied by a provider
+// (e.g. an admin typo) are treated identically to a missing value: the
+// orchestrator logs and substitutes the package defaults instead of
+// returning an error or, worse, omitting the Resources field entirely.
+func TestKubeOrchestrator_SpawnWorker_InvalidQuantityFallsBackToDefaults(t *testing.T) {
+	client := fake.NewSimpleClientset()
+	provider := &stubResourceProvider{cpu: "not-a-quantity", mem: "also-bogus"}
+	orch := NewKubeOrchestrator(client, "default", "worker:latest", "test-secrets").
+		WithResourceProvider(provider)
+
+	c := spawnAndFetchContainer(t, orch)
+
+	expectQuantity(t, c.Resources.Limits, corev1.ResourceCPU, DefaultWorkerCPULimit)
+	expectQuantity(t, c.Resources.Limits, corev1.ResourceMemory, DefaultWorkerMemoryLimit)
+	expectQuantity(t, c.Resources.Requests, corev1.ResourceCPU, DefaultWorkerCPULimit)
+	expectQuantity(t, c.Resources.Requests, corev1.ResourceMemory, DefaultWorkerMemoryLimit)
+}
+
+// TestResolveWorkerResources_TableDriven exercises the pure parsing helper
+// directly, covering the matrix of (valid, empty, malformed) inputs without
+// the overhead of constructing a full K8s Job.
+func TestResolveWorkerResources_TableDriven(t *testing.T) {
+	cases := []struct {
+		name    string
+		cpu     string
+		mem     string
+		wantCPU string
+		wantMem string
+	}{
+		{"both valid", "250m", "256Mi", "250m", "256Mi"},
+		{"empty cpu", "", "256Mi", DefaultWorkerCPULimit, "256Mi"},
+		{"empty memory", "250m", "", "250m", DefaultWorkerMemoryLimit},
+		{"both empty", "", "", DefaultWorkerCPULimit, DefaultWorkerMemoryLimit},
+		{"malformed cpu", "abc", "256Mi", DefaultWorkerCPULimit, "256Mi"},
+		{"malformed memory", "250m", "??", "250m", DefaultWorkerMemoryLimit},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := resolveWorkerResources(tc.cpu, tc.mem)
+			expectQuantity(t, got.Limits, corev1.ResourceCPU, tc.wantCPU)
+			expectQuantity(t, got.Limits, corev1.ResourceMemory, tc.wantMem)
+			expectQuantity(t, got.Requests, corev1.ResourceCPU, tc.wantCPU)
+			expectQuantity(t, got.Requests, corev1.ResourceMemory, tc.wantMem)
+		})
+	}
+}
