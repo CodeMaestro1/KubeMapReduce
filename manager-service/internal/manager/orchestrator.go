@@ -54,7 +54,11 @@ type KubeOrchestrator struct {
 
 // NewKubeOrchestrator creates a new Kubernetes-backed orchestrator.
 //
-// It defaults to the "default" namespace and "kubemapreduce-worker:latest" image if not specified.
+// It defaults to the "default" namespace and "kubemapreduce-worker:latest" image if not
+// specified. If workerSecretName is empty it defaults to "kubemapreduce-secrets"; that
+// Kubernetes Secret must contain the MinIO and RPC credentials that are injected into
+// every worker pod via SecretKeyRef so that plaintext credentials never appear in the
+// Job manifest.
 func NewKubeOrchestrator(clientset kubernetes.Interface, namespace, workerImage, workerSecretName string) *KubeOrchestrator {
 	if namespace == "" {
 		namespace = "default"
@@ -108,67 +112,15 @@ func (k *KubeOrchestrator) SpawnWorker(ctx context.Context, taskID string, jobID
 							Name:  "worker",
 							Image: k.workerImage,
 							Env: []corev1.EnvVar{
-								{
-									Name:  "TASK_ID",
-									Value: taskID,
-								},
-								{
-									Name:  "JOB_ID",
-									Value: jobID,
-								},
-								{
-									Name:  "MANAGER_ADDR",
-									Value: managerAddr,
-								},
-								{
-									Name:  "ATTEMPT_ID",
-									Value: attemptID,
-								},
-								{
-									Name: "S3_ENDPOINT",
-									ValueFrom: &corev1.EnvVarSource{
-										SecretKeyRef: &corev1.SecretKeySelector{
-											LocalObjectReference: corev1.LocalObjectReference{Name: k.workerSecretName},
-											Key:                  "MINIO_ENDPOINT",
-										},
-									},
-								},
-								{
-									Name: "S3_ACCESS_KEY",
-									ValueFrom: &corev1.EnvVarSource{
-										SecretKeyRef: &corev1.SecretKeySelector{
-											LocalObjectReference: corev1.LocalObjectReference{Name: k.workerSecretName},
-											Key:                  "MINIO_ACCESS_KEY",
-										},
-									},
-								},
-								{
-									Name: "S3_SECRET_KEY",
-									ValueFrom: &corev1.EnvVarSource{
-										SecretKeyRef: &corev1.SecretKeySelector{
-											LocalObjectReference: corev1.LocalObjectReference{Name: k.workerSecretName},
-											Key:                  "MINIO_SECRET_KEY",
-										},
-									},
-								},
-								{
-									Name: "MINIO_BUCKET",
-									ValueFrom: &corev1.EnvVarSource{
-										SecretKeyRef: &corev1.SecretKeySelector{
-											LocalObjectReference: corev1.LocalObjectReference{Name: k.workerSecretName},
-											Key:                  "MINIO_BUCKET",
-										},
-									},
-								},
-								{
-									Name: "WORKER_RPC_TOKEN",
-									ValueFrom: &corev1.EnvVarSource{
-										SecretKeyRef: &corev1.SecretKeySelector{
-											LocalObjectReference: corev1.LocalObjectReference{Name: k.workerSecretName},
-											Key:                  "MANAGER_WORKER_RPC_TOKEN",
-										},
-									},
-								},
+								{Name: "TASK_ID", Value: taskID},
+								{Name: "JOB_ID", Value: jobID},
+								{Name: "MANAGER_ADDR", Value: managerAddr},
+								{Name: "ATTEMPT_ID", Value: attemptID},
+								secretEnvVar("S3_ENDPOINT", k.workerSecretName, "MINIO_ENDPOINT"),
+								secretEnvVar("S3_ACCESS_KEY", k.workerSecretName, "MINIO_ACCESS_KEY"),
+								secretEnvVar("S3_SECRET_KEY", k.workerSecretName, "MINIO_SECRET_KEY"),
+								secretEnvVar("MINIO_BUCKET", k.workerSecretName, "MINIO_BUCKET"),
+								secretEnvVar("WORKER_RPC_TOKEN", k.workerSecretName, "MANAGER_WORKER_RPC_TOKEN"),
 							},
 						},
 					},
@@ -241,6 +193,21 @@ func (m *MockOrchestrator) CancelJob(ctx context.Context, jobID string) error {
 
 func (m *MockOrchestrator) DeleteWorkerJob(ctx context.Context, taskID string) error {
 	return nil
+}
+
+// secretEnvVar constructs a corev1.EnvVar whose value is sourced from a Kubernetes
+// Secret. Using this helper for all secret-backed variables keeps the secret name
+// wired consistently and reduces the risk of copy-paste mistakes.
+func secretEnvVar(envName, secretName, secretKey string) corev1.EnvVar {
+	return corev1.EnvVar{
+		Name: envName,
+		ValueFrom: &corev1.EnvVarSource{
+			SecretKeyRef: &corev1.SecretKeySelector{
+				LocalObjectReference: corev1.LocalObjectReference{Name: secretName},
+				Key:                  secretKey,
+			},
+		},
+	}
 }
 
 func sanitizeForDNSLabel(value string) string {

@@ -421,7 +421,7 @@ func setupInternalMux(scheduler JobScheduler, db Pingable, cfg *config.Config) *
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte("OK"))
 	})
-	mux.HandleFunc("/readyz", func(w http.ResponseWriter, r *http.Request) {
+	readyzHandler := func(w http.ResponseWriter, r *http.Request) {
 		if db != nil {
 			if err := db.Ping(); err != nil {
 				http.Error(w, "Database not ready", http.StatusServiceUnavailable)
@@ -430,6 +430,10 @@ func setupInternalMux(scheduler JobScheduler, db Pingable, cfg *config.Config) *
 		}
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte("OK"))
-	})
+	}
+	mux.HandleFunc("/readyz", readyzHandler)
+	// /ready is kept as an alias for /readyz for backwards compatibility with
+	// existing probe configurations and deployment manifests.
+	mux.HandleFunc("/ready", readyzHandler)
 	return mux
 }
