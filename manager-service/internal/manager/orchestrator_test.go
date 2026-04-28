@@ -157,7 +157,10 @@ func TestKubeOrchestrator_SpawnWorker_InjectsRequiredEnv(t *testing.T) {
 	}
 
 	jobName := buildWorkerJobName(sanitizeForDNSLabel(taskID), attemptID)
-	job, _ := client.BatchV1().Jobs("default").Get(context.Background(), jobName, metav1.GetOptions{})
+	job, err := client.BatchV1().Jobs("default").Get(context.Background(), jobName, metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("failed to get job %q: %v", jobName, err)
+	}
 
 	env := job.Spec.Template.Spec.Containers[0].Env
 	envMap := make(map[string]struct {
