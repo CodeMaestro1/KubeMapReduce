@@ -31,6 +31,14 @@ type Config struct {
 	// MapSortSpillThresholdMB is the in-memory record budget before sort spills to disk.
 	MapSortSpillThresholdMB int
 
+	// ShuffleBatchSize is the maximum number of concurrent open streams per merge pass.
+	// Maps to SHUFFLE_BATCH_SIZE env var. Defaults to 500.
+	ShuffleBatchSize int
+
+	// ShuffleMaxRecordBytes is the maximum allowed size for a single JSONL line during merge.
+	// Maps to SHUFFLE_MAX_RECORD_BYTES env var. Defaults to 1 MiB.
+	ShuffleMaxRecordBytes int
+
 	TempDir string
 }
 
@@ -56,6 +64,14 @@ func Load() (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
+	shuffleBatch, err := getEnvInt("SHUFFLE_BATCH_SIZE", 500)
+	if err != nil {
+		return nil, err
+	}
+	shuffleMaxRecord, err := getEnvInt("SHUFFLE_MAX_RECORD_BYTES", 1*1024*1024)
+	if err != nil {
+		return nil, err
+	}
 
 	tempDir := strings.TrimSpace(os.Getenv("WORKER_TEMP_DIR"))
 	if tempDir == "" {
@@ -74,6 +90,8 @@ func Load() (*Config, error) {
 		MinioUseSSL:             getEnvBool("MINIO_USE_SSL", false),
 		HeartbeatIntervalSec:    hb,
 		MapSortSpillThresholdMB: spill,
+		ShuffleBatchSize:        shuffleBatch,
+		ShuffleMaxRecordBytes:   shuffleMaxRecord,
 		TempDir:                 tempDir,
 	}, nil
 }

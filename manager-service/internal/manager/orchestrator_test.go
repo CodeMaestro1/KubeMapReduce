@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	batchv1 "k8s.io/api/batch/v1"
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes/fake"
 )
@@ -139,5 +140,95 @@ func TestKubeOrchestrator_SpawnWorker_AlreadyExistsIsIdempotent(t *testing.T) {
 	}
 	if job.Labels["existing"] != "true" {
 		t.Fatalf("existing job should not be replaced")
+	}
+}
+
+func TestKubeOrchestrator_SpawnWorker_SecurityHardening(t *testing.T) {
+	client := fake.NewSimpleClientset()
+	orchestrator := NewKubeOrchestrator(client, "default", "worker:latest")
+
+	if err := orchestrator.SpawnWorker(context.Background(), "task-sec", "job-sec", "attempt-sec", "manager:50051"); err != nil {
+		t.Fatalf("spawn worker failed: %v", err)
+	}
+
+	jobName := buildWorkerJobName(sanitizeForDNSLabel("task-sec"), "attempt-sec")
+	job, err := client.BatchV1().Jobs("default").Get(context.Background(), jobName, metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("failed to fetch job: %v", err)
+	}
+
+	podSpec := job.Spec.Template.Spec
+
+	// automountServiceAccountToken must be explicitly false.
+	if podSpec.AutomountServiceAccountToken == nil || *podSpec.AutomountServiceAccountToken {
+		t.Error("expected AutomountServiceAccountToken to be false")
+	}
+
+	// Pod-level security context.
+	if podSpec.SecurityContext == nil {
+		t.Fatal("expected non-nil pod SecurityContext")
+	}
+	if podSpec.SecurityContext.RunAsNonRoot == nil || !*podSpec.SecurityContext.RunAsNonRoot {
+		t.Error("expected pod SecurityContext.RunAsNonRoot to be true")
+	}
+	if podSpec.SecurityContext.SeccompProfile == nil ||
+		podSpec.SecurityContext.SeccompProfile.Type != corev1.SeccompProfileTypeRuntimeDefault {
+		t.Error("expected pod SeccompProfile type RuntimeDefault")
+	}
+
+	// Writable /tmp emptyDir volume must be present.
+	foundTmpVol := false
+	for _, v := range podSpec.Volumes {
+		if v.Name == "tmp" && v.EmptyDir != nil {
+			foundTmpVol = true
+			break
+		}
+	}
+	if !foundTmpVol {
+		t.Error("expected an emptyDir volume named 'tmp'")
+	}
+
+	if len(podSpec.Containers) == 0 {
+		t.Fatal("expected at least one container")
+	}
+	c := podSpec.Containers[0]
+
+	// Container-level security context.
+	if c.SecurityContext == nil {
+		t.Fatal("expected non-nil container SecurityContext")
+	}
+	if c.SecurityContext.AllowPrivilegeEscalation == nil || *c.SecurityContext.AllowPrivilegeEscalation {
+		t.Error("expected AllowPrivilegeEscalation to be false")
+	}
+	if c.SecurityContext.ReadOnlyRootFilesystem == nil || !*c.SecurityContext.ReadOnlyRootFilesystem {
+		t.Error("expected ReadOnlyRootFilesystem to be true")
+	}
+	if c.SecurityContext.RunAsNonRoot == nil || !*c.SecurityContext.RunAsNonRoot {
+		t.Error("expected container RunAsNonRoot to be true")
+	}
+	if c.SecurityContext.Capabilities == nil {
+		t.Fatal("expected non-nil container Capabilities")
+	}
+	droppedAll := false
+	for _, cap := range c.SecurityContext.Capabilities.Drop {
+		if cap == "ALL" {
+			droppedAll = true
+			break
+		}
+	}
+	if !droppedAll {
+		t.Error("expected capabilities drop to include ALL")
+	}
+
+	// /tmp volume mount must be present in the container.
+	foundTmpMount := false
+	for _, vm := range c.VolumeMounts {
+		if vm.Name == "tmp" && vm.MountPath == "/tmp" {
+			foundTmpMount = true
+			break
+		}
+	}
+	if !foundTmpMount {
+		t.Error("expected container to mount 'tmp' emptyDir at /tmp")
 	}
 }
