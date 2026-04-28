@@ -881,7 +881,12 @@ func (h *Handlers) HandleJobsDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	rec, err := h.store.GetJob(r.Context(), userID, jobID)
+	var rec *JobRecord
+	if auth.HasRole(r, "ADMIN") {
+		rec, err = h.store.GetAnyJob(r.Context(), jobID)
+	} else {
+		rec, err = h.store.GetJob(r.Context(), userID, jobID)
+	}
 	if err != nil {
 		if errors.Is(err, ErrInvalidUserID) {
 			httputil.WriteErrorJSON(w, http.StatusForbidden, "forbidden: invalid subject")
