@@ -21,11 +21,12 @@ func TestPostgresJobStore_CreateJob_PersistsToDatabase(t *testing.T) {
 
 	store := NewPostgresJobStore(db)
 	jobID := uuid.New().String()
+	ownerUUID := uuid.New()
 	now := time.Date(2026, 4, 18, 12, 0, 0, 0, time.UTC)
 
 	mock.ExpectBegin()
 	mock.ExpectExec("INSERT INTO JOBS").
-		WithArgs(sqlmock.AnyArg(), uuid.Nil, now, now).
+		WithArgs(sqlmock.AnyArg(), ownerUUID, now, now).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec("INSERT INTO JOB_CONFIGS").
 		WithArgs(sqlmock.AnyArg(), "data.csv", "", "", "", 0, 4).
@@ -34,6 +35,7 @@ func TestPostgresJobStore_CreateJob_PersistsToDatabase(t *testing.T) {
 
 	rec := JobRecord{
 		JobID:     jobID,
+		UserID:    ownerUUID.String(),
 		Status:    "Pending",
 		Filename:  "data.csv",
 		Reducers:  4,
@@ -125,7 +127,7 @@ func TestPostgresJobStore_GetJob_ReturnsErrorForInvalidUUID(t *testing.T) {
 
 	store := NewPostgresJobStore(db)
 
-	rec, err := store.GetJob(context.Background(), "not-a-uuid")
+	rec, err := store.GetJob(context.Background(), uuid.New().String(), "not-a-uuid")
 	if !errors.Is(err, ErrInvalidJobID) {
 		t.Fatalf("expected ErrInvalidJobID, got %v", err)
 	}
@@ -151,7 +153,7 @@ func TestPostgresJobStore_ListJobs_ReturnsAllJobs(t *testing.T) {
 	rows := sqlmock.NewRows([]string{"job_id", "status", "input_uri", "r_tasks", "created_at"}).
 		AddRow(id2, "Running", "b.csv", 2, t2).
 		AddRow(id1, "Pending", "a.csv", 1, t1)
-	mock.ExpectQuery("SELECT j.job_id").WithArgs(ownerUUID).WillReturnRows(rows)
+	mock.ExpectQuery("SELECT j.job_id").WithArgs(ownerUUID, 100, 0).WillReturnRows(rows)
 
 	jobs, err := store.ListJobs(context.Background(), ownerUUID.String(), 100, 0)
 	if err != nil {
@@ -175,7 +177,7 @@ func TestPostgresJobStore_ListJobs_ReturnsEmptySlice(t *testing.T) {
 	store := NewPostgresJobStore(db)
 	ownerUUID := uuid.New()
 	rows := sqlmock.NewRows([]string{"job_id", "status", "input_uri", "r_tasks", "created_at"})
-	mock.ExpectQuery("SELECT j.job_id").WithArgs(ownerUUID).WillReturnRows(rows)
+	mock.ExpectQuery("SELECT j.job_id").WithArgs(ownerUUID, 100, 0).WillReturnRows(rows)
 
 	jobs, err := store.ListJobs(context.Background(), ownerUUID.String(), 100, 0)
 	if err != nil {
@@ -203,7 +205,7 @@ func TestPostgresJobStore_CreateThenGet_Consistent(t *testing.T) {
 	// Create
 	mock.ExpectBegin()
 	mock.ExpectExec("INSERT INTO JOBS").
-		WithArgs(sqlmock.AnyArg(), uuid.Nil, now, now).
+		WithArgs(sqlmock.AnyArg(), ownerUUID, now, now).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec("INSERT INTO JOB_CONFIGS").
 		WithArgs(sqlmock.AnyArg(), "input.jsonl", "", "", "", 0, 3).
@@ -212,6 +214,7 @@ func TestPostgresJobStore_CreateThenGet_Consistent(t *testing.T) {
 
 	rec := JobRecord{
 		JobID:     jobUUID.String(),
+		UserID:    ownerUUID.String(),
 		Status:    "Pending",
 		Filename:  "input.jsonl",
 		Reducers:  3,
