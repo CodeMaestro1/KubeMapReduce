@@ -1,0 +1,74 @@
+# Worker RBAC.
+#
+# The Manager pods spawn (and reap) Worker Jobs at runtime. They use the
+# manager ServiceAccount, scoped to a Role that grants only the verbs
+# strictly required by that workflow:
+#
+#   - jobs        : create / get / list / watch / delete
+#   - pods        : get / list / watch / delete (Active Reaper fences zombies)
+#   - configmaps  : get (worker job templates / per-job parameters)
+#
+# Worker pods themselves do not call the Kubernetes API and therefore mount
+# the default (unprivileged) ServiceAccount with automountServiceAccountToken
+# disabled at pod creation time.
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: manager
+  namespace: mapreduce
+  labels:
+    app.kubernetes.io/name: manager
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: manager-worker-controller
+  namespace: mapreduce
+rules:
+  # Worker Job lifecycle.
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["create", "get", "list", "watch", "delete", "deletecollection"]
+  # Active Reaper directly deletes zombie pods after 3 missed heartbeats.
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch", "delete"]
+  - apiGroups: [""]
+    resources: ["pods/log"]
+    verbs: ["get"]
+  # Read-only access to the worker job template / per-job overrides.
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["get", "list", "watch"]
+  # Required so the Manager can locate the worker image and inject env vars
+  # from Secrets when constructing Job manifests.
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: manager-worker-controller
+  namespace: mapreduce
+subjects:
+  - kind: ServiceAccount
+    name: manager
+    namespace: mapreduce
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: manager-worker-controller
+---
+# Dedicated, deliberately-unprivileged ServiceAccount for Worker Jobs.
+# The Manager applies this SA to every Worker Job manifest it creates so the
+# pod token cannot be used to escalate against the K8s API.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: worker
+  namespace: mapreduce
+  labels:
+    app.kubernetes.io/name: worker
+automountServiceAccountToken: false

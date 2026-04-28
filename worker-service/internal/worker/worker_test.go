@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"strings"
 	"testing"
 	"time"
 
@@ -433,6 +434,95 @@ func TestWorker_RegisterFailureReturnsError(t *testing.T) {
 	w := newTestWorker(t, grpcClient, newMockStorage())
 	if err := w.Run(context.Background()); err == nil {
 		t.Fatal("expected error from failed Register")
+	}
+}
+
+func TestWorker_MissingStorageReportsTaskFailed(t *testing.T) {
+	var failedReq *pb.TaskFailedRequest
+	grpcClient := &mockGRPCClient{
+		registerFn: func(_ context.Context, _ *pb.RegisterRequest, _ ...grpc.CallOption) (*pb.TaskAssignment, error) {
+			return &pb.TaskAssignment{
+				TaskId:        "task-1",
+				AttemptId:     "attempt-1",
+				JobId:         "job-1",
+				Type:          pb.TaskType_MAP,
+				LeaseId:       "lease-1",
+				CodeLocation:  "s3://code/mapper.py",
+				DataLocations: []string{"s3://inputs/data.jsonl"},
+				TotalReducers: 1,
+			}, nil
+		},
+		heartbeatFn: func(_ context.Context, _ *pb.HeartbeatRequest, _ ...grpc.CallOption) (*pb.HeartbeatResponse, error) {
+			return &pb.HeartbeatResponse{Action: pb.HeartbeatResponse_CONTINUE}, nil
+		},
+		taskCompleteFn: func(_ context.Context, _ *pb.TaskCompleteRequest, _ ...grpc.CallOption) (*pb.Ack, error) {
+			t.Fatal("TaskComplete should not be called when storage is unavailable")
+			return &pb.Ack{}, nil
+		},
+		taskFailedFn: func(_ context.Context, req *pb.TaskFailedRequest, _ ...grpc.CallOption) (*pb.Ack, error) {
+			failedReq = req
+			return &pb.Ack{Success: true}, nil
+		},
+	}
+
+	cfg := &config.Config{
+		TaskID:               "task-1",
+		AttemptID:            "attempt-1",
+		ManagerAddr:          "localhost:50051",
+		HeartbeatIntervalSec: 60,
+		TempDir:              t.TempDir(),
+	}
+	w := New(cfg, grpcClient, nil)
+
+	if err := w.Run(context.Background()); err == nil {
+		t.Fatal("expected error when storage is unavailable")
+	}
+	if failedReq == nil {
+		t.Fatal("TaskFailed was not called")
+	}
+	if !strings.Contains(failedReq.ErrorMessage, "object storage is not configured") {
+		t.Fatalf("unexpected error message: %q", failedReq.ErrorMessage)
+	}
+}
+
+func TestWorker_EmptyManifestReportsTaskFailed(t *testing.T) {
+	store := newMockStorage()
+
+	var failedReq *pb.TaskFailedRequest
+	grpcClient := &mockGRPCClient{
+		registerFn: func(_ context.Context, _ *pb.RegisterRequest, _ ...grpc.CallOption) (*pb.TaskAssignment, error) {
+			return &pb.TaskAssignment{
+				TaskId:        "task-1",
+				AttemptId:     "attempt-1",
+				JobId:         "job-1",
+				Type:          pb.TaskType_MAP,
+				LeaseId:       "lease-1",
+				IsManifest:    true,
+				TotalReducers: 1,
+			}, nil
+		},
+		heartbeatFn: func(_ context.Context, _ *pb.HeartbeatRequest, _ ...grpc.CallOption) (*pb.HeartbeatResponse, error) {
+			return &pb.HeartbeatResponse{Action: pb.HeartbeatResponse_CONTINUE}, nil
+		},
+		taskCompleteFn: func(_ context.Context, _ *pb.TaskCompleteRequest, _ ...grpc.CallOption) (*pb.Ack, error) {
+			t.Fatal("TaskComplete should not be called for an empty manifest")
+			return &pb.Ack{}, nil
+		},
+		taskFailedFn: func(_ context.Context, req *pb.TaskFailedRequest, _ ...grpc.CallOption) (*pb.Ack, error) {
+			failedReq = req
+			return &pb.Ack{Success: true}, nil
+		},
+	}
+
+	w := newTestWorker(t, grpcClient, store)
+	if err := w.Run(context.Background()); err == nil {
+		t.Fatal("expected error for empty manifest data_locations")
+	}
+	if failedReq == nil {
+		t.Fatal("TaskFailed was not called")
+	}
+	if !strings.Contains(failedReq.ErrorMessage, "manifest assignment missing data locations") {
+		t.Fatalf("unexpected error message: %q", failedReq.ErrorMessage)
 	}
 }
 

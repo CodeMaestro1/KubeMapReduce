@@ -1,6 +1,7 @@
 package worker
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -13,6 +14,8 @@ import (
 
 	"github.com/minio/minio-go/v7"
 )
+
+const splitReadChunkSize int64 = 1 << 20
 
 // parseS3URI splits "s3://bucket/key/path" into (bucket, key).
 func parseS3URI(uri string) (bucket, key string, err error) {
@@ -109,18 +112,50 @@ func validateChecksum(data []byte, expectedHex string) error {
 	return nil
 }
 
-// getRawRange downloads bytes [start, end+margin] from MinIO.
-// The extra margin ensures the last JSONL record is always complete.
+// getRawRange downloads bytes starting at byteStart and keeps extending the
+// read in fixed chunks until it reaches the newline that terminates the record
+// crossing byteEnd.
 func getRawRange(ctx context.Context, storage objectStorage, bucket, key string, start, end int64) ([]byte, error) {
-	const margin = 1 * 1024 * 1024 // 1 MiB: enough for any single JSONL record
-	opts := minio.GetObjectOptions{}
-	if err := opts.SetRange(start, end+margin); err != nil {
-		return nil, fmt.Errorf("SetRange [%d, %d]: %w", start, end+margin, err)
+	if end < start {
+		return nil, fmt.Errorf("invalid range [%d, %d]", start, end)
 	}
-	rc, err := storage.GetObject(ctx, bucket, key, opts)
-	if err != nil {
-		return nil, fmt.Errorf("GetObject range %s/%s [%d,%d]: %w", bucket, key, start, end, err)
+
+	var raw bytes.Buffer
+	nextStart := start
+	for {
+		nextEnd := nextStart + splitReadChunkSize - 1
+		opts := minio.GetObjectOptions{}
+		if err := opts.SetRange(nextStart, nextEnd); err != nil {
+			return nil, fmt.Errorf("SetRange [%d, %d]: %w", nextStart, nextEnd, err)
+		}
+
+		rc, err := storage.GetObject(ctx, bucket, key, opts)
+		if err != nil {
+			return nil, fmt.Errorf("GetObject range %s/%s [%d,%d]: %w", bucket, key, nextStart, nextEnd, err)
+		}
+
+		chunk, readErr := io.ReadAll(rc)
+		closeErr := rc.Close()
+		if readErr != nil {
+			return nil, fmt.Errorf("read range %s/%s [%d,%d]: %w", bucket, key, nextStart, nextEnd, readErr)
+		}
+		if closeErr != nil {
+			return nil, fmt.Errorf("close range %s/%s [%d,%d]: %w", bucket, key, nextStart, nextEnd, closeErr)
+		}
+
+		if len(chunk) == 0 {
+			return raw.Bytes(), nil
+		}
+
+		raw.Write(chunk)
+		if bytes.IndexByte(chunk, '\n') >= 0 {
+			return raw.Bytes(), nil
+		}
+
+		if int64(len(chunk)) < splitReadChunkSize {
+			return nil, fmt.Errorf("split %s/%s reached EOF before newline after byte_end %d", bucket, key, end)
+		}
+
+		nextStart += int64(len(chunk))
 	}
-	defer rc.Close()
-	return io.ReadAll(rc)
 }

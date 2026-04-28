@@ -276,6 +276,65 @@ func TestMerge_SingleRecordHighFanIn(t *testing.T) {
 	}
 }
 
+func TestMerge_Deterministic(t *testing.T) {
+	// Verifies that two independent runs with the same set of sorted partition
+	// inputs produce byte-for-byte identical output — a requirement for
+	// stable reducer behaviour.
+	inputs := []string{
+		`{"key": "apple", "value": "1"}` + "\n" + `{"key": "mango", "value": "3"}` + "\n",
+		`{"key": "banana", "value": "2"}` + "\n" + `{"key": "mango", "value": "4"}` + "\n",
+		`{"key": "apple", "value": "5"}` + "\n" + `{"key": "cherry", "value": "6"}` + "\n",
+	}
+
+	makeReaders := func() []io.Reader {
+		rs := make([]io.Reader, len(inputs))
+		for i, s := range inputs {
+			rs[i] = strings.NewReader(s)
+		}
+		return rs
+	}
+
+	cfg := MergeConfig{BatchSize: 2}
+
+	var buf1 bytes.Buffer
+	stats1, err := MergeInputs(makeReaders(), &buf1, cfg)
+	if err != nil {
+		t.Fatalf("first MergeInputs failed: %v", err)
+	}
+
+	var buf2 bytes.Buffer
+	stats2, err := MergeInputs(makeReaders(), &buf2, cfg)
+	if err != nil {
+		t.Fatalf("second MergeInputs failed: %v", err)
+	}
+
+	if buf1.String() != buf2.String() {
+		t.Errorf("non-deterministic output:\nrun1: %q\nrun2: %q", buf1.String(), buf2.String())
+	}
+	if stats1.TotalRecords != stats2.TotalRecords {
+		t.Errorf("record counts differ: %d vs %d", stats1.TotalRecords, stats2.TotalRecords)
+	}
+
+	// Verify the output is sorted.
+	scanner := bufio.NewScanner(&buf1)
+	lastKey := ""
+	count := 0
+	for scanner.Scan() {
+		var rec Record
+		if err := json.Unmarshal(scanner.Bytes(), &rec); err != nil {
+			t.Fatalf("failed to unmarshal record %d: %v", count, err)
+		}
+		if rec.Key < lastKey {
+			t.Fatalf("output not sorted at record %d: %q < %q", count, rec.Key, lastKey)
+		}
+		lastKey = rec.Key
+		count++
+	}
+	if int64(count) != stats1.TotalRecords {
+		t.Errorf("scanned %d records but stats report %d", count, stats1.TotalRecords)
+	}
+}
+
 func TestMerge_BatchSizeOneUsesDefault(t *testing.T) {
 	readers := []io.Reader{strings.NewReader(`{"key": "a", "value": "1"}` + "\n")}
 	var buf bytes.Buffer

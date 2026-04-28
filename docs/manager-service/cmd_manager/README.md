@@ -50,8 +50,11 @@ As a `main` package, it "exports" the following interfaces:
 | Route | Auth | Description |
 |---|---|---|
 | `DELETE /internal/jobs/{id}` | Internal Token | Force-cancel a running job |
+| `POST /internal/schedule` | Internal Token | Trigger job scheduling |
+| `PUT /internal/config` | Internal Token | Update system configuration |
 | `/health` | None | Liveness probe |
-| `/ready` | None | Readiness probe (checks DB) |
+| `/readyz` | None | Readiness probe (checks DB) |
+| `/ready` | None | Readiness probe alias (kept for backwards compatibility) |
 
 ## Error Catalogue
 | Error | When |

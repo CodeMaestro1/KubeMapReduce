@@ -268,7 +268,7 @@ func resolveManagerAddr(hostname, headlessService, namespace, port string) strin
 	return net.JoinHostPort(podName+"."+headlessService+"."+namespace+".svc.cluster.local", port)
 }
 
-func isAuthorizedInternalCancel(r *http.Request, expectedToken string, allowInsecureLoopback bool) bool {
+func isAuthorizedInternalRequest(r *http.Request, expectedToken string, allowInsecureLoopback bool) bool {
 	expectedToken = strings.TrimSpace(expectedToken)
 	if expectedToken != "" {
 		return r.Header.Get("X-Internal-Token") == expectedToken
@@ -357,13 +357,13 @@ type JobScheduler interface {
 
 // Pingable abstracts the database ping method.
 type Pingable interface {
-	Ping() error
+	PingContext(ctx context.Context) error
 }
 
 func setupInternalMux(scheduler JobScheduler, db Pingable, cfg *config.Config) *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.HandleFunc("DELETE /internal/jobs/{job_id}", func(w http.ResponseWriter, r *http.Request) {
-		if !isAuthorizedInternalCancel(r, cfg.InternalAPIKey, cfg.AllowInsecureInternalCancelAuth) {
+		if !isAuthorizedInternalRequest(r, cfg.InternalAPIKey, cfg.AllowInsecureInternalCancelAuth) {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
@@ -382,7 +382,7 @@ func setupInternalMux(scheduler JobScheduler, db Pingable, cfg *config.Config) *
 		w.WriteHeader(http.StatusAccepted)
 	})
 	mux.HandleFunc("POST /internal/schedule", func(w http.ResponseWriter, r *http.Request) {
-		if !isAuthorizedInternalCancel(r, cfg.InternalAPIKey, cfg.AllowInsecureInternalCancelAuth) {
+		if !isAuthorizedInternalRequest(r, cfg.InternalAPIKey, cfg.AllowInsecureInternalCancelAuth) {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
@@ -401,7 +401,7 @@ func setupInternalMux(scheduler JobScheduler, db Pingable, cfg *config.Config) *
 		w.WriteHeader(http.StatusAccepted)
 	})
 	mux.HandleFunc("PUT /internal/config", func(w http.ResponseWriter, r *http.Request) {
-		if !isAuthorizedInternalCancel(r, cfg.InternalAPIKey, cfg.AllowInsecureInternalCancelAuth) {
+		if !isAuthorizedInternalRequest(r, cfg.InternalAPIKey, cfg.AllowInsecureInternalCancelAuth) {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
@@ -421,9 +421,11 @@ func setupInternalMux(scheduler JobScheduler, db Pingable, cfg *config.Config) *
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte("OK"))
 	})
-	readyzHandler := func(w http.ResponseWriter, r *http.Request) {
+	readinessHandler := func(w http.ResponseWriter, r *http.Request) {
 		if db != nil {
-			if err := db.Ping(); err != nil {
+			pingCtx, pingCancel := context.WithTimeout(r.Context(), 3*time.Second)
+			defer pingCancel()
+			if err := db.PingContext(pingCtx); err != nil {
 				http.Error(w, "Database not ready", http.StatusServiceUnavailable)
 				return
 			}
@@ -431,9 +433,9 @@ func setupInternalMux(scheduler JobScheduler, db Pingable, cfg *config.Config) *
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte("OK"))
 	}
-	mux.HandleFunc("/readyz", readyzHandler)
+	mux.HandleFunc("/readyz", readinessHandler)
 	// /ready is kept as an alias for /readyz for backwards compatibility with
-	// existing probe configurations and deployment manifests.
-	mux.HandleFunc("/ready", readyzHandler)
+	// existing probe configurations and documentation.
+	mux.HandleFunc("/ready", readinessHandler)
 	return mux
 }

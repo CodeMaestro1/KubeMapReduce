@@ -1,9 +1,16 @@
 package worker
 
 import (
+	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"fmt"
+	"io"
+	"strings"
 	"testing"
+
+	"github.com/minio/minio-go/v7"
 )
 
 // ── extractSplitLines ─────────────────────────────────────────────────────────
@@ -101,6 +108,25 @@ func TestExtractSplitLines_SkipLeavesNoRecords(t *testing.T) {
 	}
 }
 
+func TestReadSplitRecords_ExtendsPastChunkUntilNewline(t *testing.T) {
+	store := newChunkingStorage(int(splitReadChunkSize))
+	largeValue := strings.Repeat("x", int(splitReadChunkSize)+128)
+	record := fmt.Sprintf(`{"key":"k","value":"%s"}`+"\n", largeValue)
+	store.put("inputs", "big.jsonl", []byte(record))
+
+	lines, err := readSplitRecords(context.Background(), store, "s3://inputs/big.jsonl", 0, splitReadChunkSize/2, "")
+	if err != nil {
+		t.Fatalf("readSplitRecords: %v", err)
+	}
+	if len(lines) != 1 {
+		t.Fatalf("want 1 line, got %d", len(lines))
+	}
+	want := strings.TrimSuffix(record, "\n")
+	if string(lines[0]) != want {
+		t.Fatalf("truncated line: got %d bytes, want %d", len(lines[0]), len(want))
+	}
+}
+
 // ── validateChecksum ──────────────────────────────────────────────────────────
 
 func TestValidateChecksum_Match(t *testing.T) {
@@ -169,4 +195,49 @@ func assertLines(t *testing.T, got [][]byte, want []string) {
 			t.Errorf("line[%d]: got %q, want %q", i, got[i], w)
 		}
 	}
+}
+
+type chunkingStorage struct {
+	objects   map[string][]byte
+	chunkSize int
+	cursors   map[string]int
+}
+
+func newChunkingStorage(chunkSize int) *chunkingStorage {
+	return &chunkingStorage{
+		objects:   make(map[string][]byte),
+		chunkSize: chunkSize,
+		cursors:   make(map[string]int),
+	}
+}
+
+func (s *chunkingStorage) put(bucket, key string, data []byte) {
+	s.objects[bucket+"/"+key] = data
+}
+
+func (s *chunkingStorage) GetObject(_ context.Context, bucket, key string, _ minio.GetObjectOptions) (io.ReadCloser, error) {
+	objKey := bucket + "/" + key
+	data, ok := s.objects[objKey]
+	if !ok {
+		return nil, fmt.Errorf("object not found: %s", objKey)
+	}
+	pos := s.cursors[objKey]
+	if pos >= len(data) {
+		return io.NopCloser(strings.NewReader("")), nil
+	}
+	next := pos + s.chunkSize
+	if next > len(data) {
+		next = len(data)
+	}
+	s.cursors[objKey] = next
+	return io.NopCloser(bytes.NewReader(data[pos:next])), nil
+}
+
+func (s *chunkingStorage) PutObject(_ context.Context, bucket, key string, reader io.Reader, _ int64, _ minio.PutObjectOptions) (minio.UploadInfo, error) {
+	data, err := io.ReadAll(reader)
+	if err != nil {
+		return minio.UploadInfo{}, err
+	}
+	s.put(bucket, key, data)
+	return minio.UploadInfo{Bucket: bucket, Key: key}, nil
 }

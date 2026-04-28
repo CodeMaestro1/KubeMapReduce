@@ -51,33 +51,33 @@ func TestResolveReplicaIndexFallsBackToHostname(t *testing.T) {
 	}
 }
 
-func TestIsAuthorizedInternalCancel_WithToken(t *testing.T) {
+func TestIsAuthorizedInternalRequest_WithToken(t *testing.T) {
 	req := httptest.NewRequest("DELETE", "/internal/jobs/job-1", nil)
 	req.Header.Set("X-Internal-Token", "secret")
 	req.RemoteAddr = "10.10.10.10:4567"
-	if !isAuthorizedInternalCancel(req, "secret", false) {
+	if !isAuthorizedInternalRequest(req, "secret", false) {
 		t.Fatalf("expected request with matching token to be authorized")
 	}
 }
 
-func TestIsAuthorizedInternalCancel_WithoutTokenDeniedByDefault(t *testing.T) {
+func TestIsAuthorizedInternalRequest_WithoutTokenDeniedByDefault(t *testing.T) {
 	localReq := httptest.NewRequest("DELETE", "/internal/jobs/job-1", nil)
 	localReq.RemoteAddr = "127.0.0.1:4000"
-	if isAuthorizedInternalCancel(localReq, "", false) {
+	if isAuthorizedInternalRequest(localReq, "", false) {
 		t.Fatalf("expected loopback request to be denied when token is unset and insecure fallback is disabled")
 	}
 }
 
-func TestIsAuthorizedInternalCancel_WithoutTokenAllowsLoopbackWhenExplicitlyEnabled(t *testing.T) {
+func TestIsAuthorizedInternalRequest_WithoutTokenAllowsLoopbackWhenExplicitlyEnabled(t *testing.T) {
 	localReq := httptest.NewRequest("DELETE", "/internal/jobs/job-1", nil)
 	localReq.RemoteAddr = "127.0.0.1:4000"
-	if !isAuthorizedInternalCancel(localReq, "", true) {
+	if !isAuthorizedInternalRequest(localReq, "", true) {
 		t.Fatalf("expected loopback request to be authorized when insecure fallback is explicitly enabled")
 	}
 
 	remoteReq := httptest.NewRequest("DELETE", "/internal/jobs/job-1", nil)
 	remoteReq.RemoteAddr = "10.0.0.1:4000"
-	if isAuthorizedInternalCancel(remoteReq, "", true) {
+	if isAuthorizedInternalRequest(remoteReq, "", true) {
 		t.Fatalf("expected non-loopback request to be denied even when insecure fallback is enabled")
 	}
 }
@@ -173,12 +173,12 @@ func (m *mockJobScheduler) UpsertSystemConfig(ctx context.Context, update manage
 }
 
 type mockPingable struct {
-	pingFunc func() error
+	pingFunc func(ctx context.Context) error
 }
 
-func (m *mockPingable) Ping() error {
+func (m *mockPingable) PingContext(ctx context.Context) error {
 	if m.pingFunc != nil {
-		return m.pingFunc()
+		return m.pingFunc(ctx)
 	}
 	return nil
 }
@@ -188,7 +188,7 @@ func TestSetupInternalMux_Readyz(t *testing.T) {
 	sched := &mockJobScheduler{}
 
 	t.Run("db ping success", func(t *testing.T) {
-		db := &mockPingable{pingFunc: func() error { return nil }}
+		db := &mockPingable{pingFunc: func(ctx context.Context) error { return nil }}
 		mux := setupInternalMux(sched, db, cfg)
 		req := httptest.NewRequest("GET", "/readyz", nil)
 		rec := httptest.NewRecorder()
@@ -200,7 +200,7 @@ func TestSetupInternalMux_Readyz(t *testing.T) {
 	})
 
 	t.Run("db ping failure", func(t *testing.T) {
-		db := &mockPingable{pingFunc: func() error { return errors.New("db down") }}
+		db := &mockPingable{pingFunc: func(ctx context.Context) error { return errors.New("db down") }}
 		mux := setupInternalMux(sched, db, cfg)
 		req := httptest.NewRequest("GET", "/readyz", nil)
 		rec := httptest.NewRecorder()
@@ -208,6 +208,29 @@ func TestSetupInternalMux_Readyz(t *testing.T) {
 
 		if rec.Code != http.StatusServiceUnavailable {
 			t.Errorf("expected 503 Service Unavailable, got %d", rec.Code)
+		}
+	})
+	t.Run("ready alias db ping success", func(t *testing.T) {
+		db := &mockPingable{pingFunc: func(ctx context.Context) error { return nil }}
+		mux := setupInternalMux(sched, db, cfg)
+		req := httptest.NewRequest("GET", "/ready", nil)
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Errorf("/ready: expected 200 OK, got %d", rec.Code)
+		}
+	})
+
+	t.Run("ready alias db ping failure", func(t *testing.T) {
+		db := &mockPingable{pingFunc: func(ctx context.Context) error { return errors.New("db down") }}
+		mux := setupInternalMux(sched, db, cfg)
+		req := httptest.NewRequest("GET", "/ready", nil)
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusServiceUnavailable {
+			t.Errorf("/ready: expected 503 Service Unavailable, got %d", rec.Code)
 		}
 	})
 }
@@ -249,7 +272,10 @@ func TestSetupInternalMux_Schedule(t *testing.T) {
 			},
 		}
 		mux := setupInternalMux(sched, nil, cfg)
-		payload, _ := json.Marshal(manager.ScheduleJobRequest{JobID: "test-job"})
+		payload, err := json.Marshal(manager.ScheduleJobRequest{JobID: "00000000-0000-0000-0000-000000000001"})
+		if err != nil {
+			t.Fatalf("failed to marshal request payload: %v", err)
+		}
 		req := httptest.NewRequest("POST", "/internal/schedule", bytes.NewReader(payload))
 		req.Header.Set("X-Internal-Token", "secret-token")
 		rec := httptest.NewRecorder()
@@ -261,18 +287,22 @@ func TestSetupInternalMux_Schedule(t *testing.T) {
 	})
 
 	t.Run("success", func(t *testing.T) {
+		const testJobID = "00000000-0000-0000-0000-000000000002"
 		called := false
 		sched := &mockJobScheduler{
 			scheduleFunc: func(ctx context.Context, req manager.ScheduleJobRequest) error {
 				called = true
-				if req.JobID != "test-job" {
+				if req.JobID != testJobID {
 					return errors.New("wrong job id")
 				}
 				return nil
 			},
 		}
 		mux := setupInternalMux(sched, nil, cfg)
-		payload, _ := json.Marshal(manager.ScheduleJobRequest{JobID: "test-job"})
+		payload, err := json.Marshal(manager.ScheduleJobRequest{JobID: testJobID})
+		if err != nil {
+			t.Fatalf("failed to marshal request payload: %v", err)
+		}
 		req := httptest.NewRequest("POST", "/internal/schedule", bytes.NewReader(payload))
 		req.Header.Set("X-Internal-Token", "secret-token")
 		rec := httptest.NewRecorder()

@@ -1,0 +1,132 @@
+# UI Service — public-facing REST API.
+#
+# Stateless Deployment (the UI service does not own DDS state). Horizontally
+# scalable; behind the api.mapreduce.local Gateway HTTPRoute.
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ui-config
+  namespace: mapreduce
+data:
+  KEYCLOAK_BASE_URL: "http://keycloak.mapreduce.svc.cluster.local:8080"
+  KEYCLOAK_REALM: "mapreduce"
+  KEYCLOAK_AUDIENCE: "mapreduce-api"
+  STATEFULSET_REPLICAS: "3"
+  SERVER_ADDR: ":8080"
+  MINIO_USE_SSL: "false"
+  # The UI computes manager-N.manager-headless... internally; this default is
+  # only the seed replica used when hash routing is bypassed.
+  MANAGER_ADDR: "manager-0.manager-headless.mapreduce.svc.cluster.local:8081"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ui
+  namespace: mapreduce
+  labels:
+    app.kubernetes.io/name: ui
+spec:
+  selector:
+    app.kubernetes.io/name: ui
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ui
+  namespace: mapreduce
+  labels:
+    app.kubernetes.io/name: ui
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: ui
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: ui
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+      containers:
+        - name: ui
+          image: kubemapreduce/ui:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+          envFrom:
+            - configMapRef:
+                name: ui-config
+          env:
+            - name: DATABASE_DSN
+              value: "postgres://$(POSTGRES_USER):$(POSTGRES_PASSWORD)@postgres.mapreduce.svc.cluster.local:5432/$(POSTGRES_DB)?sslmode=disable"
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-creds
+                  key: POSTGRES_USER
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-creds
+                  key: POSTGRES_PASSWORD
+            - name: POSTGRES_DB
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-creds
+                  key: POSTGRES_DB
+            - name: MINIO_ENDPOINT
+              valueFrom:
+                secretKeyRef:
+                  name: minio-creds
+                  key: S3_ENDPOINT
+            - name: MINIO_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: minio-creds
+                  key: S3_ACCESS_KEY
+            - name: MINIO_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: minio-creds
+                  key: S3_SECRET_KEY
+            - name: MANAGER_INTERNAL_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: manager-secrets
+                  key: MANAGER_INTERNAL_API_KEY
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 30
+            periodSeconds: 30
+            timeoutSeconds: 5
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "128Mi"
+            limits:
+              cpu: "500m"
+              memory: "512Mi"
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]

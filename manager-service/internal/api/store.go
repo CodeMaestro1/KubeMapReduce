@@ -15,6 +15,7 @@ import (
 // and JOB_CONFIGS DDS tables.
 type JobRecord struct {
 	JobID       string
+	UserID      string
 	Status      string
 	Filename    string
 	Reducers    int
@@ -28,6 +29,9 @@ type JobRecord struct {
 // ErrInvalidJobID is returned when a provided job ID is not a valid UUID.
 var ErrInvalidJobID = errors.New("invalid job id")
 
+// ErrInvalidUserID is returned when a provided user ID is not a valid UUID.
+var ErrInvalidUserID = errors.New("invalid user id")
+
 // JobStore abstracts persistent job storage for the API handlers.
 //
 // This interface allows the API layer to remain agnostic of the underlying
@@ -36,10 +40,10 @@ var ErrInvalidJobID = errors.New("invalid job id")
 type JobStore interface {
 	// CreateJob persists a new job record.
 	CreateJob(ctx context.Context, rec JobRecord) error
-	// GetJob retrieves a job by its unique identifier.
-	GetJob(ctx context.Context, jobID string) (*JobRecord, error)
-	// ListJobs returns a slice of jobs with pagination support.
-	ListJobs(ctx context.Context, limit, offset int) ([]JobRecord, error)
+	// GetJob retrieves a job by its unique identifier for a specific user.
+	GetJob(ctx context.Context, userID, jobID string) (*JobRecord, error)
+	// ListJobs returns a slice of jobs for a specific user with pagination support.
+	ListJobs(ctx context.Context, userID string, limit, offset int) ([]JobRecord, error)
 }
 
 // ── PostgreSQL implementation ───────────────────────────────
@@ -57,15 +61,27 @@ const (
 		SELECT j.job_id, j.status, COALESCE(jc.input_uri, ''), COALESCE(jc.r_tasks, 0), j.created_at
 		FROM JOBS j
 		LEFT JOIN JOB_CONFIGS jc ON j.job_id = jc.job_id
+		WHERE j.user_id = $1
 		ORDER BY j.created_at DESC
-		LIMIT $1 OFFSET $2`
+		LIMIT $2 OFFSET $3`
 
 	queryGetAPIJob = `
 		SELECT j.job_id, j.status, COALESCE(jc.input_uri, ''), COALESCE(jc.r_tasks, 0), j.created_at
 		FROM JOBS j
 		LEFT JOIN JOB_CONFIGS jc ON j.job_id = jc.job_id
-		WHERE j.job_id = $1`
+		WHERE j.job_id = $1 AND j.user_id = $2`
 )
+
+func parseUserUUID(userID string) (uuid.UUID, error) {
+	if userID == "" {
+		return uuid.Nil, ErrInvalidUserID
+	}
+	userUUID, err := uuid.Parse(userID)
+	if err != nil {
+		return uuid.Nil, ErrInvalidUserID
+	}
+	return userUUID, nil
+}
 
 // PostgresJobStore implements JobStore backed by DDS/PostgreSQL tables.
 //
@@ -98,7 +114,11 @@ func (s *PostgresJobStore) CreateJob(ctx context.Context, rec JobRecord) error {
 	}
 
 	now := rec.CreatedAt
-	if _, err := tx.ExecContext(ctx, queryInsertAPIJob, jobUUID, uuid.Nil, now, now); err != nil {
+	userUUID, err := parseUserUUID(rec.UserID)
+	if err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, queryInsertAPIJob, jobUUID, userUUID, now, now); err != nil {
 		return err
 	}
 	if _, err := tx.ExecContext(ctx, queryInsertAPIJobConfig, jobUUID, rec.Filename, rec.MapperURI, rec.ReducerURI, rec.CombinerURI, rec.MTasks, rec.Reducers); err != nil {
@@ -109,7 +129,11 @@ func (s *PostgresJobStore) CreateJob(ctx context.Context, rec JobRecord) error {
 }
 
 // GetJob retrieves a single job by ID. Returns nil, nil when not found.
-func (s *PostgresJobStore) GetJob(ctx context.Context, jobID string) (*JobRecord, error) {
+func (s *PostgresJobStore) GetJob(ctx context.Context, userID, jobID string) (*JobRecord, error) {
+	userUUID, err := parseUserUUID(userID)
+	if err != nil {
+		return nil, err
+	}
 	jobUUID, err := uuid.Parse(jobID)
 	if err != nil {
 		return nil, ErrInvalidJobID
@@ -117,7 +141,7 @@ func (s *PostgresJobStore) GetJob(ctx context.Context, jobID string) (*JobRecord
 
 	var rec JobRecord
 	var dbID uuid.UUID
-	err = s.db.QueryRowContext(ctx, queryGetAPIJob, jobUUID).Scan(
+	err = s.db.QueryRowContext(ctx, queryGetAPIJob, jobUUID, userUUID).Scan(
 		&dbID, &rec.Status, &rec.Filename, &rec.Reducers, &rec.CreatedAt,
 	)
 	if err == sql.ErrNoRows {
@@ -131,8 +155,12 @@ func (s *PostgresJobStore) GetJob(ctx context.Context, jobID string) (*JobRecord
 }
 
 // ListJobs returns all jobs ordered by creation time descending.
-func (s *PostgresJobStore) ListJobs(ctx context.Context, limit, offset int) ([]JobRecord, error) {
-	rows, err := s.db.QueryContext(ctx, queryListAPIJobs, limit, offset)
+func (s *PostgresJobStore) ListJobs(ctx context.Context, userID string, limit, offset int) ([]JobRecord, error) {
+	userUUID, err := parseUserUUID(userID)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := s.db.QueryContext(ctx, queryListAPIJobs, userUUID, limit, offset)
 	if err != nil {
 		return nil, err
 	}
@@ -198,25 +226,37 @@ func (m *MemoryJobStore) CreateJob(_ context.Context, rec JobRecord) error {
 }
 
 // GetJob retrieves a job by ID; returns nil, nil when not found or expired.
-func (m *MemoryJobStore) GetJob(_ context.Context, jobID string) (*JobRecord, error) {
+func (m *MemoryJobStore) GetJob(_ context.Context, userID, jobID string) (*JobRecord, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.cleanup()
+	if userID == "" {
+		return nil, ErrInvalidUserID
+	}
 	rec, ok := m.jobs[jobID]
 	if !ok {
+		return nil, nil
+	}
+	if rec.UserID != "" && rec.UserID != userID {
 		return nil, nil
 	}
 	return &rec, nil
 }
 
 // ListJobs returns all non-expired jobs ordered by creation time descending.
-func (m *MemoryJobStore) ListJobs(_ context.Context, limit, offset int) ([]JobRecord, error) {
+func (m *MemoryJobStore) ListJobs(_ context.Context, userID string, limit, offset int) ([]JobRecord, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.cleanup()
+	if userID == "" {
+		return nil, ErrInvalidUserID
+	}
 
 	var list []JobRecord
 	for _, rec := range m.jobs {
+		if rec.UserID != "" && rec.UserID != userID {
+			continue
+		}
 		list = append(list, rec)
 	}
 	sort.Slice(list, func(i, j int) bool {

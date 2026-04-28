@@ -110,9 +110,7 @@ func (s *WorkerServer) Register(ctx context.Context, req *pb.RegisterRequest) (*
 			assignment.ByteStart = selectedSplit.ByteStart
 			assignment.ByteEnd = selectedSplit.ByteEnd
 			assignment.SplitChecksum = selectedSplit.SplitChecksum
-		}
-		for _, split := range task.InputSplits {
-			assignment.DataLocations = append(assignment.DataLocations, split.InputURI)
+			assignment.DataLocations = append(assignment.DataLocations, selectedSplit.InputURI)
 		}
 	case manager.ReduceTask:
 		assignment.Type = pb.TaskType_REDUCE
@@ -273,8 +271,9 @@ func newWorkerServerWithManifestUploader(scheduler *manager.Scheduler, minioClie
 	}
 }
 
-// splitInfo holds byte range and checksum information for a task input split.
+// splitInfo holds the URI, byte range, and checksum for a single task input split.
 type splitInfo struct {
+	InputURI      string
 	ByteStart     int64
 	ByteEnd       int64
 	SplitChecksum string
@@ -297,16 +296,15 @@ func runtimeEnvFromCodeURI(codeURI string) string {
 	}
 }
 
-// findMapSplitForTask selects the first input split from a map task.
-// For simplicity, this returns the first split if available.
-// In a more sophisticated implementation, this could implement locality-aware scheduling.
+// findMapSplitForTask returns the single input split assigned to a map task.
+// Per the architecture, each map task owns exactly one input split.
 func findMapSplitForTask(task *manager.Task) (*splitInfo, bool) {
 	if len(task.InputSplits) == 0 {
 		return nil, false
 	}
-	// Select the first split
 	split := task.InputSplits[0]
 	return &splitInfo{
+		InputURI:      split.InputURI,
 		ByteStart:     split.ByteStart,
 		ByteEnd:       split.ByteEnd,
 		SplitChecksum: split.SplitChecksum,

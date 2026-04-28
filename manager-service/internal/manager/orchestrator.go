@@ -93,6 +93,9 @@ func (k *KubeOrchestrator) SpawnWorker(ctx context.Context, taskID string, jobID
 		"job_id":  sanitizedJobID,
 	}
 
+	falseVal := false
+	trueVal := true
+
 	job := &batchv1.Job{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      jobName,
@@ -106,7 +109,22 @@ func (k *KubeOrchestrator) SpawnWorker(ctx context.Context, taskID string, jobID
 					Labels: labels,
 				},
 				Spec: corev1.PodSpec{
-					RestartPolicy: corev1.RestartPolicyNever,
+					RestartPolicy:                corev1.RestartPolicyNever,
+					AutomountServiceAccountToken: &falseVal,
+					SecurityContext: &corev1.PodSecurityContext{
+						RunAsNonRoot: &trueVal,
+						SeccompProfile: &corev1.SeccompProfile{
+							Type: corev1.SeccompProfileTypeRuntimeDefault,
+						},
+					},
+					Volumes: []corev1.Volume{
+						{
+							Name: "tmp",
+							VolumeSource: corev1.VolumeSource{
+								EmptyDir: &corev1.EmptyDirVolumeSource{},
+							},
+						},
+					},
 					Containers: []corev1.Container{
 						{
 							Name:  "worker",
@@ -121,6 +139,20 @@ func (k *KubeOrchestrator) SpawnWorker(ctx context.Context, taskID string, jobID
 								secretEnvVar("S3_SECRET_KEY", k.workerSecretName, "MINIO_SECRET_KEY"),
 								secretEnvVar("MINIO_BUCKET", k.workerSecretName, "MINIO_BUCKET"),
 								secretEnvVar("WORKER_RPC_TOKEN", k.workerSecretName, "MANAGER_WORKER_RPC_TOKEN"),
+							},
+							SecurityContext: &corev1.SecurityContext{
+								AllowPrivilegeEscalation: &falseVal,
+								ReadOnlyRootFilesystem:   &trueVal,
+								RunAsNonRoot:             &trueVal,
+								Capabilities: &corev1.Capabilities{
+									Drop: []corev1.Capability{"ALL"},
+								},
+							},
+							VolumeMounts: []corev1.VolumeMount{
+								{
+									Name:      "tmp",
+									MountPath: "/tmp",
+								},
 							},
 						},
 					},

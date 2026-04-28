@@ -1,0 +1,120 @@
+# PostgreSQL — DDS backing store for the Manager service.
+#
+# Deployed as a StatefulSet with a single replica and a ReadWriteOnce PVC
+# because the schema (issue #85) is single-writer and uses row-level locking.
+# Credentials live in postgres-creds Secret; the DDS schema is initialized via
+# the postgres-init ConfigMap, which the official image runs from
+# /docker-entrypoint-initdb.d on first boot.
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: postgres-creds
+  namespace: mapreduce
+type: Opaque
+stringData:
+  POSTGRES_USER: mapreduce
+  POSTGRES_PASSWORD: change-me-in-production
+  POSTGRES_DB: mapreduce
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: postgres-init
+  namespace: mapreduce
+data:
+  # Mirror of migrations/0001_initial_schema.sql. Keep this in sync when
+  # schema changes — or replace this ConfigMap with a Job that runs the
+  # migration tool against an external Postgres.
+  0001_initial_schema.sql: |
+    -- Placeholder: bake the contents of migrations/0001_initial_schema.sql
+    -- into this ConfigMap at deploy time. Recommended workflow:
+    --   kubectl -n mapreduce create configmap postgres-init \
+    --     --from-file=migrations/ --dry-run=client -o yaml | kubectl apply -f -
+    SELECT 1;
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  namespace: mapreduce
+  labels:
+    app.kubernetes.io/name: postgres
+spec:
+  selector:
+    app.kubernetes.io/name: postgres
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: 5432
+  clusterIP: None
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: postgres
+  namespace: mapreduce
+  labels:
+    app.kubernetes.io/name: postgres
+spec:
+  serviceName: postgres
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: postgres
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: postgres
+    spec:
+      securityContext:
+        fsGroup: 999
+      containers:
+        - name: postgres
+          image: postgres:15
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: postgres
+              containerPort: 5432
+          envFrom:
+            - secretRef:
+                name: postgres-creds
+          env:
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+            - name: init
+              mountPath: /docker-entrypoint-initdb.d
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", "mapreduce", "-d", "mapreduce"]
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 5
+          livenessProbe:
+            exec:
+              command: ["pg_isready", "-U", "mapreduce", "-d", "mapreduce"]
+            initialDelaySeconds: 30
+            periodSeconds: 30
+            timeoutSeconds: 5
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "256Mi"
+            limits:
+              cpu: "1"
+              memory: "1Gi"
+      volumes:
+        - name: init
+          configMap:
+            name: postgres-init
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 10Gi
