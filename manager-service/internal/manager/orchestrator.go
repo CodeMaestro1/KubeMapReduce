@@ -46,25 +46,30 @@ type WorkerOrchestrator interface {
 // task retries are controlled exclusively by the Manager's scheduler logic rather than
 // the K8s kubelet, preventing "zombie" retries from interfering with new attempts.
 type KubeOrchestrator struct {
-	clientset   kubernetes.Interface
-	namespace   string
-	workerImage string
+	clientset        kubernetes.Interface
+	namespace        string
+	workerImage      string
+	workerSecretName string
 }
 
 // NewKubeOrchestrator creates a new Kubernetes-backed orchestrator.
 //
 // It defaults to the "default" namespace and "kubemapreduce-worker:latest" image if not specified.
-func NewKubeOrchestrator(clientset kubernetes.Interface, namespace, workerImage string) *KubeOrchestrator {
+func NewKubeOrchestrator(clientset kubernetes.Interface, namespace, workerImage, workerSecretName string) *KubeOrchestrator {
 	if namespace == "" {
 		namespace = "default"
 	}
 	if workerImage == "" {
 		workerImage = "kubemapreduce-worker:latest"
 	}
+	if workerSecretName == "" {
+		workerSecretName = "kubemapreduce-secrets"
+	}
 	return &KubeOrchestrator{
-		clientset:   clientset,
-		namespace:   namespace,
-		workerImage: workerImage,
+		clientset:        clientset,
+		namespace:        namespace,
+		workerImage:      workerImage,
+		workerSecretName: workerSecretName,
 	}
 }
 
@@ -108,12 +113,61 @@ func (k *KubeOrchestrator) SpawnWorker(ctx context.Context, taskID string, jobID
 									Value: taskID,
 								},
 								{
+									Name:  "JOB_ID",
+									Value: jobID,
+								},
+								{
 									Name:  "MANAGER_ADDR",
 									Value: managerAddr,
 								},
 								{
 									Name:  "ATTEMPT_ID",
 									Value: attemptID,
+								},
+								{
+									Name: "S3_ENDPOINT",
+									ValueFrom: &corev1.EnvVarSource{
+										SecretKeyRef: &corev1.SecretKeySelector{
+											LocalObjectReference: corev1.LocalObjectReference{Name: k.workerSecretName},
+											Key:                  "MINIO_ENDPOINT",
+										},
+									},
+								},
+								{
+									Name: "S3_ACCESS_KEY",
+									ValueFrom: &corev1.EnvVarSource{
+										SecretKeyRef: &corev1.SecretKeySelector{
+											LocalObjectReference: corev1.LocalObjectReference{Name: k.workerSecretName},
+											Key:                  "MINIO_ACCESS_KEY",
+										},
+									},
+								},
+								{
+									Name: "S3_SECRET_KEY",
+									ValueFrom: &corev1.EnvVarSource{
+										SecretKeyRef: &corev1.SecretKeySelector{
+											LocalObjectReference: corev1.LocalObjectReference{Name: k.workerSecretName},
+											Key:                  "MINIO_SECRET_KEY",
+										},
+									},
+								},
+								{
+									Name: "MINIO_BUCKET",
+									ValueFrom: &corev1.EnvVarSource{
+										SecretKeyRef: &corev1.SecretKeySelector{
+											LocalObjectReference: corev1.LocalObjectReference{Name: k.workerSecretName},
+											Key:                  "MINIO_BUCKET",
+										},
+									},
+								},
+								{
+									Name: "WORKER_RPC_TOKEN",
+									ValueFrom: &corev1.EnvVarSource{
+										SecretKeyRef: &corev1.SecretKeySelector{
+											LocalObjectReference: corev1.LocalObjectReference{Name: k.workerSecretName},
+											Key:                  "MANAGER_WORKER_RPC_TOKEN",
+										},
+									},
 								},
 							},
 						},

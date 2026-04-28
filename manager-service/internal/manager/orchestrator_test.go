@@ -25,7 +25,7 @@ func TestBuildWorkerJobName_DNSLabelBounded(t *testing.T) {
 
 func TestKubeOrchestrator_SpawnWorker_SetsJobLabels(t *testing.T) {
 	client := fake.NewSimpleClientset()
-	orchestrator := NewKubeOrchestrator(client, "default", "worker:latest")
+	orchestrator := NewKubeOrchestrator(client, "default", "worker:latest", "test-secrets")
 
 	taskID := "Task-A"
 	jobID := "Job-A"
@@ -80,7 +80,7 @@ func TestKubeOrchestrator_DeleteWorkerJob_DeletesJobsByTaskID(t *testing.T) {
 		},
 	}
 	client := fake.NewSimpleClientset(job1, job2, other)
-	orchestrator := NewKubeOrchestrator(client, "default", "worker:latest")
+	orchestrator := NewKubeOrchestrator(client, "default", "worker:latest", "test-secrets")
 
 	if err := orchestrator.DeleteWorkerJob(context.Background(), taskID); err != nil {
 		t.Fatalf("DeleteWorkerJob failed: %v", err)
@@ -105,7 +105,7 @@ func TestKubeOrchestrator_DeleteWorkerJob_DeletesJobsByTaskID(t *testing.T) {
 
 func TestKubeOrchestrator_DeleteWorkerJob_NoJobsIsIdempotent(t *testing.T) {
 	client := fake.NewSimpleClientset()
-	orchestrator := NewKubeOrchestrator(client, "default", "worker:latest")
+	orchestrator := NewKubeOrchestrator(client, "default", "worker:latest", "test-secrets")
 
 	if err := orchestrator.DeleteWorkerJob(context.Background(), "nonexistent-task"); err != nil {
 		t.Fatalf("expected no error deleting nonexistent task jobs, got: %v", err)
@@ -127,7 +127,7 @@ func TestKubeOrchestrator_SpawnWorker_AlreadyExistsIsIdempotent(t *testing.T) {
 		},
 	}
 	client := fake.NewSimpleClientset(existing)
-	orchestrator := NewKubeOrchestrator(client, "default", "worker:latest")
+	orchestrator := NewKubeOrchestrator(client, "default", "worker:latest", "test-secrets")
 
 	if err := orchestrator.SpawnWorker(context.Background(), taskID, "job-id", attemptID, "manager:50051"); err != nil {
 		t.Fatalf("expected idempotent success on already-existing job, got: %v", err)
@@ -139,5 +139,72 @@ func TestKubeOrchestrator_SpawnWorker_AlreadyExistsIsIdempotent(t *testing.T) {
 	}
 	if job.Labels["existing"] != "true" {
 		t.Fatalf("existing job should not be replaced")
+	}
+}
+
+func TestKubeOrchestrator_SpawnWorker_InjectsRequiredEnv(t *testing.T) {
+	client := fake.NewSimpleClientset()
+	secretName := "custom-worker-secret"
+	orchestrator := NewKubeOrchestrator(client, "default", "worker:latest", secretName)
+
+	taskID := "task-1"
+	jobID := "job-1"
+	attemptID := "attempt-1"
+	managerAddr := "manager:50051"
+
+	if err := orchestrator.SpawnWorker(context.Background(), taskID, jobID, attemptID, managerAddr); err != nil {
+		t.Fatalf("spawn worker failed: %v", err)
+	}
+
+	jobName := buildWorkerJobName(sanitizeForDNSLabel(taskID), attemptID)
+	job, _ := client.BatchV1().Jobs("default").Get(context.Background(), jobName, metav1.GetOptions{})
+
+	env := job.Spec.Template.Spec.Containers[0].Env
+	envMap := make(map[string]struct {
+		value     string
+		secretKey string
+	})
+
+	for _, e := range env {
+		res := struct {
+			value     string
+			secretKey string
+		}{}
+		if e.ValueFrom != nil && e.ValueFrom.SecretKeyRef != nil {
+			res.secretKey = e.ValueFrom.SecretKeyRef.Key
+			if e.ValueFrom.SecretKeyRef.Name != secretName {
+				t.Errorf("env %s points to wrong secret: got %q, want %q", e.Name, e.ValueFrom.SecretKeyRef.Name, secretName)
+			}
+		} else {
+			res.value = e.Value
+		}
+		envMap[e.Name] = res
+	}
+
+	// Direct value checks
+	checks := map[string]string{
+		"TASK_ID":      taskID,
+		"JOB_ID":       jobID,
+		"ATTEMPT_ID":   attemptID,
+		"MANAGER_ADDR": managerAddr,
+	}
+	for name, want := range checks {
+		if envMap[name].value != want {
+			t.Errorf("env %s: got value %q, want %q", name, envMap[name].value, want)
+		}
+	}
+
+	// Secret ref checks
+	secretChecks := map[string]string{
+		"S3_ENDPOINT":      "MINIO_ENDPOINT",
+		"S3_ACCESS_KEY":    "MINIO_ACCESS_KEY",
+		"S3_SECRET_KEY":    "MINIO_SECRET_KEY",
+		"MINIO_BUCKET":     "MINIO_BUCKET",
+		"WORKER_RPC_TOKEN": "MANAGER_WORKER_RPC_TOKEN",
+	}
+	for name, wantKey := range secretChecks {
+		if envMap[name].secretKey != wantKey {
+			t.Errorf("env %s: got secret key %q, want %q", name, envMap[name].secretKey, wantKey)
+		}
 	}
 }
