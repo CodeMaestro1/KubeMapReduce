@@ -51,7 +51,8 @@ As a `main` package, it "exports" the following interfaces:
 |---|---|---|
 | `DELETE /internal/jobs/{id}` | Internal Token | Force-cancel a running job |
 | `/health` | None | Liveness probe |
-| `/ready` | None | Readiness probe (checks DB) |
+| `/readyz` | None | Readiness probe (checks DB) |
+| `/ready` | None | Readiness probe alias (kept for backwards compatibility) |
 
 ## Error Catalogue
 | Error | When |
