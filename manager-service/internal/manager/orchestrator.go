@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"log"
 	"strings"
 
 	batchv1 "k8s.io/api/batch/v1"
@@ -89,6 +90,29 @@ func (k *KubeOrchestrator) WithResourceProvider(p ResourceConfigProvider) *KubeO
 	return k
 }
 
+// resolveContainerResources returns the corev1.ResourceRequirements applied to
+// every spawned worker container.
+//
+// When no ResourceConfigProvider is configured the package defaults are used,
+// guaranteeing that issue #91 (unbounded worker pods) cannot regress even if
+// production wiring forgets to call WithResourceProvider. Provider errors are
+// logged and the defaults are substituted so the spawn path never fails just
+// because the DDS is briefly unreachable.
+func (k *KubeOrchestrator) resolveContainerResources(ctx context.Context) corev1.ResourceRequirements {
+	cpuLimit := DefaultWorkerCPULimit
+	memLimit := DefaultWorkerMemoryLimit
+	if k.resourceProvider != nil {
+		cpu, mem, err := k.resourceProvider.GetWorkerResourceLimits(ctx)
+		if err != nil {
+			log.Printf("orchestrator: failed to read worker resource limits, using defaults: %v", err)
+		} else {
+			cpuLimit = cpu
+			memLimit = mem
+		}
+	}
+	return resolveWorkerResources(cpuLimit, memLimit)
+}
+
 // SpawnWorker creates a K8s Job for a task attempt.
 //
 // It uses a deterministic naming scheme (worker-[taskID]-[hash]) to prevent duplicate jobs
@@ -107,6 +131,8 @@ func (k *KubeOrchestrator) SpawnWorker(ctx context.Context, taskID string, jobID
 
 	falseVal := false
 	trueVal := true
+
+	resources := k.resolveContainerResources(ctx)
 
 	job := &batchv1.Job{
 		ObjectMeta: metav1.ObjectMeta{
@@ -152,6 +178,7 @@ func (k *KubeOrchestrator) SpawnWorker(ctx context.Context, taskID string, jobID
 								secretEnvVar("MINIO_BUCKET", k.workerSecretName, "MINIO_BUCKET"),
 								secretEnvVar("WORKER_RPC_TOKEN", k.workerSecretName, "MANAGER_WORKER_RPC_TOKEN"),
 							},
+							Resources: resources,
 							SecurityContext: &corev1.SecurityContext{
 								AllowPrivilegeEscalation: &falseVal,
 								ReadOnlyRootFilesystem:   &falseVal,
