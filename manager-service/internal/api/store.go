@@ -44,6 +44,8 @@ type JobStore interface {
 	GetJob(ctx context.Context, userID, jobID string) (*JobRecord, error)
 	// ListJobs returns a slice of jobs for a specific user with pagination support.
 	ListJobs(ctx context.Context, userID string, limit, offset int) ([]JobRecord, error)
+	// GetJobOutputs returns ordered output URIs for completed reduce tasks of a job.
+	GetJobOutputs(ctx context.Context, jobID string) ([]string, error)
 }
 
 // ── PostgreSQL implementation ───────────────────────────────
@@ -70,6 +72,16 @@ const (
 		FROM JOBS j
 		LEFT JOIN JOB_CONFIGS jc ON j.job_id = jc.job_id
 		WHERE j.job_id = $1 AND j.user_id = $2`
+
+	// QueryGetJobOutputURIs fetches ordered output URIs for completed reduce tasks of a job.
+	QueryGetJobOutputURIs = `
+		SELECT o.output_uri
+		FROM TASK_OUTPUTS o
+		JOIN TASKS t ON o.task_id = t.task_id
+		WHERE t.job_id = $1
+		  AND t.task_type = 'Reduce'
+		  AND t.status = 'Completed'
+		ORDER BY o.partition_index NULLS LAST, o.output_id`
 )
 
 func parseUserUUID(userID string) (uuid.UUID, error) {
@@ -179,6 +191,28 @@ func (s *PostgresJobStore) ListJobs(ctx context.Context, userID string, limit, o
 	return jobs, rows.Err()
 }
 
+// GetJobOutputs returns ordered output URIs for completed reduce tasks of a job.
+func (s *PostgresJobStore) GetJobOutputs(ctx context.Context, jobID string) ([]string, error) {
+	jobUUID, err := uuid.Parse(jobID)
+	if err != nil {
+		return nil, ErrInvalidJobID
+	}
+	rows, err := s.db.QueryContext(ctx, QueryGetJobOutputURIs, jobUUID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var uris []string
+	for rows.Next() {
+		var uri string
+		if err := rows.Scan(&uri); err != nil {
+			return nil, err
+		}
+		uris = append(uris, uri)
+	}
+	return uris, rows.Err()
+}
+
 // ── In-memory implementation (tests) ────────────────────────
 
 // MemoryJobStore implements JobStore with in-memory storage.
@@ -270,6 +304,11 @@ func (m *MemoryJobStore) ListJobs(_ context.Context, userID string, limit, offse
 		end = len(list)
 	}
 	return list[offset:end], nil
+}
+
+// GetJobOutputs returns nil — MemoryJobStore has no task output data.
+func (m *MemoryJobStore) GetJobOutputs(_ context.Context, _ string) ([]string, error) {
+	return nil, nil
 }
 
 func (m *MemoryJobStore) cleanup() {

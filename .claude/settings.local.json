@@ -4,7 +4,8 @@
       "Bash(go build *)",
       "Bash(go test *)",
       "Bash(go fmt *)",
-      "Bash(git fetch *)"
+      "Bash(git fetch *)",
+      "Bash(powershell -Command \"\\(Get-Content 'C:\\\\Users\\\\Konstantinos\\\\Desktop\\\\KubeMapReduce\\\\manager-service\\\\internal\\\\api\\\\handlers.go'\\).Count\")"
     ]
   }
 }

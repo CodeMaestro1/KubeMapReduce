@@ -363,13 +363,61 @@ func (h *Handlers) HandleJobsDownload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := httputil.WriteJSON(w, http.StatusNotImplemented, map[string]interface{}{
-		"status":  "not_implemented",
-		"message": "result download is not available yet; job processing backend is not implemented",
-		"jobId":   rec.JobID,
-	}); err != nil {
+	if rec.Status != "Completed" {
+		httputil.WriteJSON(w, http.StatusConflict, map[string]any{
+			"error":  "job_not_complete",
+			"status": rec.Status,
+		})
 		return
 	}
+
+	outputURIs, err := h.store.GetJobOutputs(r.Context(), jobID)
+	if err != nil {
+		log.Printf("GetJobOutputs failed for job %s: %v", jobID, err)
+		httputil.WriteErrorJSON(w, http.StatusInternalServerError, "failed to retrieve job outputs")
+		return
+	}
+
+	if h.minioClient == nil {
+		httputil.WriteErrorJSON(w, http.StatusServiceUnavailable, "storage not available")
+		return
+	}
+
+	presigned := make([]string, 0, len(outputURIs))
+	for _, uri := range outputURIs {
+		bucket, key, parseErr := parseOutputURI(uri)
+		if parseErr != nil {
+			log.Printf("invalid output URI for job %s: %v", jobID, parseErr)
+			httputil.WriteErrorJSON(w, http.StatusInternalServerError, "invalid output URI")
+			return
+		}
+		u, presignErr := h.minioClient.PresignedGetObject(r.Context(), bucket, key, 15*time.Minute, nil)
+		if presignErr != nil {
+			log.Printf("presign failed for job %s uri %s: %v", jobID, uri, presignErr)
+			httputil.WriteErrorJSON(w, http.StatusInternalServerError, "failed to generate download URL")
+			return
+		}
+		presigned = append(presigned, u.String())
+	}
+
+	httputil.WriteJSON(w, http.StatusOK, map[string]any{
+		"jobId": jobID,
+		"urls":  presigned,
+	})
+}
+
+// parseOutputURI splits an s3://bucket/key URI into bucket and key components.
+func parseOutputURI(uri string) (bucket, key string, err error) {
+	const prefix = "s3://"
+	if !strings.HasPrefix(uri, prefix) {
+		return "", "", fmt.Errorf("unsupported URI scheme: %q", uri)
+	}
+	rest := uri[len(prefix):]
+	idx := strings.IndexByte(rest, '/')
+	if idx < 0 {
+		return "", "", fmt.Errorf("missing key in URI: %q", uri)
+	}
+	return rest[:idx], rest[idx+1:], nil
 }
 
 // HandleConfigureNodes updates resource limits for the MapReduce cluster nodes.
