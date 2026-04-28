@@ -2,6 +2,8 @@ package manager
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"log"
 
 	corev1 "k8s.io/api/core/v1"
@@ -88,4 +90,46 @@ func parseQuantityOrDefault(kind, raw, fallback string) (resource.Quantity, bool
 		log.Printf("orchestrator: BUG: default %s limit %q is not a valid Quantity: %v", kind, fallback, err)
 	}
 	return q, false
+}
+
+// DBResourceConfigProvider reads worker resource limits from the SYSTEM_CONFIG
+// row in the Distributed Data Store on every call.
+//
+// Reading on every SpawnWorker call (rather than caching) means that admin
+// CLI updates to cpu_limit / memory_limit take effect for the next spawned
+// worker without restarting the Manager. The query is a single indexed
+// lookup against a one-row table, so the I/O cost is negligible compared to
+// the K8s API call that follows.
+type DBResourceConfigProvider struct {
+	db *sql.DB
+}
+
+// NewDBResourceConfigProvider returns a ResourceConfigProvider backed by the
+// supplied *sql.DB. Passing a nil database returns a nil provider so callers
+// can wire this conditionally without nil-checking at every site.
+func NewDBResourceConfigProvider(db *sql.DB) *DBResourceConfigProvider {
+	if db == nil {
+		return nil
+	}
+	return &DBResourceConfigProvider{db: db}
+}
+
+// GetWorkerResourceLimits implements ResourceConfigProvider by issuing
+// QueryGetWorkerResourceLimits against the configured database. A missing
+// SYSTEM_CONFIG row (sql.ErrNoRows) is treated as a graceful "use defaults"
+// signal and returns the DefaultWorker* constants with a nil error so a
+// fresh cluster never fails to schedule its first worker.
+func (p *DBResourceConfigProvider) GetWorkerResourceLimits(ctx context.Context) (string, string, error) {
+	if p == nil || p.db == nil {
+		return DefaultWorkerCPULimit, DefaultWorkerMemoryLimit, nil
+	}
+	var cpu, mem string
+	err := p.db.QueryRowContext(ctx, QueryGetWorkerResourceLimits).Scan(&cpu, &mem)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return DefaultWorkerCPULimit, DefaultWorkerMemoryLimit, nil
+		}
+		return "", "", err
+	}
+	return cpu, mem, nil
 }
