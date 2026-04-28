@@ -128,7 +128,11 @@ func (s *WorkerServer) Register(ctx context.Context, req *pb.RegisterRequest) (*
 		assignment.Type = pb.TaskType_REDUCE
 		assignment.PartitionId = int32(task.ReducePartition)
 		for _, input := range task.ShuffleInputs {
-			assignment.DataLocations = append(assignment.DataLocations, input.OutputURI)
+			uri := input.OutputURI
+			if input.Checksum != "" {
+				uri = fmt.Sprintf("%s#sha256=%s", uri, input.Checksum)
+			}
+			assignment.DataLocations = append(assignment.DataLocations, uri)
 		}
 	}
 
