@@ -1,0 +1,118 @@
+# MinIO — S3-compatible object storage for inputs, intermediate shuffle data,
+# and final outputs.
+#
+# Deployed as a StatefulSet so the bucket data lives on a stable PVC. The PVC
+# is RWX so that, in a multi-node cluster, additional replicas (or migration
+# pods) can attach to the same volume. On a single-node test cluster RWX is
+# satisfied by the default storage class without additional configuration.
+#
+# minio-creds is the canonical Secret consumed by every workload that talks to
+# object storage (Manager, UI, Worker Jobs). No service may embed S3 keys.
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: minio-creds
+  namespace: mapreduce
+type: Opaque
+stringData:
+  # MinIO root credentials. Required by the MinIO server itself and reused as
+  # the default S3 client credentials by application workloads.
+  MINIO_ROOT_USER: mapreduce
+  MINIO_ROOT_PASSWORD: change-me-in-production
+  # Application-facing aliases. Manager and UI services read these names.
+  S3_ACCESS_KEY: mapreduce
+  S3_SECRET_KEY: change-me-in-production
+  S3_ENDPOINT: minio.mapreduce.svc.cluster.local:9000
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: minio
+  namespace: mapreduce
+  labels:
+    app.kubernetes.io/name: minio
+spec:
+  selector:
+    app.kubernetes.io/name: minio
+  ports:
+    - name: s3
+      port: 9000
+      targetPort: 9000
+    - name: console
+      port: 9001
+      targetPort: 9001
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: minio
+  namespace: mapreduce
+  labels:
+    app.kubernetes.io/name: minio
+spec:
+  serviceName: minio
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: minio
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: minio
+    spec:
+      securityContext:
+        fsGroup: 1000
+      containers:
+        - name: minio
+          image: quay.io/minio/minio:RELEASE.2024-10-13T13-34-11Z
+          imagePullPolicy: IfNotPresent
+          args: ["server", "/data", "--console-address", ":9001"]
+          ports:
+            - name: s3
+              containerPort: 9000
+            - name: console
+              containerPort: 9001
+          env:
+            - name: MINIO_ROOT_USER
+              valueFrom:
+                secretKeyRef:
+                  name: minio-creds
+                  key: MINIO_ROOT_USER
+            - name: MINIO_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: minio-creds
+                  key: MINIO_ROOT_PASSWORD
+          volumeMounts:
+            - name: data
+              mountPath: /data
+          readinessProbe:
+            httpGet:
+              path: /minio/health/ready
+              port: s3
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /minio/health/live
+              port: s3
+            initialDelaySeconds: 30
+            periodSeconds: 30
+            timeoutSeconds: 5
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "256Mi"
+            limits:
+              cpu: "1"
+              memory: "2Gi"
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteMany"]
+        resources:
+          requests:
+            storage: 50Gi
