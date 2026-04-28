@@ -1,13 +1,18 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
+	"errors"
+	"net/http"
 	"net/http/httptest"
 	"testing"
 
 	"google.golang.org/grpc/metadata"
 
 	"kubemapreduce/manager-service/internal/config"
+	"kubemapreduce/manager-service/internal/manager"
 )
 
 func TestParseReplicaIndexFromHostname(t *testing.T) {
@@ -146,4 +151,138 @@ func TestValidateWorkerRPCSecurityConfig(t *testing.T) {
 			}
 		})
 	}
+}
+
+type mockJobScheduler struct {
+	scheduleFunc func(ctx context.Context, req manager.ScheduleJobRequest) error
+}
+
+func (m *mockJobScheduler) CancelJob(ctx context.Context, jobID string) error {
+	return nil
+}
+
+func (m *mockJobScheduler) ScheduleJob(ctx context.Context, req manager.ScheduleJobRequest) error {
+	if m.scheduleFunc != nil {
+		return m.scheduleFunc(ctx, req)
+	}
+	return nil
+}
+
+func (m *mockJobScheduler) UpsertSystemConfig(ctx context.Context, update manager.SystemConfigUpdate) error {
+	return nil
+}
+
+type mockPingable struct {
+	pingFunc func() error
+}
+
+func (m *mockPingable) Ping() error {
+	if m.pingFunc != nil {
+		return m.pingFunc()
+	}
+	return nil
+}
+
+func TestSetupInternalMux_Readyz(t *testing.T) {
+	cfg := &config.Config{}
+	sched := &mockJobScheduler{}
+
+	t.Run("db ping success", func(t *testing.T) {
+		db := &mockPingable{pingFunc: func() error { return nil }}
+		mux := setupInternalMux(sched, db, cfg)
+		req := httptest.NewRequest("GET", "/readyz", nil)
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Errorf("expected 200 OK, got %d", rec.Code)
+		}
+	})
+
+	t.Run("db ping failure", func(t *testing.T) {
+		db := &mockPingable{pingFunc: func() error { return errors.New("db down") }}
+		mux := setupInternalMux(sched, db, cfg)
+		req := httptest.NewRequest("GET", "/readyz", nil)
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusServiceUnavailable {
+			t.Errorf("expected 503 Service Unavailable, got %d", rec.Code)
+		}
+	})
+}
+
+func TestSetupInternalMux_Schedule(t *testing.T) {
+	cfg := &config.Config{
+		InternalAPIKey: "secret-token",
+	}
+
+	t.Run("unauthorized", func(t *testing.T) {
+		sched := &mockJobScheduler{}
+		mux := setupInternalMux(sched, nil, cfg)
+		req := httptest.NewRequest("POST", "/internal/schedule", bytes.NewReader([]byte("{}")))
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusUnauthorized {
+			t.Errorf("expected 401 Unauthorized, got %d", rec.Code)
+		}
+	})
+
+	t.Run("invalid payload", func(t *testing.T) {
+		sched := &mockJobScheduler{}
+		mux := setupInternalMux(sched, nil, cfg)
+		req := httptest.NewRequest("POST", "/internal/schedule", bytes.NewReader([]byte("{invalid-json}")))
+		req.Header.Set("X-Internal-Token", "secret-token")
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("expected 400 Bad Request, got %d", rec.Code)
+		}
+	})
+
+	t.Run("scheduler failure", func(t *testing.T) {
+		sched := &mockJobScheduler{
+			scheduleFunc: func(ctx context.Context, req manager.ScheduleJobRequest) error {
+				return errors.New("scheduler failed")
+			},
+		}
+		mux := setupInternalMux(sched, nil, cfg)
+		payload, _ := json.Marshal(manager.ScheduleJobRequest{JobID: "test-job"})
+		req := httptest.NewRequest("POST", "/internal/schedule", bytes.NewReader(payload))
+		req.Header.Set("X-Internal-Token", "secret-token")
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusInternalServerError {
+			t.Errorf("expected 500 Internal Server Error, got %d", rec.Code)
+		}
+	})
+
+	t.Run("success", func(t *testing.T) {
+		called := false
+		sched := &mockJobScheduler{
+			scheduleFunc: func(ctx context.Context, req manager.ScheduleJobRequest) error {
+				called = true
+				if req.JobID != "test-job" {
+					return errors.New("wrong job id")
+				}
+				return nil
+			},
+		}
+		mux := setupInternalMux(sched, nil, cfg)
+		payload, _ := json.Marshal(manager.ScheduleJobRequest{JobID: "test-job"})
+		req := httptest.NewRequest("POST", "/internal/schedule", bytes.NewReader(payload))
+		req.Header.Set("X-Internal-Token", "secret-token")
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusAccepted {
+			t.Errorf("expected 202 Accepted, got %d", rec.Code)
+		}
+		if !called {
+			t.Errorf("expected scheduleFunc to be called")
+		}
+	})
 }
