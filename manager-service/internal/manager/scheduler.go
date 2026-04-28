@@ -337,7 +337,11 @@ func (s *Scheduler) readQuotaSnapshotTx(ctx context.Context, tx *sql.Tx) (QuotaS
 
 	var snap QuotaSnapshot
 	if err := tx.QueryRowContext(ctx, QueryGetMaxConcurrentPods).Scan(&snap.MaxPods); err != nil {
-		return QuotaSnapshot{}, err
+		if errors.Is(err, sql.ErrNoRows) {
+			snap.MaxPods = 10
+		} else {
+			return QuotaSnapshot{}, err
+		}
 	}
 	if err := tx.QueryRowContext(ctx, QueryCountRunningAttempts).Scan(&snap.ActivePods); err != nil {
 		return QuotaSnapshot{}, err
