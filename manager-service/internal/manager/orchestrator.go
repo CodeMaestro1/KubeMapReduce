@@ -50,6 +50,7 @@ type KubeOrchestrator struct {
 	namespace        string
 	workerImage      string
 	workerSecretName string
+	resourceProvider ResourceConfigProvider
 }
 
 // NewKubeOrchestrator creates a new Kubernetes-backed orchestrator.
@@ -75,6 +76,17 @@ func NewKubeOrchestrator(clientset kubernetes.Interface, namespace, workerImage,
 		workerImage:      workerImage,
 		workerSecretName: workerSecretName,
 	}
+}
+
+// WithResourceProvider attaches a ResourceConfigProvider that SpawnWorker
+// consults to set CPU and memory limits on the worker container. Passing nil
+// disables provider-driven limits and reverts to the package defaults
+// (DefaultWorkerCPULimit / DefaultWorkerMemoryLimit). The setter returns the
+// receiver so callers can chain it onto NewKubeOrchestrator at construction
+// time without splitting the wiring across multiple statements.
+func (k *KubeOrchestrator) WithResourceProvider(p ResourceConfigProvider) *KubeOrchestrator {
+	k.resourceProvider = p
+	return k
 }
 
 // SpawnWorker creates a K8s Job for a task attempt.
