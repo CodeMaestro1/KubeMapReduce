@@ -1,0 +1,96 @@
+# Kubernetes Gateway API — external routing.
+#
+# Three HTTPRoutes expose the platform under three host names:
+#   - api.mapreduce.local      -> UI Service     (REST API for users / CLI)
+#   - storage.mapreduce.local  -> MinIO          (pre-signed PUT/GET URLs)
+#   - auth.mapreduce.local     -> Keycloak       (OIDC issuer / JWKS)
+#
+# Requires a Gateway controller that implements gateway.networking.k8s.io/v1
+# (e.g. Istio, Contour, Envoy Gateway, or NGINX Gateway Fabric).
+#
+# TLS termination happens at the Gateway. The cert references below assume a
+# Secret named mapreduce-tls exists in the same namespace; replace with your
+# cert-manager Certificate or pre-provisioned Secret.
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: mapreduce
+  namespace: mapreduce
+spec:
+  gatewayClassName: mapreduce
+  listeners:
+    - name: http
+      protocol: HTTP
+      port: 80
+      allowedRoutes:
+        namespaces:
+          from: Same
+    - name: https
+      protocol: HTTPS
+      port: 443
+      tls:
+        mode: Terminate
+        certificateRefs:
+          - kind: Secret
+            name: mapreduce-tls
+      allowedRoutes:
+        namespaces:
+          from: Same
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: api
+  namespace: mapreduce
+spec:
+  parentRefs:
+    - name: mapreduce
+  hostnames:
+    - api.mapreduce.local
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /
+      backendRefs:
+        - name: ui
+          port: 8080
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: storage
+  namespace: mapreduce
+spec:
+  parentRefs:
+    - name: mapreduce
+  hostnames:
+    - storage.mapreduce.local
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /
+      backendRefs:
+        - name: minio
+          port: 9000
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: auth
+  namespace: mapreduce
+spec:
+  parentRefs:
+    - name: mapreduce
+  hostnames:
+    - auth.mapreduce.local
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /
+      backendRefs:
+        - name: keycloak
+          port: 8080
