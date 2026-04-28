@@ -1239,3 +1239,44 @@ func TestRouting_PostToJobDetail_Returns405(t *testing.T) {
 		t.Fatalf("expected 405 for POST on job detail, got %d", rec.Code)
 	}
 }
+
+// ── HandleJobsDelete tests ───────────────────────────────────
+
+func TestHandleJobsDelete_Returns204NoContent(t *testing.T) {
+	// Fake manager server that accepts the cancellation request.
+	manager := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer manager.Close()
+
+	h := newTestHandlers()
+	h.managerAddr = manager.Listener.Addr().String()
+
+	// Submit a job so there is a known job_id in the store.
+	submitBody := `{"filename":"input.json","mapper":{"language":"python","artifact":"m.py","entrypoint":"map","interface":"map(key,value)->[]KeyValue"},"reducer":{"language":"python","artifact":"r.py","entrypoint":"reduce","interface":"reduce(key,values)->Value"}}`
+	submitReq := authedReq(http.MethodPost, "/api/v1/jobs", submitBody)
+	submitRec := httptest.NewRecorder()
+	h.HandleJobsSubmit(submitRec, submitReq)
+	if submitRec.Code != http.StatusAccepted {
+		t.Fatalf("setup: submit failed with %d: %s", submitRec.Code, submitRec.Body.String())
+	}
+
+	var submitResp struct {
+		JobID string `json:"jobId"`
+	}
+	if err := json.NewDecoder(strings.NewReader(submitRec.Body.String())).Decode(&submitResp); err != nil {
+		t.Fatalf("decode submit response: %v", err)
+	}
+
+	delReq := authedReq(http.MethodDelete, "/api/v1/jobs/"+submitResp.JobID, "")
+	delReq.SetPathValue("job_id", submitResp.JobID)
+	delRec := httptest.NewRecorder()
+	h.HandleJobsDelete(delRec, delReq)
+
+	if delRec.Code != http.StatusNoContent {
+		t.Fatalf("expected %d, got %d: %s", http.StatusNoContent, delRec.Code, delRec.Body.String())
+	}
+	if delRec.Body.Len() != 0 {
+		t.Fatalf("expected empty body for 204, got %q", delRec.Body.String())
+	}
+}
