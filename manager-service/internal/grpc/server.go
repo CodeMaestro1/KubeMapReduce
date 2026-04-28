@@ -106,11 +106,23 @@ func (s *WorkerServer) Register(ctx context.Context, req *pb.RegisterRequest) (*
 	switch task.Type {
 	case manager.MapTask:
 		assignment.Type = pb.TaskType_MAP
-		if selectedSplit, found := findMapSplitForTask(task); found {
-			assignment.ByteStart = selectedSplit.ByteStart
-			assignment.ByteEnd = selectedSplit.ByteEnd
-			assignment.SplitChecksum = selectedSplit.SplitChecksum
-			assignment.DataLocations = append(assignment.DataLocations, selectedSplit.InputURI)
+		if len(task.InputSplits) > 0 {
+			assignment.InputSplits = make([]*pb.InputSplit, 0, len(task.InputSplits))
+			for i := range task.InputSplits {
+				selectedSplit := task.InputSplits[i]
+				assignment.InputSplits = append(assignment.InputSplits, &pb.InputSplit{
+					InputUri:      selectedSplit.InputURI,
+					ByteStart:     selectedSplit.ByteStart,
+					ByteEnd:       selectedSplit.ByteEnd,
+					SplitChecksum: selectedSplit.SplitChecksum,
+				})
+				assignment.DataLocations = append(assignment.DataLocations, selectedSplit.InputURI)
+				if i == 0 {
+					assignment.ByteStart = selectedSplit.ByteStart
+					assignment.ByteEnd = selectedSplit.ByteEnd
+					assignment.SplitChecksum = selectedSplit.SplitChecksum
+				}
+			}
 		}
 	case manager.ReduceTask:
 		assignment.Type = pb.TaskType_REDUCE
@@ -147,6 +159,7 @@ func (s *WorkerServer) Register(ctx context.Context, req *pb.RegisterRequest) (*
 		digest := sha256.Sum256(manifestBytes)
 		assignment.IsManifest = true
 		assignment.DataLocations = []string{fmt.Sprintf("%s#sha256=%s", manifestURL, hex.EncodeToString(digest[:]))}
+		assignment.InputSplits = nil
 	} else {
 		assignment.IsManifest = false
 	}

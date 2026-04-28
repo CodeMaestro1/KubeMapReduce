@@ -1,19 +1,25 @@
 package api
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
+	"fmt"
+	"io"
 	"kubemapreduce/auth-service/pkg/auth"
 	"kubemapreduce/manager-service/internal/manager"
 	"kubemapreduce/manager-service/internal/models"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
+	"github.com/minio/minio-go/v7"
 )
 
 func newTestHandlers() *Handlers {
@@ -39,6 +45,43 @@ func authedReq(method, target, body string) *http.Request {
 func newTestHandlersWithRetention(now func() time.Time, ttl time.Duration, max int) *Handlers {
 	store := NewMemoryJobStore(ttl, max, now)
 	return newHandlersWithOptions(nil, store, nil, "", "", now)
+}
+
+type fakeScheduleObjectClient struct {
+	objects map[string][]byte
+}
+
+func (f *fakeScheduleObjectClient) StatObject(_ context.Context, bucketName, objectName string, _ minio.StatObjectOptions) (minio.ObjectInfo, error) {
+	data, ok := f.objects[bucketName+"/"+objectName]
+	if !ok {
+		return minio.ObjectInfo{}, os.ErrNotExist
+	}
+	return minio.ObjectInfo{Size: int64(len(data))}, nil
+}
+
+func (f *fakeScheduleObjectClient) GetObject(_ context.Context, bucketName, objectName string, opts minio.GetObjectOptions) (io.ReadCloser, error) {
+	data, ok := f.objects[bucketName+"/"+objectName]
+	if !ok {
+		return nil, os.ErrNotExist
+	}
+	rangeHeader := opts.Header().Get("Range")
+	if rangeHeader == "" {
+		return io.NopCloser(bytes.NewReader(data)), nil
+	}
+	var start, end int64
+	if _, err := fmt.Sscanf(rangeHeader, "bytes=%d-%d", &start, &end); err != nil {
+		if _, err := fmt.Sscanf(rangeHeader, "bytes=%d-", &start); err != nil {
+			return nil, err
+		}
+		end = int64(len(data)) - 1
+	}
+	if end >= int64(len(data)) {
+		end = int64(len(data)) - 1
+	}
+	if start < 0 || start > end {
+		return io.NopCloser(bytes.NewReader(nil)), nil
+	}
+	return io.NopCloser(bytes.NewReader(data[int(start) : int(end)+1])), nil
 }
 
 func TestHandleHealth(t *testing.T) {
@@ -172,6 +215,9 @@ func TestHandleJobsSubmit_SchedulesJobAfterPersist(t *testing.T) {
 	if capturedReq.ReducerURI != "reducer.py" {
 		t.Errorf("expected ReducerURI reducer.py, got %q", capturedReq.ReducerURI)
 	}
+	if capturedReq.InputURI != "s3://inputs/input.jsonl" {
+		t.Errorf("expected InputURI s3://inputs/input.jsonl, got %q", capturedReq.InputURI)
+	}
 	if capturedReq.MTasks != 1 {
 		t.Errorf("expected MTasks=1, got %d", capturedReq.MTasks)
 	}
@@ -180,6 +226,64 @@ func TestHandleJobsSubmit_SchedulesJobAfterPersist(t *testing.T) {
 	}
 	if len(capturedReq.Tasks) != 3 {
 		t.Errorf("expected 3 tasks (1 Map + 2 Reduce), got %d", len(capturedReq.Tasks))
+	}
+}
+
+func TestBuildScheduleRequest_SplitsLargeInputAndHashesEachSplit(t *testing.T) {
+	origSplitSize := defaultTargetSplitSizeBytes
+	defaultTargetSplitSizeBytes = 4
+	t.Cleanup(func() { defaultTargetSplitSizeBytes = origSplitSize })
+
+	body := models.JobSubmissionRequest{
+		Filename: "input.jsonl",
+		Mapper: models.FunctionSpec{
+			Artifact:   "mapper.py",
+			Entrypoint: "map",
+			Interface:  "map(key,value)->[]KeyValue",
+			Language:   "python",
+		},
+		Reducer: models.FunctionSpec{
+			Artifact:   "reducer.py",
+			Entrypoint: "reduce",
+			Interface:  "reduce(key,values)->Value",
+			Language:   "python",
+		},
+		Reducers: 2,
+	}
+
+	payload := []byte("abcdefgh")
+	store := &fakeScheduleObjectClient{
+		objects: map[string][]byte{
+			"inputs/input.jsonl": payload,
+		},
+	}
+
+	req := buildScheduleRequest(context.Background(), store, "job-1", "user-1", body, "")
+	if req.InputURI != "s3://inputs/input.jsonl" {
+		t.Fatalf("InputURI = %q, want %q", req.InputURI, "s3://inputs/input.jsonl")
+	}
+	if req.MTasks != 2 {
+		t.Fatalf("MTasks = %d, want 2", req.MTasks)
+	}
+	if len(req.Tasks) != 4 {
+		t.Fatalf("expected 4 tasks total, got %d", len(req.Tasks))
+	}
+	if len(req.Tasks[0].InputSplits) != 1 || len(req.Tasks[1].InputSplits) != 1 {
+		t.Fatalf("expected one split per map task, got %+v", req.Tasks[:2])
+	}
+	if req.Tasks[0].InputSplits[0].ByteStart != 0 || req.Tasks[0].InputSplits[0].ByteEnd != 3 {
+		t.Fatalf("unexpected first split range: %+v", req.Tasks[0].InputSplits[0])
+	}
+	if req.Tasks[1].InputSplits[0].ByteStart != 4 || req.Tasks[1].InputSplits[0].ByteEnd != 7 {
+		t.Fatalf("unexpected second split range: %+v", req.Tasks[1].InputSplits[0])
+	}
+	wantFirst := sha256.Sum256(payload[:4])
+	wantSecond := sha256.Sum256(payload[4:])
+	if req.Tasks[0].InputSplits[0].SplitChecksum != fmt.Sprintf("%x", wantFirst[:]) {
+		t.Fatalf("unexpected first split checksum: %q", req.Tasks[0].InputSplits[0].SplitChecksum)
+	}
+	if req.Tasks[1].InputSplits[0].SplitChecksum != fmt.Sprintf("%x", wantSecond[:]) {
+		t.Fatalf("unexpected second split checksum: %q", req.Tasks[1].InputSplits[0].SplitChecksum)
 	}
 }
 
