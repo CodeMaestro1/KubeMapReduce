@@ -128,4 +128,29 @@ CREATE TABLE IF NOT EXISTS TASK_OUTPUTS (
     checksum        TEXT NOT NULL DEFAULT ''
 );
 
+-- ---------------------------------------------------------------------------
+-- SYSTEM_CONFIG
+-- ---------------------------------------------------------------------------
+-- Cluster-wide quota and resource limits. The single config_id = 1 row is
+-- seeded with conservative defaults so QueryGetSystemConfig always finds a
+-- row on a fresh database. Admin CLI updates mutate this row in place.
+CREATE TABLE IF NOT EXISTS SYSTEM_CONFIG (
+    config_id            INTEGER     PRIMARY KEY CHECK (config_id = 1),
+    max_concurrent_pods  INTEGER     NOT NULL CHECK (max_concurrent_pods >  0),
+    cpu_limit            TEXT        NOT NULL DEFAULT '500m',
+    memory_limit         TEXT        NOT NULL DEFAULT '512Mi',
+    worker_replicas      INTEGER     NOT NULL DEFAULT 1
+        CHECK (worker_replicas > 0),
+    max_jobs_per_node    INTEGER     NOT NULL DEFAULT 4
+        CHECK (max_jobs_per_node > 0),
+    updated_at           TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+INSERT INTO SYSTEM_CONFIG (
+    config_id, max_concurrent_pods, cpu_limit, memory_limit,
+    worker_replicas, max_jobs_per_node
+) VALUES (
+    1, 16, '500m', '512Mi', 1, 4
+) ON CONFLICT (config_id) DO NOTHING;
+
 COMMIT;
