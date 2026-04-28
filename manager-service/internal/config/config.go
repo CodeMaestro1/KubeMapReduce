@@ -65,6 +65,10 @@ type Config struct {
 	// bytes) before the Manager falls back to manifest mode and uploads the
 	// data_locations list to MinIO. Configurable via MANAGER_MANIFEST_THRESHOLD_BYTES.
 	ManifestThresholdBytes int
+
+	// WorkerSecretName is the name of the Kubernetes Secret to be used for
+	// injecting sensitive credentials into worker pods.
+	WorkerSecretName string
 }
 
 // DefaultManifestThresholdBytes is the default size threshold (2 MiB) at which
@@ -133,6 +137,7 @@ func Load() (*Config, error) {
 		AllowInsecureWorkerRPC:          getEnvBool("ALLOW_INSECURE_WORKER_RPC", false),
 		ManagerAddr:                     getEnv("MANAGER_ADDR", "manager-0.manager-hs.default.svc.cluster.local:8081"),
 		ManifestThresholdBytes:          manifestThreshold,
+		WorkerSecretName:                getEnv("WORKER_SECRET_NAME", "kubemapreduce-secrets"),
 	}
 	cfg.LeaseTTL = cfg.HeartbeatInterval * cfg.MaxMissedHeartbeats
 	return cfg, nil
