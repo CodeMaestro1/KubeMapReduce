@@ -142,7 +142,7 @@ func (k *KubeOrchestrator) SpawnWorker(ctx context.Context, taskID string, jobID
 							},
 							SecurityContext: &corev1.SecurityContext{
 								AllowPrivilegeEscalation: &falseVal,
-								ReadOnlyRootFilesystem:   &trueVal,
+								ReadOnlyRootFilesystem:   &falseVal,
 								RunAsNonRoot:             &trueVal,
 								Capabilities: &corev1.Capabilities{
 									Drop: []corev1.Capability{"ALL"},

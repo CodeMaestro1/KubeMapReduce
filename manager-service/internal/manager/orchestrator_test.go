@@ -270,8 +270,8 @@ func TestKubeOrchestrator_SpawnWorker_SecurityHardening(t *testing.T) {
 	if c.SecurityContext.AllowPrivilegeEscalation == nil || *c.SecurityContext.AllowPrivilegeEscalation {
 		t.Error("expected AllowPrivilegeEscalation to be false")
 	}
-	if c.SecurityContext.ReadOnlyRootFilesystem == nil || !*c.SecurityContext.ReadOnlyRootFilesystem {
-		t.Error("expected ReadOnlyRootFilesystem to be true")
+	if c.SecurityContext.ReadOnlyRootFilesystem == nil || *c.SecurityContext.ReadOnlyRootFilesystem {
+		t.Error("expected ReadOnlyRootFilesystem to be false")
 	}
 	if c.SecurityContext.RunAsNonRoot == nil || !*c.SecurityContext.RunAsNonRoot {
 		t.Error("expected container RunAsNonRoot to be true")
