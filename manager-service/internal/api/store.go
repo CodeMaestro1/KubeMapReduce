@@ -42,6 +42,10 @@ type JobStore interface {
 	CreateJob(ctx context.Context, rec JobRecord) error
 	// GetJob retrieves a job by its unique identifier for a specific user.
 	GetJob(ctx context.Context, userID, jobID string) (*JobRecord, error)
+	// GetAnyJob retrieves a job by its unique identifier without enforcing
+	// ownership. It is intended for ADMIN-scoped requests only; route-level
+	// authorization MUST gate the caller before invoking this method.
+	GetAnyJob(ctx context.Context, jobID string) (*JobRecord, error)
 	// ListJobs returns a slice of jobs for a specific user with pagination support.
 	ListJobs(ctx context.Context, userID string, limit, offset int) ([]JobRecord, error)
 	// ListAllJobs returns a slice of jobs across every user with pagination
@@ -84,6 +88,12 @@ const (
 		FROM JOBS j
 		LEFT JOIN JOB_CONFIGS jc ON j.job_id = jc.job_id
 		WHERE j.job_id = $1 AND j.user_id = $2`
+
+	queryGetAPIJobAny = `
+		SELECT j.job_id, j.status, COALESCE(jc.input_uri, ''), COALESCE(jc.r_tasks, 0), j.created_at
+		FROM JOBS j
+		LEFT JOIN JOB_CONFIGS jc ON j.job_id = jc.job_id
+		WHERE j.job_id = $1`
 
 	// QueryGetJobOutputURIs fetches ordered output URIs for completed reduce tasks of a job.
 	QueryGetJobOutputURIs = `
@@ -166,6 +176,30 @@ func (s *PostgresJobStore) GetJob(ctx context.Context, userID, jobID string) (*J
 	var rec JobRecord
 	var dbID uuid.UUID
 	err = s.db.QueryRowContext(ctx, queryGetAPIJob, jobUUID, userUUID).Scan(
+		&dbID, &rec.Status, &rec.Filename, &rec.Reducers, &rec.CreatedAt,
+	)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	rec.JobID = dbID.String()
+	return &rec, nil
+}
+
+// GetAnyJob retrieves a single job by ID without ownership filtering.
+// It is intended for ADMIN callers only; the route layer is responsible for
+// enforcing the role check before invocation. Returns nil, nil when not found.
+func (s *PostgresJobStore) GetAnyJob(ctx context.Context, jobID string) (*JobRecord, error) {
+	jobUUID, err := uuid.Parse(jobID)
+	if err != nil {
+		return nil, ErrInvalidJobID
+	}
+
+	var rec JobRecord
+	var dbID uuid.UUID
+	err = s.db.QueryRowContext(ctx, queryGetAPIJobAny, jobUUID).Scan(
 		&dbID, &rec.Status, &rec.Filename, &rec.Reducers, &rec.CreatedAt,
 	)
 	if err == sql.ErrNoRows {
@@ -307,6 +341,20 @@ func (m *MemoryJobStore) GetJob(_ context.Context, userID, jobID string) (*JobRe
 		return nil, nil
 	}
 	if rec.UserID != "" && rec.UserID != userID {
+		return nil, nil
+	}
+	return &rec, nil
+}
+
+// GetAnyJob retrieves a job by ID without ownership filtering. Mirrors
+// [PostgresJobStore.GetAnyJob] for unit-test environments. Returns nil, nil
+// when not found or expired.
+func (m *MemoryJobStore) GetAnyJob(_ context.Context, jobID string) (*JobRecord, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.cleanup()
+	rec, ok := m.jobs[jobID]
+	if !ok {
 		return nil, nil
 	}
 	return &rec, nil
