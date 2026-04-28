@@ -12,12 +12,18 @@ import (
 	"testing"
 	"time"
 
+	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
 )
 
 func newTestHandlers() *Handlers {
 	store := NewMemoryJobStore(24*time.Hour, 10000, nil)
 	return NewHandlers(nil, store, nil, "", "")
+}
+
+func newAuthedRequest(method, target, body, userID string) *http.Request {
+	req := httptest.NewRequest(method, target, strings.NewReader(body))
+	return req.WithContext(auth.ContextWithClaims(req.Context(), jwt.MapClaims{"sub": userID}))
 }
 
 func newTestHandlersWithRetention(now func() time.Time, ttl time.Duration, max int) *Handlers {

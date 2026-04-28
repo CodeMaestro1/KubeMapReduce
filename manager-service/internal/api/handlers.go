@@ -135,6 +135,12 @@ func (h *Handlers) HandleJobsSubmit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	userID, err := currentRequestUserID(r)
+	if err != nil {
+		httputil.WriteErrorJSON(w, http.StatusForbidden, "forbidden: authenticated subject required")
+		return
+	}
+
 	jobID := uuid.New().String()
 	now := h.now().UTC()
 
@@ -145,6 +151,7 @@ func (h *Handlers) HandleJobsSubmit(w http.ResponseWriter, r *http.Request) {
 
 	rec := JobRecord{
 		JobID:       jobID,
+		UserID:      userID,
 		Status:      "Pending",
 		Filename:    request.Filename,
 		Reducers:    request.Reducers,
@@ -160,7 +167,7 @@ func (h *Handlers) HandleJobsSubmit(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if h.managerAddr != "" {
-		schedReq := buildScheduleRequest(jobID, request, combinerURI)
+		schedReq := buildScheduleRequest(jobID, userID, request, combinerURI)
 		if err := h.postSchedule(r.Context(), schedReq); err != nil {
 			log.Printf("[api] job %s persisted but schedule failed: %v", jobID, err)
 		}
@@ -194,8 +201,18 @@ func (h *Handlers) HandleJobsList(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	records, err := h.store.ListJobs(r.Context(), limit, offset)
+	userID, err := currentRequestUserID(r)
 	if err != nil {
+		httputil.WriteErrorJSON(w, http.StatusForbidden, "forbidden: authenticated subject required")
+		return
+	}
+
+	records, err := h.store.ListJobs(r.Context(), userID, limit, offset)
+	if err != nil {
+		if errors.Is(err, ErrInvalidUserID) {
+			httputil.WriteErrorJSON(w, http.StatusForbidden, "forbidden: invalid subject")
+			return
+		}
 		httputil.WriteErrorJSON(w, http.StatusInternalServerError, "failed to list jobs")
 		return
 	}
@@ -262,10 +279,20 @@ func (h *Handlers) HandleJobsGet(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	rec, err := h.store.GetJob(r.Context(), jobID)
+	userID, err := currentRequestUserID(r)
+	if err != nil {
+		httputil.WriteErrorJSON(w, http.StatusForbidden, "forbidden: authenticated subject required")
+		return
+	}
+
+	rec, err := h.store.GetJob(r.Context(), userID, jobID)
 	if err != nil {
 		if errors.Is(err, ErrInvalidJobID) {
 			httputil.WriteErrorJSON(w, http.StatusBadRequest, "invalid job id")
+			return
+		}
+		if errors.Is(err, ErrInvalidUserID) {
+			httputil.WriteErrorJSON(w, http.StatusForbidden, "forbidden: invalid subject")
 			return
 		}
 		httputil.WriteErrorJSON(w, http.StatusInternalServerError, "failed to retrieve job")
@@ -306,10 +333,20 @@ func (h *Handlers) HandleJobsDownload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	rec, err := h.store.GetJob(r.Context(), jobID)
+	userID, err := currentRequestUserID(r)
+	if err != nil {
+		httputil.WriteErrorJSON(w, http.StatusForbidden, "forbidden: authenticated subject required")
+		return
+	}
+
+	rec, err := h.store.GetJob(r.Context(), userID, jobID)
 	if err != nil {
 		if errors.Is(err, ErrInvalidJobID) {
 			httputil.WriteErrorJSON(w, http.StatusBadRequest, "invalid job id")
+			return
+		}
+		if errors.Is(err, ErrInvalidUserID) {
+			httputil.WriteErrorJSON(w, http.StatusForbidden, "forbidden: invalid subject")
 			return
 		}
 		httputil.WriteErrorJSON(w, http.StatusInternalServerError, "failed to retrieve job")
@@ -499,7 +536,7 @@ func (h *Handlers) postSchedule(ctx context.Context, req manager.ScheduleJobRequ
 
 // buildScheduleRequest constructs a ScheduleJobRequest for a fresh job submission.
 // It creates one Map task covering the full input and R Reduce tasks.
-func buildScheduleRequest(jobID string, req models.JobSubmissionRequest, combinerURI string) manager.ScheduleJobRequest {
+func buildScheduleRequest(jobID, userID string, req models.JobSubmissionRequest, combinerURI string) manager.ScheduleJobRequest {
 	mapTaskID := uuid.New().String()
 	tasks := make([]manager.ScheduleTask, 0, 1+req.Reducers)
 	tasks = append(tasks, manager.ScheduleTask{
@@ -518,7 +555,7 @@ func buildScheduleRequest(jobID string, req models.JobSubmissionRequest, combine
 	}
 	return manager.ScheduleJobRequest{
 		JobID:       jobID,
-		UserID:      uuid.Nil.String(),
+		UserID:      userID,
 		InputURI:    req.Filename,
 		MapperURI:   req.Mapper.Artifact,
 		ReducerURI:  req.Reducer.Artifact,
@@ -527,6 +564,10 @@ func buildScheduleRequest(jobID string, req models.JobSubmissionRequest, combine
 		RTasks:      req.Reducers,
 		Tasks:       tasks,
 	}
+}
+
+func currentRequestUserID(r *http.Request) (string, error) {
+	return auth.GetSubject(r)
 }
 
 // jobMessage derives a human-readable message from the DDS job status.
@@ -664,6 +705,26 @@ func (h *Handlers) HandleJobsDelete(w http.ResponseWriter, r *http.Request) {
 
 	if _, err := uuid.Parse(jobID); err != nil {
 		httputil.WriteErrorJSON(w, http.StatusBadRequest, "invalid job id")
+		return
+	}
+
+	userID, err := currentRequestUserID(r)
+	if err != nil {
+		httputil.WriteErrorJSON(w, http.StatusForbidden, "forbidden: authenticated subject required")
+		return
+	}
+
+	rec, err := h.store.GetJob(r.Context(), userID, jobID)
+	if err != nil {
+		if errors.Is(err, ErrInvalidUserID) {
+			httputil.WriteErrorJSON(w, http.StatusForbidden, "forbidden: invalid subject")
+			return
+		}
+		httputil.WriteErrorJSON(w, http.StatusInternalServerError, "failed to retrieve job")
+		return
+	}
+	if rec == nil {
+		httputil.WriteErrorJSON(w, http.StatusNotFound, "job not found")
 		return
 	}
 

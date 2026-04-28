@@ -57,15 +57,16 @@ func TestPostgresJobStore_GetJob_ReturnsPersistedJob(t *testing.T) {
 
 	store := NewPostgresJobStore(db)
 	jobUUID := uuid.New()
+	ownerUUID := uuid.New()
 	created := time.Date(2026, 4, 18, 12, 0, 0, 0, time.UTC)
 
 	rows := sqlmock.NewRows([]string{"job_id", "status", "input_uri", "r_tasks", "created_at"}).
 		AddRow(jobUUID, "Running", "input.csv", 2, created)
 	mock.ExpectQuery("SELECT j.job_id").
-		WithArgs(jobUUID).
+		WithArgs(jobUUID, ownerUUID).
 		WillReturnRows(rows)
 
-	rec, err := store.GetJob(context.Background(), jobUUID.String())
+	rec, err := store.GetJob(context.Background(), ownerUUID.String(), jobUUID.String())
 	if err != nil {
 		t.Fatalf("GetJob failed: %v", err)
 	}
@@ -99,13 +100,14 @@ func TestPostgresJobStore_GetJob_ReturnsNilForMissing(t *testing.T) {
 
 	store := NewPostgresJobStore(db)
 	jobUUID := uuid.New()
+	ownerUUID := uuid.New()
 
 	rows := sqlmock.NewRows([]string{"job_id", "status", "input_uri", "r_tasks", "created_at"})
 	mock.ExpectQuery("SELECT j.job_id").
-		WithArgs(jobUUID).
+		WithArgs(jobUUID, ownerUUID).
 		WillReturnRows(rows)
 
-	rec, err := store.GetJob(context.Background(), jobUUID.String())
+	rec, err := store.GetJob(context.Background(), ownerUUID.String(), jobUUID.String())
 	if err != nil {
 		t.Fatalf("GetJob failed: %v", err)
 	}
@@ -140,6 +142,7 @@ func TestPostgresJobStore_ListJobs_ReturnsAllJobs(t *testing.T) {
 	defer db.Close()
 
 	store := NewPostgresJobStore(db)
+	ownerUUID := uuid.New()
 	id1 := uuid.New()
 	id2 := uuid.New()
 	t1 := time.Date(2026, 4, 18, 12, 0, 0, 0, time.UTC)
@@ -148,9 +151,9 @@ func TestPostgresJobStore_ListJobs_ReturnsAllJobs(t *testing.T) {
 	rows := sqlmock.NewRows([]string{"job_id", "status", "input_uri", "r_tasks", "created_at"}).
 		AddRow(id2, "Running", "b.csv", 2, t2).
 		AddRow(id1, "Pending", "a.csv", 1, t1)
-	mock.ExpectQuery("SELECT j.job_id").WillReturnRows(rows)
+	mock.ExpectQuery("SELECT j.job_id").WithArgs(ownerUUID).WillReturnRows(rows)
 
-	jobs, err := store.ListJobs(context.Background(), 100, 0)
+	jobs, err := store.ListJobs(context.Background(), ownerUUID.String(), 100, 0)
 	if err != nil {
 		t.Fatalf("ListJobs failed: %v", err)
 	}
@@ -170,10 +173,11 @@ func TestPostgresJobStore_ListJobs_ReturnsEmptySlice(t *testing.T) {
 	defer db.Close()
 
 	store := NewPostgresJobStore(db)
+	ownerUUID := uuid.New()
 	rows := sqlmock.NewRows([]string{"job_id", "status", "input_uri", "r_tasks", "created_at"})
-	mock.ExpectQuery("SELECT j.job_id").WillReturnRows(rows)
+	mock.ExpectQuery("SELECT j.job_id").WithArgs(ownerUUID).WillReturnRows(rows)
 
-	jobs, err := store.ListJobs(context.Background(), 100, 0)
+	jobs, err := store.ListJobs(context.Background(), ownerUUID.String(), 100, 0)
 	if err != nil {
 		t.Fatalf("ListJobs failed: %v", err)
 	}
@@ -193,6 +197,7 @@ func TestPostgresJobStore_CreateThenGet_Consistent(t *testing.T) {
 
 	store := NewPostgresJobStore(db)
 	jobUUID := uuid.New()
+	ownerUUID := uuid.New()
 	now := time.Date(2026, 4, 18, 14, 0, 0, 0, time.UTC)
 
 	// Create
@@ -220,10 +225,10 @@ func TestPostgresJobStore_CreateThenGet_Consistent(t *testing.T) {
 	rows := sqlmock.NewRows([]string{"job_id", "status", "input_uri", "r_tasks", "created_at"}).
 		AddRow(jobUUID, "Pending", "input.jsonl", 3, now)
 	mock.ExpectQuery("SELECT j.job_id").
-		WithArgs(jobUUID).
+		WithArgs(jobUUID, ownerUUID).
 		WillReturnRows(rows)
 
-	got, err := store.GetJob(context.Background(), jobUUID.String())
+	got, err := store.GetJob(context.Background(), ownerUUID.String(), jobUUID.String())
 	if err != nil {
 		t.Fatalf("GetJob failed: %v", err)
 	}
@@ -262,7 +267,7 @@ func TestMemoryJobStore_SurvivesRoundTrip(t *testing.T) {
 		t.Fatalf("CreateJob: %v", err)
 	}
 
-	got, err := store.GetJob(context.Background(), "test-id")
+	got, err := store.GetJob(context.Background(), "user-1", "test-id")
 	if err != nil {
 		t.Fatalf("GetJob: %v", err)
 	}
@@ -279,7 +284,7 @@ func TestMemoryJobStore_ListReturnsNewestFirst(t *testing.T) {
 	now = now.Add(time.Second)
 	store.CreateJob(context.Background(), JobRecord{JobID: "b", Filename: "b.csv", CreatedAt: now})
 
-	list, _ := store.ListJobs(context.Background(), 100, 0)
+	list, _ := store.ListJobs(context.Background(), "user-1", 100, 0)
 	if len(list) != 2 || list[0].Filename != "b.csv" {
 		t.Fatalf("expected newest first, got %+v", list)
 	}
