@@ -105,6 +105,7 @@ func (w *Worker) Run(ctx context.Context) error {
 	reportCtx := context.Background()
 
 	if reason, ok := terminationReason(terminated, ctx, taskCtx); ok {
+		reporter.start(w, assignment, reason)
 		reporter.wait(5 * time.Second)
 		return fmt.Errorf("terminated: %s", reason)
 	}
@@ -118,6 +119,7 @@ func (w *Worker) Run(ctx context.Context) error {
 			if bufferedReason, ok := terminationReason(terminated, ctx, taskCtx); ok {
 				reason = bufferedReason
 			}
+			reporter.start(w, assignment, reason)
 			reporter.wait(5 * time.Second)
 			return fmt.Errorf("terminated: %s", reason)
 		}

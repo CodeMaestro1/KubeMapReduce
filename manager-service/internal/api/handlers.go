@@ -656,13 +656,18 @@ func checksumObjectRange(ctx context.Context, storage scheduleObjectClient, buck
 	}
 	defer rc.Close()
 
-	data, err := io.ReadAll(rc)
+	h := sha256.New()
+	n, err := io.Copy(h, rc)
 	if err != nil {
 		return "", fmt.Errorf("read object range %s/%s [%d,%d]: %w", bucketName, objectName, start, end, err)
 	}
 
-	sum := sha256.Sum256(data)
-	return fmt.Sprintf("%x", sum[:]), nil
+	expected := end - start + 1
+	if n != expected {
+		return "", fmt.Errorf("short read %s/%s [%d,%d]: got %d bytes, expected %d", bucketName, objectName, start, end, n, expected)
+	}
+
+	return fmt.Sprintf("%x", h.Sum(nil)), nil
 }
 
 func currentRequestUserID(r *http.Request) (string, error) {

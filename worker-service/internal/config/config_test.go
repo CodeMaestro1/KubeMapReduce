@@ -122,7 +122,7 @@ func TestLoad_AllFields(t *testing.T) {
 	}
 }
 
-func TestLoad_MinioEnvFallbacksToS3Names(t *testing.T) {
+func TestLoad_S3EnvPreferredOverMinioEnv(t *testing.T) {
 	t.Setenv("TASK_ID", "t1")
 	t.Setenv("ATTEMPT_ID", "a1")
 	t.Setenv("MANAGER_ADDR", "manager:50051")
