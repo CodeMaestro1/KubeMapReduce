@@ -76,7 +76,7 @@ func extractSplitLines(raw []byte, byteStart, byteEnd int64) ([][]byte, error) {
 	if byteStart > 0 {
 		skipped, err := br.ReadBytes('\n')
 		if err == io.EOF {
-			return records, nil // no records in this split
+			return nil, fmt.Errorf("incomplete JSONL record before split start")
 		}
 		if err != nil {
 			return nil, fmt.Errorf("skip partial line: %w", err)
@@ -87,6 +87,9 @@ func extractSplitLines(raw []byte, byteStart, byteEnd int64) ([][]byte, error) {
 	for {
 		line, err := br.ReadBytes('\n')
 		if len(line) > 0 {
+			if err == io.EOF {
+				return nil, fmt.Errorf("incomplete JSONL record at byte offset %d", byteStart+offset)
+			}
 			trimmed := bytes.TrimRight(line, "\r\n")
 			if len(trimmed) > 0 {
 				records = append(records, append([]byte(nil), trimmed...))
