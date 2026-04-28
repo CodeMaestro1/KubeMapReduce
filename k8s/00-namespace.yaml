@@ -1,0 +1,7 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: mapreduce
+  labels:
+    app.kubernetes.io/name: kubemapreduce
+    app.kubernetes.io/part-of: kubemapreduce
