@@ -44,6 +44,11 @@ type JobStore interface {
 	GetJob(ctx context.Context, userID, jobID string) (*JobRecord, error)
 	// ListJobs returns a slice of jobs for a specific user with pagination support.
 	ListJobs(ctx context.Context, userID string, limit, offset int) ([]JobRecord, error)
+	// ListAllJobs returns a slice of jobs across every user with pagination
+	// support. It is intended for ADMIN-scoped requests only; route-level
+	// authorization (e.g. auth.RequireRole / auth.HasRole) MUST gate the
+	// caller before invoking this method.
+	ListAllJobs(ctx context.Context, limit, offset int) ([]JobRecord, error)
 	// GetJobOutputs returns ordered output URIs for completed reduce tasks of a job.
 	GetJobOutputs(ctx context.Context, jobID string) ([]string, error)
 }
@@ -66,6 +71,13 @@ const (
 		WHERE j.user_id = $1
 		ORDER BY j.created_at DESC
 		LIMIT $2 OFFSET $3`
+
+	queryListAPIJobsAll = `
+		SELECT j.job_id, j.status, COALESCE(jc.input_uri, ''), COALESCE(jc.r_tasks, 0), j.created_at
+		FROM JOBS j
+		LEFT JOIN JOB_CONFIGS jc ON j.job_id = jc.job_id
+		ORDER BY j.created_at DESC
+		LIMIT $1 OFFSET $2`
 
 	queryGetAPIJob = `
 		SELECT j.job_id, j.status, COALESCE(jc.input_uri, ''), COALESCE(jc.r_tasks, 0), j.created_at
@@ -191,6 +203,29 @@ func (s *PostgresJobStore) ListJobs(ctx context.Context, userID string, limit, o
 	return jobs, rows.Err()
 }
 
+// ListAllJobs returns every job ordered by creation time descending,
+// regardless of ownership. It is intended for ADMIN callers only; the route
+// layer is responsible for enforcing the role check before invocation.
+func (s *PostgresJobStore) ListAllJobs(ctx context.Context, limit, offset int) ([]JobRecord, error) {
+	rows, err := s.db.QueryContext(ctx, queryListAPIJobsAll, limit, offset)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var jobs []JobRecord
+	for rows.Next() {
+		var rec JobRecord
+		var dbID uuid.UUID
+		if err := rows.Scan(&dbID, &rec.Status, &rec.Filename, &rec.Reducers, &rec.CreatedAt); err != nil {
+			return nil, err
+		}
+		rec.JobID = dbID.String()
+		jobs = append(jobs, rec)
+	}
+	return jobs, rows.Err()
+}
+
 // GetJobOutputs returns ordered output URIs for completed reduce tasks of a job.
 func (s *PostgresJobStore) GetJobOutputs(ctx context.Context, jobID string) ([]string, error) {
 	jobUUID, err := uuid.Parse(jobID)
@@ -291,6 +326,31 @@ func (m *MemoryJobStore) ListJobs(_ context.Context, userID string, limit, offse
 		if rec.UserID != "" && rec.UserID != userID {
 			continue
 		}
+		list = append(list, rec)
+	}
+	sort.Slice(list, func(i, j int) bool {
+		return list[i].CreatedAt.After(list[j].CreatedAt)
+	})
+	if offset >= len(list) {
+		return []JobRecord{}, nil
+	}
+	end := offset + limit
+	if end > len(list) {
+		end = len(list)
+	}
+	return list[offset:end], nil
+}
+
+// ListAllJobs returns every non-expired job ordered by creation time
+// descending, regardless of ownership. It mirrors
+// [PostgresJobStore.ListAllJobs] for unit-test environments.
+func (m *MemoryJobStore) ListAllJobs(_ context.Context, limit, offset int) ([]JobRecord, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.cleanup()
+
+	list := make([]JobRecord, 0, len(m.jobs))
+	for _, rec := range m.jobs {
 		list = append(list, rec)
 	}
 	sort.Slice(list, func(i, j int) bool {
