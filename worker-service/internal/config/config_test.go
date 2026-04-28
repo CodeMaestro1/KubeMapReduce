@@ -44,6 +44,8 @@ func TestLoad_Defaults(t *testing.T) {
 	t.Setenv("MANAGER_ADDR", "localhost:50051")
 	os.Unsetenv("HEARTBEAT_INTERVAL_SEC")
 	os.Unsetenv("MAP_SORT_SPILL_THRESHOLD_MB")
+	os.Unsetenv("SHUFFLE_BATCH_SIZE")
+	os.Unsetenv("SHUFFLE_MAX_RECORD_BYTES")
 	os.Unsetenv("WORKER_RPC_TOKEN")
 
 	cfg, err := Load()
@@ -61,6 +63,12 @@ func TestLoad_Defaults(t *testing.T) {
 	}
 	if cfg.MapSortSpillThresholdMB != 256 {
 		t.Errorf("MapSortSpillThresholdMB: got %d, want 256", cfg.MapSortSpillThresholdMB)
+	}
+	if cfg.ShuffleBatchSize != 500 {
+		t.Errorf("ShuffleBatchSize: got %d, want 500", cfg.ShuffleBatchSize)
+	}
+	if cfg.ShuffleMaxRecordBytes != 1*1024*1024 {
+		t.Errorf("ShuffleMaxRecordBytes: got %d, want %d", cfg.ShuffleMaxRecordBytes, 1*1024*1024)
 	}
 }
 
@@ -87,6 +95,8 @@ func TestLoad_AllFields(t *testing.T) {
 	t.Setenv("MINIO_USE_SSL", "true")
 	t.Setenv("HEARTBEAT_INTERVAL_SEC", "5")
 	t.Setenv("MAP_SORT_SPILL_THRESHOLD_MB", "128")
+	t.Setenv("SHUFFLE_BATCH_SIZE", "200")
+	t.Setenv("SHUFFLE_MAX_RECORD_BYTES", "524288")
 
 	cfg, err := Load()
 	if err != nil {
@@ -103,5 +113,11 @@ func TestLoad_AllFields(t *testing.T) {
 	}
 	if cfg.MapSortSpillThresholdMB != 128 {
 		t.Errorf("MapSortSpillThresholdMB: got %d", cfg.MapSortSpillThresholdMB)
+	}
+	if cfg.ShuffleBatchSize != 200 {
+		t.Errorf("ShuffleBatchSize: got %d, want 200", cfg.ShuffleBatchSize)
+	}
+	if cfg.ShuffleMaxRecordBytes != 524288 {
+		t.Errorf("ShuffleMaxRecordBytes: got %d, want 524288", cfg.ShuffleMaxRecordBytes)
 	}
 }
