@@ -406,13 +406,12 @@ func TestWorkerServer_Register_ManifestFallback(t *testing.T) {
 		WillReturnRows(sqlmock.NewRows([]string{"mapper_uri", "reducer_uri", "combiner_uri", "r_tasks", "input_checksum"}).
 			AddRow("s3://code/mapper.py", "s3://code/reducer.py", "s3://code/combiner.py", 3, "sha256-input"))
 
-	inputRows := sqlmock.NewRows([]string{"input_uri", "byte_start", "byte_end", "split_checksum"})
-	for i := 0; i < 40; i++ {
-		inputRows.AddRow(fmt.Sprintf("s3://inputs/split-%d.jsonl", i), int64(i*128), int64((i+1)*128), fmt.Sprintf("sha256-split-%d", i))
-	}
+	// A single split with a URI long enough to push the proto over the 500-byte threshold.
+	longURI := "s3://inputs/" + strings.Repeat("a", 600) + ".jsonl"
 	mock.ExpectQuery(regexp.QuoteMeta(manager.QueryGetTaskInputs)).
 		WithArgs(taskID).
-		WillReturnRows(inputRows)
+		WillReturnRows(sqlmock.NewRows([]string{"input_uri", "byte_start", "byte_end", "split_checksum"}).
+			AddRow(longURI, 0, 128, "sha256-split-0"))
 
 	mock.ExpectQuery(regexp.QuoteMeta(manager.QueryGetAttemptDetails)).
 		WithArgs(attemptID).
@@ -469,15 +468,11 @@ func TestWorkerServer_Register_ManifestUploadFailureReturnsError(t *testing.T) {
 		WithArgs(taskID).
 		WillReturnRows(sqlmock.NewRows([]string{"mapper_uri", "reducer_uri", "combiner_uri", "r_tasks", "input_checksum"}).
 			AddRow("s3://code/mapper.py", "s3://code/reducer.py", "s3://code/combiner.py", 3, "sha256-input"))
+	longURI := "s3://inputs/" + strings.Repeat("b", 600) + ".jsonl"
 	mock.ExpectQuery(regexp.QuoteMeta(manager.QueryGetTaskInputs)).
 		WithArgs(taskID).
-		WillReturnRows(func() *sqlmock.Rows {
-			rows := sqlmock.NewRows([]string{"input_uri", "byte_start", "byte_end", "split_checksum"})
-			for i := 0; i < 15; i++ {
-				rows.AddRow(fmt.Sprintf("s3://inputs/split-%d.jsonl", i), int64(i*128), int64((i+1)*128), fmt.Sprintf("sha256-split-%d", i))
-			}
-			return rows
-		}())
+		WillReturnRows(sqlmock.NewRows([]string{"input_uri", "byte_start", "byte_end", "split_checksum"}).
+			AddRow(longURI, 0, 128, "sha256-split-0"))
 	mock.ExpectQuery(regexp.QuoteMeta(manager.QueryGetAttemptDetails)).
 		WithArgs(attemptID).
 		WillReturnRows(sqlmock.NewRows([]string{"worker_id", "lease_id", "start_time", "last_renewed_at"}).
@@ -521,15 +516,11 @@ func TestWorkerServer_Register_ManifestTooLargeReturnsResourceExhausted(t *testi
 		WithArgs(taskID).
 		WillReturnRows(sqlmock.NewRows([]string{"mapper_uri", "reducer_uri", "combiner_uri", "r_tasks", "input_checksum"}).
 			AddRow("s3://code/mapper.py", "s3://code/reducer.py", "s3://code/combiner.py", 3, "sha256-input"))
+	longURI := "s3://inputs/" + strings.Repeat("c", 600) + ".jsonl"
 	mock.ExpectQuery(regexp.QuoteMeta(manager.QueryGetTaskInputs)).
 		WithArgs(taskID).
-		WillReturnRows(func() *sqlmock.Rows {
-			rows := sqlmock.NewRows([]string{"input_uri", "byte_start", "byte_end", "split_checksum"})
-			for i := 0; i < 15; i++ {
-				rows.AddRow(fmt.Sprintf("s3://inputs/split-%d.jsonl", i), int64(i*128), int64((i+1)*128), fmt.Sprintf("sha256-split-%d", i))
-			}
-			return rows
-		}())
+		WillReturnRows(sqlmock.NewRows([]string{"input_uri", "byte_start", "byte_end", "split_checksum"}).
+			AddRow(longURI, 0, 128, "sha256-split-0"))
 	mock.ExpectQuery(regexp.QuoteMeta(manager.QueryGetAttemptDetails)).
 		WithArgs(attemptID).
 		WillReturnRows(sqlmock.NewRows([]string{"worker_id", "lease_id", "start_time", "last_renewed_at"}).
@@ -707,6 +698,94 @@ func TestWorkerServer_TaskFailed_StaleAttemptReturnsPermissionDenied(t *testing.
 	st, ok := status.FromError(err)
 	if !ok || st.Code() != codes.PermissionDenied {
 		t.Fatalf("expected PermissionDenied, got %v", err)
+	}
+}
+
+// TestWorkerServer_Register_MapTaskSingleSplitURI verifies that a map task with
+// one input split sends exactly that split's URI in DataLocations with the
+// correct byte range.
+func TestWorkerServer_Register_MapTaskSingleSplitURI(t *testing.T) {
+	db, mock, server := setupMockServer(t)
+	defer db.Close()
+
+	taskID := uuid.New().String()
+	jobID := uuid.New().String()
+	attemptID := uuid.New().String()
+
+	mock.ExpectQuery(regexp.QuoteMeta(manager.QueryGetTaskByID)).
+		WithArgs(taskID).
+		WillReturnRows(sqlmock.NewRows([]string{"task_id", "job_id", "task_type", "status", "current_attempt_id", "replica_index"}).
+			AddRow(taskID, jobID, "Map", "In-Progress", attemptID, 0))
+	mock.ExpectQuery(regexp.QuoteMeta(manager.QueryGetJobConfigByTask)).
+		WithArgs(taskID).
+		WillReturnRows(sqlmock.NewRows([]string{"mapper_uri", "reducer_uri", "combiner_uri", "r_tasks", "input_checksum"}).
+			AddRow("s3://code/mapper.py", "s3://code/reducer.py", "", 3, "sha256-input"))
+	mock.ExpectQuery(regexp.QuoteMeta(manager.QueryGetTaskInputs)).
+		WithArgs(taskID).
+		WillReturnRows(sqlmock.NewRows([]string{"input_uri", "byte_start", "byte_end", "split_checksum"}).
+			AddRow("s3://inputs/split-0.jsonl", int64(100), int64(200), "sha256-0"))
+	mock.ExpectQuery(regexp.QuoteMeta(manager.QueryGetAttemptDetails)).
+		WithArgs(attemptID).
+		WillReturnRows(sqlmock.NewRows([]string{"worker_id", "lease_id", "start_time", "last_renewed_at"}).
+			AddRow("worker-1", "lease-x", time.Now(), time.Now()))
+
+	resp, err := server.Register(context.Background(), &pb.RegisterRequest{TaskId: taskID, AttemptId: attemptID})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(resp.DataLocations) != 1 || resp.DataLocations[0] != "s3://inputs/split-0.jsonl" {
+		t.Errorf("expected exactly 1 URI 's3://inputs/split-0.jsonl', got %v", resp.DataLocations)
+	}
+	if resp.ByteStart != 100 || resp.ByteEnd != 200 {
+		t.Errorf("expected byte range [100,200], got [%d,%d]", resp.ByteStart, resp.ByteEnd)
+	}
+	if resp.SplitChecksum != "sha256-0" {
+		t.Errorf("expected checksum sha256-0, got %s", resp.SplitChecksum)
+	}
+}
+
+// TestWorkerServer_Register_MapTaskMultipleSplitsUsesFirst verifies that when
+// a task unexpectedly carries more than one input split, only the first split's
+// URI and byte range are sent to the worker — matching the one-split-per-task
+// architecture contract.
+func TestWorkerServer_Register_MapTaskMultipleSplitsUsesFirst(t *testing.T) {
+	db, mock, server := setupMockServer(t)
+	defer db.Close()
+
+	taskID := uuid.New().String()
+	jobID := uuid.New().String()
+	attemptID := uuid.New().String()
+
+	mock.ExpectQuery(regexp.QuoteMeta(manager.QueryGetTaskByID)).
+		WithArgs(taskID).
+		WillReturnRows(sqlmock.NewRows([]string{"task_id", "job_id", "task_type", "status", "current_attempt_id", "replica_index"}).
+			AddRow(taskID, jobID, "Map", "In-Progress", attemptID, 0))
+	mock.ExpectQuery(regexp.QuoteMeta(manager.QueryGetJobConfigByTask)).
+		WithArgs(taskID).
+		WillReturnRows(sqlmock.NewRows([]string{"mapper_uri", "reducer_uri", "combiner_uri", "r_tasks", "input_checksum"}).
+			AddRow("s3://code/mapper.py", "s3://code/reducer.py", "", 3, "sha256-input"))
+	mock.ExpectQuery(regexp.QuoteMeta(manager.QueryGetTaskInputs)).
+		WithArgs(taskID).
+		WillReturnRows(sqlmock.NewRows([]string{"input_uri", "byte_start", "byte_end", "split_checksum"}).
+			AddRow("s3://inputs/split-0.jsonl", int64(0), int64(128), "sha256-0").
+			AddRow("s3://inputs/split-1.jsonl", int64(128), int64(256), "sha256-1"))
+	mock.ExpectQuery(regexp.QuoteMeta(manager.QueryGetAttemptDetails)).
+		WithArgs(attemptID).
+		WillReturnRows(sqlmock.NewRows([]string{"worker_id", "lease_id", "start_time", "last_renewed_at"}).
+			AddRow("worker-1", "lease-y", time.Now(), time.Now()))
+
+	resp, err := server.Register(context.Background(), &pb.RegisterRequest{TaskId: taskID, AttemptId: attemptID})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(resp.DataLocations) != 1 || resp.DataLocations[0] != "s3://inputs/split-0.jsonl" {
+		t.Errorf("expected only first split URI, got %v", resp.DataLocations)
+	}
+	if resp.ByteStart != 0 || resp.ByteEnd != 128 {
+		t.Errorf("expected first split byte range [0,128], got [%d,%d]", resp.ByteStart, resp.ByteEnd)
+	}
+	if resp.SplitChecksum != "sha256-0" {
+		t.Errorf("expected first split checksum sha256-0, got %s", resp.SplitChecksum)
 	}
 }
 
