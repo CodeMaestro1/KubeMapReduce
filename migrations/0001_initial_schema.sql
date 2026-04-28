@@ -153,4 +153,19 @@ INSERT INTO SYSTEM_CONFIG (
     1, 16, '500m', '512Mi', 1, 4
 ) ON CONFLICT (config_id) DO NOTHING;
 
+-- ---------------------------------------------------------------------------
+-- Indexes
+-- ---------------------------------------------------------------------------
+-- These indexes back the hot-path scheduler and reaper queries:
+--   - QuerySelectIdleTask, QueryCountPendingTasksByType  -> TASKS(job_id, status)
+--   - QueryCountRunningAttempts                          -> TASK_ATTEMPTS(status)
+--   - QuerySelectStaleTasks                              -> TASK_ATTEMPTS(task_id)
+--   - QueryGetMapOutputs / QueryGetReduceOutputs join    -> TASK_OUTPUTS(task_id)
+CREATE INDEX IF NOT EXISTS idx_tasks_job_id          ON TASKS(job_id);
+CREATE INDEX IF NOT EXISTS idx_tasks_status          ON TASKS(status);
+CREATE INDEX IF NOT EXISTS idx_task_attempts_task_id ON TASK_ATTEMPTS(task_id);
+CREATE INDEX IF NOT EXISTS idx_task_attempts_status  ON TASK_ATTEMPTS(status);
+CREATE INDEX IF NOT EXISTS idx_task_outputs_task_id  ON TASK_OUTPUTS(task_id);
+CREATE INDEX IF NOT EXISTS idx_task_inputs_task_id   ON TASK_INPUTS(task_id);
+
 COMMIT;
