@@ -53,9 +53,18 @@ func (w *Worker) runReduce(ctx context.Context, a *pb.TaskAssignment) (outputURI
 	var merged bytes.Buffer
 	mergeCfg := shuffle.DefaultMergeConfig()
 	mergeCfg.TempDir = w.cfg.TempDir
-	if _, mergeErr := shuffle.MergeInputs(readers, &merged, mergeCfg); mergeErr != nil {
+	if w.cfg.ShuffleBatchSize > 0 {
+		mergeCfg.BatchSize = w.cfg.ShuffleBatchSize
+	}
+	if w.cfg.ShuffleMaxRecordBytes > 0 {
+		mergeCfg.MaxRecordBytes = w.cfg.ShuffleMaxRecordBytes
+	}
+	mergeStats, mergeErr := shuffle.MergeInputs(readers, &merged, mergeCfg)
+	if mergeErr != nil {
 		return nil, nil, fmt.Errorf("merge: %w", mergeErr)
 	}
+	log.Printf("[reduce] merge stats task=%s passes=%d spills=%d peak_streams=%d records=%d",
+		a.TaskId, mergeStats.TotalPasses, mergeStats.SpillCount, mergeStats.PeakOpenStreams, mergeStats.TotalRecords)
 
 	// Execute reducer with globally sorted JSONL on stdin.
 	reduceOut, err := w.execCode(ctx, codePath, a.RuntimeEnv, &merged)
