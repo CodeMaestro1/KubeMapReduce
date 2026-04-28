@@ -16,6 +16,13 @@ import (
 // MaxTaskAttempts defines the maximum number of times a single task will be retried
 // before the entire job is marked as Failed.
 const MaxTaskAttempts = 3
+
+// DefaultMaxConcurrentPods is the fallback pod concurrency ceiling used when the
+// SYSTEM_CONFIG table has no seed row (e.g. a fresh cluster). It is intentionally
+// a single authoritative constant so that every subsystem that needs this default
+// (quota enforcement, GetSystemConfig) references the same value.
+const DefaultMaxConcurrentPods = 10
+
 const (
 	cleanupReconcileWorkers   = 4
 	cleanupReconcileBatchSize = 64
@@ -337,7 +344,11 @@ func (s *Scheduler) readQuotaSnapshotTx(ctx context.Context, tx *sql.Tx) (QuotaS
 
 	var snap QuotaSnapshot
 	if err := tx.QueryRowContext(ctx, QueryGetMaxConcurrentPods).Scan(&snap.MaxPods); err != nil {
-		return QuotaSnapshot{}, err
+		if errors.Is(err, sql.ErrNoRows) {
+			snap.MaxPods = DefaultMaxConcurrentPods
+		} else {
+			return QuotaSnapshot{}, err
+		}
 	}
 	if err := tx.QueryRowContext(ctx, QueryCountRunningAttempts).Scan(&snap.ActivePods); err != nil {
 		return QuotaSnapshot{}, err
@@ -561,7 +572,7 @@ func (s *Scheduler) GetSystemConfig(ctx context.Context) (SystemConfigUpdate, er
 	if err == sql.ErrNoRows {
 		// Return defaults if not configured
 		return SystemConfigUpdate{
-			MaxConcurrentPods: 10,
+			MaxConcurrentPods: DefaultMaxConcurrentPods,
 			CPULimit:          "500m",
 			MemoryLimit:       "1Gi",
 			WorkerReplicas:    1,

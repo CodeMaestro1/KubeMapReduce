@@ -54,6 +54,7 @@ As a `main` package, it "exports" the following interfaces:
 | `PUT /internal/config` | Internal Token | Update system configuration |
 | `/health` | None | Liveness probe |
 | `/readyz` | None | Readiness probe (checks DB) |
+| `/ready` | None | Readiness probe alias (kept for backwards compatibility) |
 
 ## Error Catalogue
 | Error | When |

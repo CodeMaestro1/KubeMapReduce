@@ -327,3 +327,53 @@ func TestScheduler_GetNextTask_FifoStarvationFreedom(t *testing.T) {
 		t.Fatalf("unfulfilled expectations: %v", err)
 	}
 }
+
+// TestScheduler_GetNextTask_EmptySystemConfigFallback verifies that the
+// scheduler correctly falls back to a hardcoded default (10) when the
+// SYSTEM_CONFIG table is empty (common on fresh clusters).
+func TestScheduler_GetNextTask_EmptySystemConfigFallback(t *testing.T) {
+	db, mock, scheduler := setupMockDB(t)
+	defer db.Close()
+	jobUUID := uuid.New()
+	jobID := jobUUID.String()
+	taskID := uuid.New()
+
+	mock.ExpectBegin()
+	mock.ExpectQuery(regexp.QuoteMeta(QueryCountFailedTasks)).
+		WithArgs(jobID).
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
+	mock.ExpectQuery(regexp.QuoteMeta(QuerySelectIdleTask)).
+		WithArgs(jobID, 0, "Map").
+		WillReturnRows(sqlmock.NewRows([]string{"task_id", "job_id", "task_type", "replica_index"}).
+			AddRow(taskID, jobUUID, "Map", 0))
+	expectTaskMetadataQueries(mock, taskID, "s3://map", "s3://reduce", 1)
+	mock.ExpectExec(regexp.QuoteMeta(QueryAcquireSchedulingLock)).
+		WillReturnResult(sqlmock.NewResult(1, 1))
+
+	// Simulate empty SYSTEM_CONFIG row
+	mock.ExpectQuery(regexp.QuoteMeta(QueryGetMaxConcurrentPods)).
+		WillReturnError(sql.ErrNoRows)
+
+	mock.ExpectQuery(regexp.QuoteMeta(QueryCountRunningAttempts)).
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(2)) // 2 running < 10 default
+
+	mock.ExpectExec(regexp.QuoteMeta(QueryUpdateTaskInProgress)).
+		WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectExec(regexp.QuoteMeta(QueryInsertAttempt)).
+		WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectExec(regexp.QuoteMeta(QueryUpdateJobStatus)).
+		WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectCommit()
+
+	task, err := scheduler.GetNextTask(context.Background(), jobID, "worker-1")
+	if err != nil {
+		t.Fatalf("expected GetNextTask to succeed with default quota, got error: %v", err)
+	}
+	if task == nil || task.ID != taskID.String() {
+		t.Fatalf("expected task %s, got %v", taskID, task)
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unfulfilled expectations: %v", err)
+	}
+}
