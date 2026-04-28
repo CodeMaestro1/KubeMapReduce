@@ -121,24 +121,19 @@ func containsRole(roles []string, expected string) bool {
 	return false
 }
 
-// HasRole reports whether the request's JWT claims include the specified
-// realm role.
+// HasRole reports whether the authenticated request carries the given realm
+// role.
 //
-// It returns false (without error) when claims are missing or malformed so
-// that callers can use it as a simple predicate for optional privilege
-// elevation (for example, granting admin users access to other users' data
-// without short-circuiting normal user-scoped authorization).
+// Unlike [RequireRole], this helper does not short-circuit the response: it
+// returns a boolean that handlers can use to switch between user-scoped and
+// admin-scoped behaviour (for example, allowing admins to view any user's
+// resources without exposing them to regular users). It returns false when no
+// claims are present or the roles claim is malformed; callers should still
+// rely on [RequireRole] / [RequireAnyRole] middleware for authentication.
 func HasRole(r *http.Request, role string) bool {
 	roles, err := GetRoles(r)
 	if err != nil {
 		return false
 	}
 	return containsRole(roles, role)
-}
-
-// IsAdmin reports whether the request's JWT claims include the ADMIN realm
-// role. It is a convenience wrapper around [HasRole] used by API handlers
-// that need to widen access scope for administrators.
-func IsAdmin(r *http.Request) bool {
-	return HasRole(r, "ADMIN")
 }
