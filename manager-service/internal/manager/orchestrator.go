@@ -118,6 +118,15 @@ func (k *KubeOrchestrator) resolveContainerResources(ctx context.Context) corev1
 // It uses a deterministic naming scheme (worker-[taskID]-[hash]) to prevent duplicate jobs
 // for the same attempt. The backoffLimit is set to 0 because the Manager handles retries
 // at the application level to maintain strict state consistency in the DDS.
+//
+// The worker container's Resources field is populated from
+// SYSTEM_CONFIG.cpu_limit / memory_limit via the configured
+// ResourceConfigProvider (see WithResourceProvider). When no provider is
+// configured, or the provider returns an error, or the configured values
+// fail resource.ParseQuantity, the orchestrator falls back to
+// DefaultWorkerCPULimit / DefaultWorkerMemoryLimit so worker pods are never
+// scheduled with unbounded resource usage. This closes the regression
+// described in issue #91.
 func (k *KubeOrchestrator) SpawnWorker(ctx context.Context, taskID string, jobID string, attemptID string, managerAddr string) error {
 	sanitizedTaskID := sanitizeForDNSLabel(taskID)
 	sanitizedJobID := sanitizeForDNSLabel(jobID)
