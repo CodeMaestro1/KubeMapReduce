@@ -35,6 +35,8 @@ func New(cfg *config.Config, client pb.WorkerServiceClient, minioClient *minio.C
 	var s objectStorage
 	if minioClient != nil {
 		s = newMinioStorage(minioClient)
+	} else {
+		s = newUnavailableStorage(fmt.Errorf("object storage is not configured"))
 	}
 	return &Worker{
 		cfg:         cfg,
@@ -58,8 +60,19 @@ func (w *Worker) Run(ctx context.Context) error {
 	}
 	log.Printf("[worker] registered task=%s attempt=%s type=%s", assignment.TaskId, assignment.AttemptId, assignment.Type)
 
+	if w.storage == nil {
+		err := fmt.Errorf("object storage is not configured")
+		_ = w.reportFailure(context.Background(), assignment, err.Error())
+		return err
+	}
+
 	// Resolve manifest if is_manifest=true: DataLocations[0] is an s3:// URI.
 	if assignment.IsManifest {
+		if len(assignment.DataLocations) == 0 {
+			err := fmt.Errorf("manifest assignment missing data locations")
+			_ = w.reportFailure(context.Background(), assignment, err.Error())
+			return err
+		}
 		locs, fetchErr := fetchManifest(ctx, w.storage, assignment.DataLocations[0])
 		if fetchErr != nil {
 			_ = w.reportFailure(context.Background(), assignment, fmt.Sprintf("manifest fetch: %v", fetchErr))
