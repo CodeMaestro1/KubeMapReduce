@@ -3,9 +3,11 @@ package api
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"strconv"
@@ -38,7 +40,10 @@ const (
 	defaultListLimit = 100
 	maxListLimit     = 500
 	maxJSONBodyBytes = 1 << 20 // 1 MiB
+	inputBucketName  = "inputs"
 )
+
+var defaultTargetSplitSizeBytes int64 = 64 * 1024 * 1024
 
 // NewHandlers creates production-ready Handlers.
 func NewHandlers(adminClient *auth.KeycloakAdminClient, store JobStore, minioClient *minio.Client, managerAddr string, internalAPIKey string) *Handlers {
@@ -149,6 +154,8 @@ func (h *Handlers) HandleJobsSubmit(w http.ResponseWriter, r *http.Request) {
 		combinerURI = request.Combiner.Artifact
 	}
 
+	schedReq := buildScheduleRequest(r.Context(), newScheduleObjectClient(h.minioClient), jobID, userID, request, combinerURI)
+
 	rec := JobRecord{
 		JobID:       jobID,
 		UserID:      userID,
@@ -159,7 +166,7 @@ func (h *Handlers) HandleJobsSubmit(w http.ResponseWriter, r *http.Request) {
 		MapperURI:   request.Mapper.Artifact,
 		ReducerURI:  request.Reducer.Artifact,
 		CombinerURI: combinerURI,
-		MTasks:      1,
+		MTasks:      schedReq.MTasks,
 	}
 	if err := h.store.CreateJob(r.Context(), rec); err != nil {
 		httputil.WriteErrorJSON(w, http.StatusInternalServerError, "failed to persist job")
@@ -167,7 +174,6 @@ func (h *Handlers) HandleJobsSubmit(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if h.managerAddr != "" {
-		schedReq := buildScheduleRequest(jobID, userID, request, combinerURI)
 		if err := h.postSchedule(r.Context(), schedReq); err != nil {
 			log.Printf("[api] job %s persisted but schedule failed: %v", jobID, err)
 		}
@@ -534,18 +540,44 @@ func (h *Handlers) postSchedule(ctx context.Context, req manager.ScheduleJobRequ
 	return nil
 }
 
+type scheduleObjectClient interface {
+	StatObject(ctx context.Context, bucketName, objectName string, opts minio.StatObjectOptions) (minio.ObjectInfo, error)
+	GetObject(ctx context.Context, bucketName, objectName string, opts minio.GetObjectOptions) (io.ReadCloser, error)
+}
+
+type minioScheduleObjectClient struct {
+	client *minio.Client
+}
+
+func newScheduleObjectClient(client *minio.Client) scheduleObjectClient {
+	if client == nil {
+		return nil
+	}
+	return &minioScheduleObjectClient{client: client}
+}
+
+func (m *minioScheduleObjectClient) StatObject(ctx context.Context, bucketName, objectName string, opts minio.StatObjectOptions) (minio.ObjectInfo, error) {
+	return m.client.StatObject(ctx, bucketName, objectName, opts)
+}
+
+func (m *minioScheduleObjectClient) GetObject(ctx context.Context, bucketName, objectName string, opts minio.GetObjectOptions) (io.ReadCloser, error) {
+	return m.client.GetObject(ctx, bucketName, objectName, opts)
+}
+
 // buildScheduleRequest constructs a ScheduleJobRequest for a fresh job submission.
-// It creates one Map task covering the full input and R Reduce tasks.
-func buildScheduleRequest(jobID, userID string, req models.JobSubmissionRequest, combinerURI string) manager.ScheduleJobRequest {
-	mapTaskID := uuid.New().String()
-	tasks := make([]manager.ScheduleTask, 0, 1+req.Reducers)
-	tasks = append(tasks, manager.ScheduleTask{
-		TaskID:   mapTaskID,
-		TaskType: "Map",
-		InputSplits: []manager.ScheduleTaskInput{{
-			InputURI: req.Filename,
-		}},
-	})
+// It computes a map-task count from the input size when object storage metadata is available.
+func buildScheduleRequest(ctx context.Context, storage scheduleObjectClient, jobID, userID string, req models.JobSubmissionRequest, combinerURI string) manager.ScheduleJobRequest {
+	inputURI := fmt.Sprintf("s3://%s/%s", inputBucketName, req.Filename)
+	inputSplits := buildInputSplits(ctx, storage, req.Filename, inputURI)
+
+	tasks := make([]manager.ScheduleTask, 0, len(inputSplits)+req.Reducers)
+	for _, split := range inputSplits {
+		tasks = append(tasks, manager.ScheduleTask{
+			TaskID:      uuid.New().String(),
+			TaskType:    "Map",
+			InputSplits: []manager.ScheduleTaskInput{split},
+		})
+	}
 	for i := 0; i < req.Reducers; i++ {
 		tasks = append(tasks, manager.ScheduleTask{
 			TaskID:       uuid.New().String(),
@@ -556,14 +588,81 @@ func buildScheduleRequest(jobID, userID string, req models.JobSubmissionRequest,
 	return manager.ScheduleJobRequest{
 		JobID:       jobID,
 		UserID:      userID,
-		InputURI:    req.Filename,
+		InputURI:    inputURI,
 		MapperURI:   req.Mapper.Artifact,
 		ReducerURI:  req.Reducer.Artifact,
 		CombinerURI: combinerURI,
-		MTasks:      1,
+		MTasks:      len(inputSplits),
 		RTasks:      req.Reducers,
 		Tasks:       tasks,
 	}
+}
+
+func buildInputSplits(ctx context.Context, storage scheduleObjectClient, objectName, inputURI string) []manager.ScheduleTaskInput {
+	if storage == nil {
+		return []manager.ScheduleTaskInput{{
+			InputURI: inputURI,
+		}}
+	}
+
+	info, err := storage.StatObject(ctx, inputBucketName, objectName, minio.StatObjectOptions{})
+	if err != nil || info.Size <= 0 {
+		return []manager.ScheduleTaskInput{{
+			InputURI: inputURI,
+		}}
+	}
+
+	splitSize := int64(defaultTargetSplitSizeBytes)
+	if splitSize <= 0 {
+		splitSize = 64 * 1024 * 1024
+	}
+
+	splits := make([]manager.ScheduleTaskInput, 0, int((info.Size+splitSize-1)/splitSize))
+	for start := int64(0); start < info.Size; start += splitSize {
+		end := start + splitSize - 1
+		if end >= info.Size {
+			end = info.Size - 1
+		}
+		checksum, checksumErr := checksumObjectRange(ctx, storage, inputBucketName, objectName, start, end)
+		if checksumErr != nil {
+			log.Printf("[api] falling back to a single split for %s after checksum error: %v", inputURI, checksumErr)
+			return []manager.ScheduleTaskInput{{
+				InputURI: inputURI,
+			}}
+		}
+		splits = append(splits, manager.ScheduleTaskInput{
+			InputURI:      inputURI,
+			ByteStart:     start,
+			ByteEnd:       end,
+			SplitChecksum: checksum,
+		})
+	}
+
+	if len(splits) == 0 {
+		return []manager.ScheduleTaskInput{{InputURI: inputURI}}
+	}
+	return splits
+}
+
+func checksumObjectRange(ctx context.Context, storage scheduleObjectClient, bucketName, objectName string, start, end int64) (string, error) {
+	opts := minio.GetObjectOptions{}
+	if err := opts.SetRange(start, end); err != nil {
+		return "", fmt.Errorf("set range [%d,%d]: %w", start, end, err)
+	}
+
+	rc, err := storage.GetObject(ctx, bucketName, objectName, opts)
+	if err != nil {
+		return "", fmt.Errorf("get object range %s/%s [%d,%d]: %w", bucketName, objectName, start, end, err)
+	}
+	defer rc.Close()
+
+	data, err := io.ReadAll(rc)
+	if err != nil {
+		return "", fmt.Errorf("read object range %s/%s [%d,%d]: %w", bucketName, objectName, start, end, err)
+	}
+
+	sum := sha256.Sum256(data)
+	return fmt.Sprintf("%x", sum[:]), nil
 }
 
 func currentRequestUserID(r *http.Request) (string, error) {

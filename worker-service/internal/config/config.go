@@ -84,9 +84,9 @@ func Load() (*Config, error) {
 		ManagerAddr:             managerAddr,
 		WorkerRPCToken:          strings.TrimSpace(os.Getenv("WORKER_RPC_TOKEN")),
 		GRPCTLSCertFile:         strings.TrimSpace(os.Getenv("GRPC_TLS_CERT_FILE")),
-		MinioEndpoint:           strings.TrimSpace(os.Getenv("MINIO_ENDPOINT")),
-		MinioAccessKey:          strings.TrimSpace(os.Getenv("MINIO_ACCESS_KEY")),
-		MinioSecretKey:          strings.TrimSpace(os.Getenv("MINIO_SECRET_KEY")),
+		MinioEndpoint:           firstNonEmptyEnv("S3_ENDPOINT", "MINIO_ENDPOINT"),
+		MinioAccessKey:          firstNonEmptyEnv("S3_ACCESS_KEY", "MINIO_ACCESS_KEY"),
+		MinioSecretKey:          firstNonEmptyEnv("S3_SECRET_KEY", "MINIO_SECRET_KEY"),
 		MinioUseSSL:             getEnvBool("MINIO_USE_SSL", false),
 		HeartbeatIntervalSec:    hb,
 		MapSortSpillThresholdMB: spill,
@@ -106,6 +106,15 @@ func getEnvBool(key string, fallback bool) bool {
 		return fallback
 	}
 	return b
+}
+
+func firstNonEmptyEnv(keys ...string) string {
+	for _, key := range keys {
+		if v := strings.TrimSpace(os.Getenv(key)); v != "" {
+			return v
+		}
+	}
+	return ""
 }
 
 func getEnvInt(key string, fallback int) (int, error) {
