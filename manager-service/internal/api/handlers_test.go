@@ -1,8 +1,10 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"kubemapreduce/auth-service/pkg/auth"
 	"kubemapreduce/manager-service/internal/manager"
 	"kubemapreduce/manager-service/internal/models"
@@ -14,6 +16,7 @@ import (
 
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
+	"github.com/minio/minio-go/v7"
 )
 
 func newTestHandlers() *Handlers {
@@ -1238,4 +1241,71 @@ func TestRouting_PostToJobDetail_Returns405(t *testing.T) {
 	if rec.Code != http.StatusMethodNotAllowed {
 		t.Fatalf("expected 405 for POST on job detail, got %d", rec.Code)
 	}
+}
+func TestBuildScheduleRequest_ComputesChecksum(t *testing.T) {
+	mockStorage := &mockScheduleObjectClient{
+		size:     1024,
+		checksum: "c3ab8ff13720e8ad9047dd39466b3c8974e592c2fa383d4a3960714caef0c4f2", // sha256 of 1024 'a's
+	}
+
+	req := models.JobSubmissionRequest{
+		Filename: "large-file.bin",
+		Mapper: models.FunctionSpec{
+			Artifact: "mapper.py",
+		},
+		Reducer: models.FunctionSpec{
+			Artifact: "reducer.py",
+		},
+		Reducers: 1,
+	}
+
+	ctx := context.Background()
+	jobID := uuid.NewString()
+	userID := uuid.NewString()
+
+	schedReq, err := buildScheduleRequest(ctx, mockStorage, jobID, userID, req, "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(schedReq.Tasks) == 0 {
+		t.Fatal("expected at least one task")
+	}
+
+	mapTask := schedReq.Tasks[0]
+	if mapTask.TaskType != "Map" {
+		t.Fatalf("expected Map task, got %s", mapTask.TaskType)
+	}
+
+	if len(mapTask.InputSplits) != 1 {
+		t.Fatalf("expected 1 input split, got %d", len(mapTask.InputSplits))
+	}
+
+	split := mapTask.InputSplits[0]
+	if split.ByteStart != 0 {
+		t.Errorf("expected ByteStart 0, got %d", split.ByteStart)
+	}
+	if split.ByteEnd != 1023 {
+		t.Errorf("expected ByteEnd 1023, got %d", split.ByteEnd)
+	}
+	if split.SplitChecksum == "" {
+		t.Error("expected non-empty SplitChecksum")
+	}
+}
+
+type mockScheduleObjectClient struct {
+	size     int64
+	checksum string
+}
+
+func (m *mockScheduleObjectClient) StatObject(ctx context.Context, bucketName, objectName string, opts minio.StatObjectOptions) (minio.ObjectInfo, error) {
+	return minio.ObjectInfo{Size: m.size}, nil
+}
+
+func (m *mockScheduleObjectClient) GetObject(ctx context.Context, bucketName, objectName string, opts minio.GetObjectOptions) (io.ReadCloser, error) {
+	data := make([]byte, m.size)
+	for i := range data {
+		data[i] = 'a'
+	}
+	return io.NopCloser(bytes.NewReader(data)), nil
 }
