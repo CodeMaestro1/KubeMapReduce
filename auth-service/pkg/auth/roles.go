@@ -120,3 +120,20 @@ func containsRole(roles []string, expected string) bool {
 
 	return false
 }
+
+// HasRole reports whether the authenticated request carries the given realm
+// role.
+//
+// Unlike [RequireRole], this helper does not short-circuit the response: it
+// returns a boolean that handlers can use to switch between user-scoped and
+// admin-scoped behaviour (for example, allowing admins to view any user's
+// resources without exposing them to regular users). It returns false when no
+// claims are present or the roles claim is malformed; callers should still
+// rely on [RequireRole] / [RequireAnyRole] middleware for authentication.
+func HasRole(r *http.Request, role string) bool {
+	roles, err := GetRoles(r)
+	if err != nil {
+		return false
+	}
+	return containsRole(roles, role)
+}

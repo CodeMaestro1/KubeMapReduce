@@ -110,7 +110,7 @@ func (x HeartbeatResponse_Action) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use HeartbeatResponse_Action.Descriptor instead.
 func (HeartbeatResponse_Action) EnumDescriptor() ([]byte, []int) {
-	return file_proto_mapreduce_proto_rawDescGZIP(), []int{3, 0}
+	return file_proto_mapreduce_proto_rawDescGZIP(), []int{4, 0}
 }
 
 type RegisterRequest struct {
@@ -182,6 +182,7 @@ type TaskAssignment struct {
 	TotalReducers    int32                  `protobuf:"varint,13,opt,name=total_reducers,json=totalReducers,proto3" json:"total_reducers,omitempty"`
 	SplitChecksum    string                 `protobuf:"bytes,14,opt,name=split_checksum,json=splitChecksum,proto3" json:"split_checksum,omitempty"`
 	LeaseId          string                 `protobuf:"bytes,15,opt,name=lease_id,json=leaseId,proto3" json:"lease_id,omitempty"`
+	InputSplits      []*InputSplit          `protobuf:"bytes,16,rep,name=input_splits,json=inputSplits,proto3" json:"input_splits,omitempty"`
 	unknownFields    protoimpl.UnknownFields
 	sizeCache        protoimpl.SizeCache
 }
@@ -321,6 +322,81 @@ func (x *TaskAssignment) GetLeaseId() string {
 	return ""
 }
 
+func (x *TaskAssignment) GetInputSplits() []*InputSplit {
+	if x != nil {
+		return x.InputSplits
+	}
+	return nil
+}
+
+type InputSplit struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	InputUri      string                 `protobuf:"bytes,1,opt,name=input_uri,json=inputUri,proto3" json:"input_uri,omitempty"`
+	ByteStart     int64                  `protobuf:"varint,2,opt,name=byte_start,json=byteStart,proto3" json:"byte_start,omitempty"`
+	ByteEnd       int64                  `protobuf:"varint,3,opt,name=byte_end,json=byteEnd,proto3" json:"byte_end,omitempty"`
+	SplitChecksum string                 `protobuf:"bytes,4,opt,name=split_checksum,json=splitChecksum,proto3" json:"split_checksum,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *InputSplit) Reset() {
+	*x = InputSplit{}
+	mi := &file_proto_mapreduce_proto_msgTypes[2]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *InputSplit) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*InputSplit) ProtoMessage() {}
+
+func (x *InputSplit) ProtoReflect() protoreflect.Message {
+	mi := &file_proto_mapreduce_proto_msgTypes[2]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use InputSplit.ProtoReflect.Descriptor instead.
+func (*InputSplit) Descriptor() ([]byte, []int) {
+	return file_proto_mapreduce_proto_rawDescGZIP(), []int{2}
+}
+
+func (x *InputSplit) GetInputUri() string {
+	if x != nil {
+		return x.InputUri
+	}
+	return ""
+}
+
+func (x *InputSplit) GetByteStart() int64 {
+	if x != nil {
+		return x.ByteStart
+	}
+	return 0
+}
+
+func (x *InputSplit) GetByteEnd() int64 {
+	if x != nil {
+		return x.ByteEnd
+	}
+	return 0
+}
+
+func (x *InputSplit) GetSplitChecksum() string {
+	if x != nil {
+		return x.SplitChecksum
+	}
+	return ""
+}
+
 type HeartbeatRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	TaskId        string                 `protobuf:"bytes,1,opt,name=task_id,json=taskId,proto3" json:"task_id,omitempty"`
@@ -332,7 +408,7 @@ type HeartbeatRequest struct {
 
 func (x *HeartbeatRequest) Reset() {
 	*x = HeartbeatRequest{}
-	mi := &file_proto_mapreduce_proto_msgTypes[2]
+	mi := &file_proto_mapreduce_proto_msgTypes[3]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -344,7 +420,7 @@ func (x *HeartbeatRequest) String() string {
 func (*HeartbeatRequest) ProtoMessage() {}
 
 func (x *HeartbeatRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_mapreduce_proto_msgTypes[2]
+	mi := &file_proto_mapreduce_proto_msgTypes[3]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -357,7 +433,7 @@ func (x *HeartbeatRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use HeartbeatRequest.ProtoReflect.Descriptor instead.
 func (*HeartbeatRequest) Descriptor() ([]byte, []int) {
-	return file_proto_mapreduce_proto_rawDescGZIP(), []int{2}
+	return file_proto_mapreduce_proto_rawDescGZIP(), []int{3}
 }
 
 func (x *HeartbeatRequest) GetTaskId() string {
@@ -390,7 +466,7 @@ type HeartbeatResponse struct {
 
 func (x *HeartbeatResponse) Reset() {
 	*x = HeartbeatResponse{}
-	mi := &file_proto_mapreduce_proto_msgTypes[3]
+	mi := &file_proto_mapreduce_proto_msgTypes[4]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -402,7 +478,7 @@ func (x *HeartbeatResponse) String() string {
 func (*HeartbeatResponse) ProtoMessage() {}
 
 func (x *HeartbeatResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_mapreduce_proto_msgTypes[3]
+	mi := &file_proto_mapreduce_proto_msgTypes[4]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -415,7 +491,7 @@ func (x *HeartbeatResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use HeartbeatResponse.ProtoReflect.Descriptor instead.
 func (*HeartbeatResponse) Descriptor() ([]byte, []int) {
-	return file_proto_mapreduce_proto_rawDescGZIP(), []int{3}
+	return file_proto_mapreduce_proto_rawDescGZIP(), []int{4}
 }
 
 func (x *HeartbeatResponse) GetAction() HeartbeatResponse_Action {
@@ -438,7 +514,7 @@ type TaskCompleteRequest struct {
 
 func (x *TaskCompleteRequest) Reset() {
 	*x = TaskCompleteRequest{}
-	mi := &file_proto_mapreduce_proto_msgTypes[4]
+	mi := &file_proto_mapreduce_proto_msgTypes[5]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -450,7 +526,7 @@ func (x *TaskCompleteRequest) String() string {
 func (*TaskCompleteRequest) ProtoMessage() {}
 
 func (x *TaskCompleteRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_mapreduce_proto_msgTypes[4]
+	mi := &file_proto_mapreduce_proto_msgTypes[5]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -463,7 +539,7 @@ func (x *TaskCompleteRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TaskCompleteRequest.ProtoReflect.Descriptor instead.
 func (*TaskCompleteRequest) Descriptor() ([]byte, []int) {
-	return file_proto_mapreduce_proto_rawDescGZIP(), []int{4}
+	return file_proto_mapreduce_proto_rawDescGZIP(), []int{5}
 }
 
 func (x *TaskCompleteRequest) GetTaskId() string {
@@ -513,7 +589,7 @@ type TaskFailedRequest struct {
 
 func (x *TaskFailedRequest) Reset() {
 	*x = TaskFailedRequest{}
-	mi := &file_proto_mapreduce_proto_msgTypes[5]
+	mi := &file_proto_mapreduce_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -525,7 +601,7 @@ func (x *TaskFailedRequest) String() string {
 func (*TaskFailedRequest) ProtoMessage() {}
 
 func (x *TaskFailedRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_mapreduce_proto_msgTypes[5]
+	mi := &file_proto_mapreduce_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -538,7 +614,7 @@ func (x *TaskFailedRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TaskFailedRequest.ProtoReflect.Descriptor instead.
 func (*TaskFailedRequest) Descriptor() ([]byte, []int) {
-	return file_proto_mapreduce_proto_rawDescGZIP(), []int{5}
+	return file_proto_mapreduce_proto_rawDescGZIP(), []int{6}
 }
 
 func (x *TaskFailedRequest) GetTaskId() string {
@@ -578,7 +654,7 @@ type Ack struct {
 
 func (x *Ack) Reset() {
 	*x = Ack{}
-	mi := &file_proto_mapreduce_proto_msgTypes[6]
+	mi := &file_proto_mapreduce_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -590,7 +666,7 @@ func (x *Ack) String() string {
 func (*Ack) ProtoMessage() {}
 
 func (x *Ack) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_mapreduce_proto_msgTypes[6]
+	mi := &file_proto_mapreduce_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -603,7 +679,7 @@ func (x *Ack) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Ack.ProtoReflect.Descriptor instead.
 func (*Ack) Descriptor() ([]byte, []int) {
-	return file_proto_mapreduce_proto_rawDescGZIP(), []int{6}
+	return file_proto_mapreduce_proto_rawDescGZIP(), []int{7}
 }
 
 func (x *Ack) GetSuccess() bool {
@@ -621,7 +697,7 @@ const file_proto_mapreduce_proto_rawDesc = "" +
 	"\x0fRegisterRequest\x12\x17\n" +
 	"\atask_id\x18\x01 \x01(\tR\x06taskId\x12\x1d\n" +
 	"\n" +
-	"attempt_id\x18\x02 \x01(\tR\tattemptId\"\x89\x04\n" +
+	"attempt_id\x18\x02 \x01(\tR\tattemptId\"\xc3\x04\n" +
 	"\x0eTaskAssignment\x12\x17\n" +
 	"\atask_id\x18\x01 \x01(\tR\x06taskId\x12\x1d\n" +
 	"\n" +
@@ -642,7 +718,15 @@ const file_proto_mapreduce_proto_rawDesc = "" +
 	"isManifest\x12%\n" +
 	"\x0etotal_reducers\x18\r \x01(\x05R\rtotalReducers\x12%\n" +
 	"\x0esplit_checksum\x18\x0e \x01(\tR\rsplitChecksum\x12\x19\n" +
-	"\blease_id\x18\x0f \x01(\tR\aleaseId\"e\n" +
+	"\blease_id\x18\x0f \x01(\tR\aleaseId\x128\n" +
+	"\finput_splits\x18\x10 \x03(\v2\x15.mapreduce.InputSplitR\vinputSplits\"\x8a\x01\n" +
+	"\n" +
+	"InputSplit\x12\x1b\n" +
+	"\tinput_uri\x18\x01 \x01(\tR\binputUri\x12\x1d\n" +
+	"\n" +
+	"byte_start\x18\x02 \x01(\x03R\tbyteStart\x12\x19\n" +
+	"\bbyte_end\x18\x03 \x01(\x03R\abyteEnd\x12%\n" +
+	"\x0esplit_checksum\x18\x04 \x01(\tR\rsplitChecksum\"e\n" +
 	"\x10HeartbeatRequest\x12\x17\n" +
 	"\atask_id\x18\x01 \x01(\tR\x06taskId\x12\x1d\n" +
 	"\n" +
@@ -692,34 +776,36 @@ func file_proto_mapreduce_proto_rawDescGZIP() []byte {
 }
 
 var file_proto_mapreduce_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
-var file_proto_mapreduce_proto_msgTypes = make([]protoimpl.MessageInfo, 7)
+var file_proto_mapreduce_proto_msgTypes = make([]protoimpl.MessageInfo, 8)
 var file_proto_mapreduce_proto_goTypes = []any{
 	(TaskType)(0),                 // 0: mapreduce.TaskType
 	(HeartbeatResponse_Action)(0), // 1: mapreduce.HeartbeatResponse.Action
 	(*RegisterRequest)(nil),       // 2: mapreduce.RegisterRequest
 	(*TaskAssignment)(nil),        // 3: mapreduce.TaskAssignment
-	(*HeartbeatRequest)(nil),      // 4: mapreduce.HeartbeatRequest
-	(*HeartbeatResponse)(nil),     // 5: mapreduce.HeartbeatResponse
-	(*TaskCompleteRequest)(nil),   // 6: mapreduce.TaskCompleteRequest
-	(*TaskFailedRequest)(nil),     // 7: mapreduce.TaskFailedRequest
-	(*Ack)(nil),                   // 8: mapreduce.Ack
+	(*InputSplit)(nil),            // 4: mapreduce.InputSplit
+	(*HeartbeatRequest)(nil),      // 5: mapreduce.HeartbeatRequest
+	(*HeartbeatResponse)(nil),     // 6: mapreduce.HeartbeatResponse
+	(*TaskCompleteRequest)(nil),   // 7: mapreduce.TaskCompleteRequest
+	(*TaskFailedRequest)(nil),     // 8: mapreduce.TaskFailedRequest
+	(*Ack)(nil),                   // 9: mapreduce.Ack
 }
 var file_proto_mapreduce_proto_depIdxs = []int32{
 	0, // 0: mapreduce.TaskAssignment.type:type_name -> mapreduce.TaskType
-	1, // 1: mapreduce.HeartbeatResponse.action:type_name -> mapreduce.HeartbeatResponse.Action
-	2, // 2: mapreduce.WorkerService.Register:input_type -> mapreduce.RegisterRequest
-	4, // 3: mapreduce.WorkerService.Heartbeat:input_type -> mapreduce.HeartbeatRequest
-	6, // 4: mapreduce.WorkerService.TaskComplete:input_type -> mapreduce.TaskCompleteRequest
-	7, // 5: mapreduce.WorkerService.TaskFailed:input_type -> mapreduce.TaskFailedRequest
-	3, // 6: mapreduce.WorkerService.Register:output_type -> mapreduce.TaskAssignment
-	5, // 7: mapreduce.WorkerService.Heartbeat:output_type -> mapreduce.HeartbeatResponse
-	8, // 8: mapreduce.WorkerService.TaskComplete:output_type -> mapreduce.Ack
-	8, // 9: mapreduce.WorkerService.TaskFailed:output_type -> mapreduce.Ack
-	6, // [6:10] is the sub-list for method output_type
-	2, // [2:6] is the sub-list for method input_type
-	2, // [2:2] is the sub-list for extension type_name
-	2, // [2:2] is the sub-list for extension extendee
-	0, // [0:2] is the sub-list for field type_name
+	4, // 1: mapreduce.TaskAssignment.input_splits:type_name -> mapreduce.InputSplit
+	1, // 2: mapreduce.HeartbeatResponse.action:type_name -> mapreduce.HeartbeatResponse.Action
+	2, // 3: mapreduce.WorkerService.Register:input_type -> mapreduce.RegisterRequest
+	5, // 4: mapreduce.WorkerService.Heartbeat:input_type -> mapreduce.HeartbeatRequest
+	7, // 5: mapreduce.WorkerService.TaskComplete:input_type -> mapreduce.TaskCompleteRequest
+	8, // 6: mapreduce.WorkerService.TaskFailed:input_type -> mapreduce.TaskFailedRequest
+	3, // 7: mapreduce.WorkerService.Register:output_type -> mapreduce.TaskAssignment
+	6, // 8: mapreduce.WorkerService.Heartbeat:output_type -> mapreduce.HeartbeatResponse
+	9, // 9: mapreduce.WorkerService.TaskComplete:output_type -> mapreduce.Ack
+	9, // 10: mapreduce.WorkerService.TaskFailed:output_type -> mapreduce.Ack
+	7, // [7:11] is the sub-list for method output_type
+	3, // [3:7] is the sub-list for method input_type
+	3, // [3:3] is the sub-list for extension type_name
+	3, // [3:3] is the sub-list for extension extendee
+	0, // [0:3] is the sub-list for field type_name
 }
 
 func init() { file_proto_mapreduce_proto_init() }
@@ -733,7 +819,7 @@ func file_proto_mapreduce_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_proto_mapreduce_proto_rawDesc), len(file_proto_mapreduce_proto_rawDesc)),
 			NumEnums:      2,
-			NumMessages:   7,
+			NumMessages:   8,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

@@ -1,0 +1,14 @@
+.git/
+graphify-out/
+docs/
+*.pdf
+*.md
+mkdocs.yml
+serve-docs.sh
+changeMultple.txt
+changes.txt
+go-doc-writer.skill
+infra/
+k8s/
+scripts/
+*_test.go
