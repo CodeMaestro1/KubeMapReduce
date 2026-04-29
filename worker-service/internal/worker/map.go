@@ -149,7 +149,7 @@ func taskInputSplits(a *pb.TaskAssignment) []taskInputSplit {
 func hashPartition(key string, R int) int {
 	h := fnv.New32a()
 	h.Write([]byte(key))
-	return int(h.Sum32()) % R
+	return int(h.Sum32()&0x7FFFFFFF) % R
 }
 
 // parseJSONLRecords decodes newline-delimited JSON objects into shuffle.Record values.
