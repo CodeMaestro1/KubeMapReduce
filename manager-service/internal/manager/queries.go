@@ -17,12 +17,6 @@ const QueryGetMaxConcurrentPods = `SELECT max_concurrent_pods FROM SYSTEM_CONFIG
 // QueryGetSystemConfig retrieves the entire cluster configuration.
 const QueryGetSystemConfig = `SELECT max_concurrent_pods, cpu_limit, memory_limit, worker_replicas, max_jobs_per_node FROM SYSTEM_CONFIG WHERE config_id = 1`
 
-// QueryGetWorkerResourceLimits fetches just the per-worker CPU and memory limits
-// used by KubeOrchestrator when constructing K8s Job container specs. It is a
-// narrow projection of QueryGetSystemConfig so callers that only need the
-// resource limits do not have to scan unrelated columns.
-const QueryGetWorkerResourceLimits = `SELECT cpu_limit, memory_limit FROM SYSTEM_CONFIG WHERE config_id = 1`
-
 // QueryAcquireSchedulingLock acquires a transaction-scoped advisory lock
 // to serialize quota decisions across concurrent manager replicas.
 // Uses an arbitrary but fixed namespace (42) for scheduling decisions.

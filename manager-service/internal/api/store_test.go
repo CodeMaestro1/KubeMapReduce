@@ -3,7 +3,6 @@ package api
 import (
 	"context"
 	"errors"
-	"regexp"
 	"testing"
 	"time"
 
@@ -185,7 +184,7 @@ func TestPostgresJobStore_ListJobs_ReturnsEmptySlice(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListJobs failed: %v", err)
 	}
-	if len(jobs) != 0 {
+	if jobs != nil && len(jobs) != 0 {
 		t.Fatalf("expected nil or empty, got %d jobs", len(jobs))
 	}
 }
@@ -253,79 +252,6 @@ func TestPostgresJobStore_CreateThenGet_Consistent(t *testing.T) {
 
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatalf("unmet expectations: %v", err)
-	}
-}
-
-// ── GetJobOutputs tests ─────────────────────────────────────
-
-func TestPostgresJobStore_GetJobOutputs_ReturnsReduceURIs(t *testing.T) {
-	db, mock, err := sqlmock.New()
-	if err != nil {
-		t.Fatalf("failed to create sqlmock: %v", err)
-	}
-	defer db.Close()
-
-	store := NewPostgresJobStore(db)
-	jobID := uuid.New()
-
-	mock.ExpectQuery(regexp.QuoteMeta(QueryGetJobOutputURIs)).
-		WithArgs(jobID).
-		WillReturnRows(sqlmock.NewRows([]string{"output_uri"}).
-			AddRow("s3://results/output-0.jsonl").
-			AddRow("s3://results/output-1.jsonl"))
-
-	uris, err := store.GetJobOutputs(context.Background(), jobID.String())
-	if err != nil {
-		t.Fatalf("GetJobOutputs failed: %v", err)
-	}
-	if len(uris) != 2 {
-		t.Fatalf("expected 2 URIs, got %d", len(uris))
-	}
-	if uris[0] != "s3://results/output-0.jsonl" || uris[1] != "s3://results/output-1.jsonl" {
-		t.Fatalf("unexpected URIs: %v", uris)
-	}
-	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Fatalf("unmet expectations: %v", err)
-	}
-}
-
-func TestPostgresJobStore_GetJobOutputs_EmptyForNoOutputs(t *testing.T) {
-	db, mock, err := sqlmock.New()
-	if err != nil {
-		t.Fatalf("failed to create sqlmock: %v", err)
-	}
-	defer db.Close()
-
-	store := NewPostgresJobStore(db)
-	jobID := uuid.New()
-
-	mock.ExpectQuery(regexp.QuoteMeta(QueryGetJobOutputURIs)).
-		WithArgs(jobID).
-		WillReturnRows(sqlmock.NewRows([]string{"output_uri"}))
-
-	uris, err := store.GetJobOutputs(context.Background(), jobID.String())
-	if err != nil {
-		t.Fatalf("GetJobOutputs failed: %v", err)
-	}
-	if len(uris) != 0 {
-		t.Fatalf("expected empty, got %v", uris)
-	}
-	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Fatalf("unmet expectations: %v", err)
-	}
-}
-
-func TestPostgresJobStore_GetJobOutputs_InvalidUUIDReturnsError(t *testing.T) {
-	db, _, err := sqlmock.New()
-	if err != nil {
-		t.Fatalf("failed to create sqlmock: %v", err)
-	}
-	defer db.Close()
-
-	store := NewPostgresJobStore(db)
-	_, err = store.GetJobOutputs(context.Background(), "not-a-uuid")
-	if !errors.Is(err, ErrInvalidJobID) {
-		t.Fatalf("expected ErrInvalidJobID, got %v", err)
 	}
 }
 

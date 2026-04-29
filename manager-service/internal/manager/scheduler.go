@@ -933,7 +933,6 @@ func (s *Scheduler) FailStaleTasks(ctx context.Context) (int, error) {
 		jobID     string
 	}
 	var respawnTasks []retrySpawn
-	var failedTaskIDs []string
 	failedJobs := make(map[string]struct{})
 	for _, rec := range stales {
 		var jobID string
@@ -965,7 +964,6 @@ func (s *Scheduler) FailStaleTasks(ctx context.Context) (int, error) {
 			if err := s.updateJobStatusTx(ctx, tx, jobID, "Cleaning"); err != nil {
 				return 0, fmt.Errorf("marking job %s failed: %w", jobID, err)
 			}
-			failedTaskIDs = append(failedTaskIDs, rec.taskID)
 			failedJobs[jobID] = struct{}{}
 		} else if newState == "Idle" {
 			retryAttemptID, err := s.prepareRetryAttemptTx(ctx, tx, rec.taskID)
@@ -980,14 +978,6 @@ func (s *Scheduler) FailStaleTasks(ctx context.Context) (int, error) {
 	if err := tx.Commit(); err != nil {
 		log.Printf("Failed to commit stale task cleanup: %v", err)
 		return 0, err
-	}
-
-	for _, taskID := range failedTaskIDs {
-		evictCtx, evictCancel := context.WithTimeout(ctx, 30*time.Second)
-		if err := s.orchestrator.DeleteWorkerJob(evictCtx, taskID); err != nil {
-			log.Printf("Failed to delete zombie K8s Job for stale task %s: %v", taskID, err)
-		}
-		evictCancel()
 	}
 
 	for jobID := range failedJobs {

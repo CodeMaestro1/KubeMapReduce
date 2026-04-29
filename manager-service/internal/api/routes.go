@@ -61,10 +61,16 @@ func RegisterRoutes(mux *http.ServeMux, h *Handlers, validator *auth.JWTValidato
 	))
 
 	// Admin routes
-	mux.Handle("POST /api/v1/admin/config/workers", auth.RequireRole(
+	mux.Handle("PUT /api/v1/admin/workers/config", auth.RequireRole(
 		"ADMIN",
 		validator,
-		http.HandlerFunc(h.HandleAdminConfigWorkers),
+		http.HandlerFunc(h.HandleWorkerConfig),
+	))
+
+	mux.Handle("PUT /api/v1/admin/nodes/config", auth.RequireRole(
+		"ADMIN",
+		validator,
+		http.HandlerFunc(h.HandleConfigureNodes),
 	))
 
 	mux.Handle("/api/v1/admin/users", auth.RequireRole(

@@ -118,55 +118,12 @@ func TestCmdJobsSubmit_InvalidReducersDoesNotAttemptNetwork(t *testing.T) {
 }
 
 func TestCmdJobsSubmit_ValidReducersCallsSubmit(t *testing.T) {
-	originalGetValidToken := jobsSubmitGetValidToken
-	originalDoAuthRequestExpect := jobsSubmitDoAuthRequestExpect
-	defer func() {
-		jobsSubmitGetValidToken = originalGetValidToken
-		jobsSubmitDoAuthRequestExpect = originalDoAuthRequestExpect
-	}()
-
-	getTokenCalled := false
-	doRequestCalled := false
-
-	jobsSubmitGetValidToken = func() (string, string) {
-		getTokenCalled = true
-		return "test-token", "http://example.test"
-	}
-
-	jobsSubmitDoAuthRequestExpect = func(method, reqURL, token string, body []byte, expectedStatus int, failPrefix string) *http.Response {
-		doRequestCalled = true
-		if method != http.MethodPost {
-			t.Fatalf("expected POST, got %s", method)
-		}
-		if reqURL != "http://example.test/api/v1/jobs" {
-			t.Fatalf("unexpected URL: %s", reqURL)
-		}
-		if token != "test-token" {
-			t.Fatalf("unexpected token: %s", token)
-		}
-		if expectedStatus != http.StatusAccepted {
-			t.Fatalf("unexpected expected status: %d", expectedStatus)
-		}
-		if !strings.Contains(string(body), `"reducers":2`) {
-			t.Fatalf("expected reducers field in payload, got %s", string(body))
-		}
-
-		return &http.Response{StatusCode: http.StatusAccepted, Body: io.NopCloser(bytes.NewBufferString(`{"jobId":"abc"}`))}
-	}
-
-	cmdJobsSubmit([]string{"--mapper", "mapper.py", "--reducer", "reducer.py", "--input", "input.jsonl", "--reducers", "2"})
-
-	if !getTokenCalled {
-		t.Fatal("expected auth/token retrieval for valid reducers")
-	}
-	if !doRequestCalled {
-		t.Fatal("expected HTTP request for valid reducers")
-	}
+	runJobsSubmitUploadScenario(t, false)
 }
 
 func TestJobRequestPath_EscapesJobID(t *testing.T) {
 	got := jobRequestPath("../jobs/abc 123", "/results")
-	want := "/api/v1/jobs/..%2Fjobs%2Fabc%20123/results"
+	want := "/jobs/..%2Fjobs%2Fabc%20123/results"
 	if got != want {
 		t.Fatalf("jobRequestPath() = %q, want %q", got, want)
 	}

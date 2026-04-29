@@ -742,18 +742,13 @@ func TestWorkerServer_Register_MapTaskSingleSplitURI(t *testing.T) {
 	if resp.SplitChecksum != "sha256-0" {
 		t.Errorf("expected checksum sha256-0, got %s", resp.SplitChecksum)
 	}
-	if len(resp.InputSplits) != 1 {
-		t.Fatalf("expected 1 input split, got %d", len(resp.InputSplits))
-	}
-	if resp.InputSplits[0].InputUri != "s3://inputs/split-0.jsonl" {
-		t.Fatalf("expected split URI s3://inputs/split-0.jsonl, got %q", resp.InputSplits[0].InputUri)
-	}
 }
 
-// TestWorkerServer_Register_MapTaskMultipleSplitsPreservesAll verifies that
-// map tasks carrying multiple input splits expose all split metadata to the
-// worker while still keeping the first split in the legacy top-level fields.
-func TestWorkerServer_Register_MapTaskMultipleSplitsPreservesAll(t *testing.T) {
+// TestWorkerServer_Register_MapTaskMultipleSplitsUsesFirst verifies that when
+// a task unexpectedly carries more than one input split, only the first split's
+// URI and byte range are sent to the worker — matching the one-split-per-task
+// architecture contract.
+func TestWorkerServer_Register_MapTaskMultipleSplitsUsesFirst(t *testing.T) {
 	db, mock, server := setupMockServer(t)
 	defer db.Close()
 
@@ -783,26 +778,14 @@ func TestWorkerServer_Register_MapTaskMultipleSplitsPreservesAll(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(resp.DataLocations) != 2 || resp.DataLocations[0] != "s3://inputs/split-0.jsonl" || resp.DataLocations[1] != "s3://inputs/split-1.jsonl" {
-		t.Errorf("expected both split URIs in data locations, got %v", resp.DataLocations)
+	if len(resp.DataLocations) != 1 || resp.DataLocations[0] != "s3://inputs/split-0.jsonl" {
+		t.Errorf("expected only first split URI, got %v", resp.DataLocations)
 	}
 	if resp.ByteStart != 0 || resp.ByteEnd != 128 {
 		t.Errorf("expected first split byte range [0,128], got [%d,%d]", resp.ByteStart, resp.ByteEnd)
 	}
 	if resp.SplitChecksum != "sha256-0" {
 		t.Errorf("expected first split checksum sha256-0, got %s", resp.SplitChecksum)
-	}
-	if len(resp.InputSplits) != 2 {
-		t.Fatalf("expected 2 input splits, got %d", len(resp.InputSplits))
-	}
-	if resp.InputSplits[0].InputUri != "s3://inputs/split-0.jsonl" || resp.InputSplits[1].InputUri != "s3://inputs/split-1.jsonl" {
-		t.Fatalf("unexpected split URIs: %+v", resp.InputSplits)
-	}
-	if resp.InputSplits[1].ByteStart != 128 || resp.InputSplits[1].ByteEnd != 256 {
-		t.Fatalf("expected second split byte range [128,256], got [%d,%d]", resp.InputSplits[1].ByteStart, resp.InputSplits[1].ByteEnd)
-	}
-	if resp.InputSplits[1].SplitChecksum != "sha256-1" {
-		t.Fatalf("expected second split checksum sha256-1, got %q", resp.InputSplits[1].SplitChecksum)
 	}
 }
 

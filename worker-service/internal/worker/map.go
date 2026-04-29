@@ -31,14 +31,17 @@ func (w *Worker) runMap(ctx context.Context, a *pb.TaskAssignment) (outputURIs, 
 	}
 	defer cleanup()
 
-	// Collect input JSONL lines from all input splits. Newer task assignments
-	// carry per-split metadata; legacy assignments fall back to the single
-	// byte-range fields on TaskAssignment.
+	// Collect input JSONL lines from all data locations.
+	// ByteStart/ByteEnd/SplitChecksum come from the first (and usually only) split.
 	var inputLines [][]byte
-	for _, split := range taskInputSplits(a) {
-		lines, readErr := readSplitRecords(ctx, w.storage, split.uri, split.byteStart, split.byteEnd, split.checksum)
+	for i, uri := range a.DataLocations {
+		byteStart, byteEnd, chk := a.ByteStart, a.ByteEnd, a.SplitChecksum
+		if i > 0 {
+			byteStart, byteEnd, chk = 0, 0, ""
+		}
+		lines, readErr := readSplitRecords(ctx, w.storage, uri, byteStart, byteEnd, chk)
 		if readErr != nil {
-			return nil, nil, fmt.Errorf("read split %s: %w", split.uri, readErr)
+			return nil, nil, fmt.Errorf("read split %s: %w", uri, readErr)
 		}
 		inputLines = append(inputLines, lines...)
 	}
@@ -99,50 +102,6 @@ func (w *Worker) runMap(ctx context.Context, a *pb.TaskAssignment) (outputURIs, 
 
 	log.Printf("[map] done task=%s records=%d partitions=%d", a.TaskId, len(records), R)
 	return outputURIs, outputChecksums, nil
-}
-
-type taskInputSplit struct {
-	uri       string
-	byteStart int64
-	byteEnd   int64
-	checksum  string
-}
-
-func taskInputSplits(a *pb.TaskAssignment) []taskInputSplit {
-	if len(a.GetInputSplits()) > 0 {
-		splits := make([]taskInputSplit, 0, len(a.GetInputSplits()))
-		for _, split := range a.GetInputSplits() {
-			if split == nil {
-				continue
-			}
-			splits = append(splits, taskInputSplit{
-				uri:       split.InputUri,
-				byteStart: split.ByteStart,
-				byteEnd:   split.ByteEnd,
-				checksum:  split.SplitChecksum,
-			})
-		}
-		return splits
-	}
-
-	if len(a.DataLocations) == 0 {
-		return nil
-	}
-
-	splits := make([]taskInputSplit, 0, len(a.DataLocations))
-	for i, uri := range a.DataLocations {
-		byteStart, byteEnd, chk := a.ByteStart, a.ByteEnd, a.SplitChecksum
-		if i > 0 {
-			byteStart, byteEnd, chk = 0, 0, ""
-		}
-		splits = append(splits, taskInputSplit{
-			uri:       uri,
-			byteStart: byteStart,
-			byteEnd:   byteEnd,
-			checksum:  chk,
-		})
-	}
-	return splits
 }
 
 // hashPartition assigns a record key to partition [0, R) using FNV-32a.

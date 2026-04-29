@@ -121,29 +121,3 @@ func TestLoad_AllFields(t *testing.T) {
 		t.Errorf("ShuffleMaxRecordBytes: got %d, want 524288", cfg.ShuffleMaxRecordBytes)
 	}
 }
-
-func TestLoad_S3EnvPreferredOverMinioEnv(t *testing.T) {
-	t.Setenv("TASK_ID", "t1")
-	t.Setenv("ATTEMPT_ID", "a1")
-	t.Setenv("MANAGER_ADDR", "manager:50051")
-	t.Setenv("S3_ENDPOINT", "s3.example:9000")
-	t.Setenv("S3_ACCESS_KEY", "s3-ak")
-	t.Setenv("S3_SECRET_KEY", "s3-sk")
-	t.Setenv("MINIO_ENDPOINT", "")
-	t.Setenv("MINIO_ACCESS_KEY", "")
-	t.Setenv("MINIO_SECRET_KEY", "")
-
-	cfg, err := Load()
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if cfg.MinioEndpoint != "s3.example:9000" {
-		t.Fatalf("MinioEndpoint = %q, want %q", cfg.MinioEndpoint, "s3.example:9000")
-	}
-	if cfg.MinioAccessKey != "s3-ak" {
-		t.Fatalf("MinioAccessKey = %q, want %q", cfg.MinioAccessKey, "s3-ak")
-	}
-	if cfg.MinioSecretKey != "s3-sk" {
-		t.Fatalf("MinioSecretKey = %q, want %q", cfg.MinioSecretKey, "s3-sk")
-	}
-}

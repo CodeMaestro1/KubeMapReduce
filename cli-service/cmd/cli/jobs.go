@@ -281,7 +281,7 @@ func cmdJobsList() {
 	token, serverURL := jobsListGetValidToken()
 	resp := jobsListDoAuthRequestExpect(
 		http.MethodGet,
-		serverURL+"/api/v1/jobs",
+		serverURL+"/jobs",
 		token,
 		nil,
 		http.StatusOK,
@@ -357,75 +357,31 @@ func cmdJobsDownload(args []string) {
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, maxCLIResponseBodyBytes))
-		log.Fatalf("job download failed (%s): %s", resp.Status, strings.TrimSpace(string(body)))
-	}
-
-	var dlResp struct {
-		JobID string   `json:"jobId"`
-		URLs  []string `json:"urls"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&dlResp); err != nil {
-		log.Fatalf("failed to parse server response: %v", err)
-	}
-	resp.Body.Close()
-
-	if len(dlResp.URLs) == 0 {
-		fmt.Println("no output shards available for this job")
+	if resp.StatusCode == http.StatusNotImplemented {
+		fmt.Fprintf(os.Stderr, "kubemapreduce: result download not yet available (501)\n")
+		printResponse(resp)
 		return
+	}
+	if resp.StatusCode != http.StatusOK {
+		log.Fatalf("job download failed: server returned %s", resp.Status)
 	}
 
 	if err := os.MkdirAll(*outputDir, 0o750); err != nil {
 		log.Fatalf("failed to create output directory: %v", err)
 	}
 
-	type shardResult struct {
-		index int
-		bytes int64
-		err   error
-	}
-	results := make(chan shardResult, len(dlResp.URLs))
-	baseName := safeJobResultFilename(normalizedJobID)
-	// strip ".json" suffix so we can add "-part-N.json"
-	baseName = strings.TrimSuffix(baseName, ".json")
-
-	for i, u := range dlResp.URLs {
-		i, u := i, u
-		go func() {
-			shardPath := filepath.Join(*outputDir, fmt.Sprintf("%s-part-%d.json", baseName, i))
-			n, err := downloadShard(u, shardPath)
-			results <- shardResult{index: i, bytes: n, err: err}
-		}()
-	}
-
-	var totalBytes int64
-	for range dlResp.URLs {
-		r := <-results
-		if r.err != nil {
-			log.Fatalf("shard %d download failed: %v", r.index, r.err)
-		}
-		totalBytes += r.bytes
-	}
-	fmt.Printf("downloaded %d shard(s), %d bytes total to %s\n", len(dlResp.URLs), totalBytes, *outputDir)
-}
-
-// downloadShard fetches a pre-signed URL and writes the body to path.
-func downloadShard(rawURL, path string) (int64, error) {
-	resp, err := http.Get(rawURL) //nolint:noctx
+	outPath := filepath.Join(*outputDir, safeJobResultFilename(normalizedJobID))
+	f, err := os.OpenFile(outPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o640)
 	if err != nil {
-		return 0, err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return 0, fmt.Errorf("HTTP %d from storage", resp.StatusCode)
-	}
-	f, err := os.Create(path)
-	if err != nil {
-		return 0, err
+		log.Fatalf("failed to create output file: %v", err)
 	}
 	defer f.Close()
-	return io.Copy(f, resp.Body)
+
+	bytesWritten, err := io.Copy(f, resp.Body)
+	if err != nil {
+		log.Fatalf("failed to write results: %v", err)
+	}
+	fmt.Printf("results saved to %s (%d bytes)\n", outPath, bytesWritten)
 }
 
 // ── jobs status ────────────────────────────────────────────
@@ -472,7 +428,7 @@ func cmdJobsStatus(args []string) {
 // Example: jobRequestPath("../jobs/abc 123", "/results") → "/jobs/..%2Fjobs%2Fabc%20123/results"
 func jobRequestPath(jobID, suffix string) string {
 	escaped := url.PathEscape(jobID)
-	return fmt.Sprintf("/api/v1/jobs/%s%s", escaped, suffix)
+	return fmt.Sprintf("/jobs/%s%s", escaped, suffix)
 }
 
 // safeJobResultFilename sanitizes a job ID to create a safe filesystem filename.

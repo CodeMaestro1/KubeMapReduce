@@ -48,11 +48,10 @@ type spawnCall struct {
 }
 
 type recordingOrchestrator struct {
-	mu          sync.Mutex
-	calls       []spawnCall
-	cancelJobs  []string
-	deletedJobs []string
-	err         error
+	mu         sync.Mutex
+	calls      []spawnCall
+	cancelJobs []string
+	err        error
 }
 
 type deadlineRecordingOrchestrator struct {
@@ -81,9 +80,6 @@ func (r *recordingOrchestrator) CancelJob(ctx context.Context, jobID string) err
 }
 
 func (r *recordingOrchestrator) DeleteWorkerJob(ctx context.Context, taskID string) error {
-	r.mu.Lock()
-	r.deletedJobs = append(r.deletedJobs, taskID)
-	r.mu.Unlock()
 	return nil
 }
 
@@ -955,52 +951,6 @@ func TestScheduler_FailStaleTasks_DeduplicatesJobCancellation(t *testing.T) {
 	}
 	if len(rec.cancelJobs) != 1 || rec.cancelJobs[0] != jobID {
 		t.Fatalf("expected one cancellation call for %s, got %+v", jobID, rec.cancelJobs)
-	}
-}
-
-func TestScheduler_FailStaleTasks_CallsDeleteWorkerJobForFailedTask(t *testing.T) {
-	rec := &recordingOrchestrator{}
-	db, mock, scheduler := setupMockDBWithOrchestrator(t, rec)
-	defer db.Close()
-
-	taskID := uuid.New().String()
-	attemptID := uuid.New().String()
-	jobID := uuid.New().String()
-
-	mock.ExpectBegin()
-	mock.ExpectQuery(regexp.QuoteMeta(QuerySelectStaleTasks)).
-		WillReturnRows(sqlmock.NewRows([]string{"task_id", "attempt_id"}).AddRow(taskID, attemptID))
-
-	mock.ExpectQuery(regexp.QuoteMeta(QueryGetTaskJobID)).
-		WithArgs(taskID).
-		WillReturnRows(sqlmock.NewRows([]string{"job_id"}).AddRow(jobID))
-	mock.ExpectQuery(regexp.QuoteMeta(QueryCountAttemptsByTask)).
-		WithArgs(taskID).
-		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(MaxTaskAttempts))
-	mock.ExpectExec(regexp.QuoteMeta(QueryUpdateTaskStatus)).
-		WithArgs("Failed", taskID).
-		WillReturnResult(sqlmock.NewResult(1, 1))
-	mock.ExpectExec(regexp.QuoteMeta(QueryFailAttempt)).
-		WithArgs(attemptID).
-		WillReturnResult(sqlmock.NewResult(1, 1))
-	mock.ExpectExec(regexp.QuoteMeta(QueryUpdateJobStatus)).
-		WithArgs(jobID, "Cleaning").
-		WillReturnResult(sqlmock.NewResult(1, 1))
-
-	mock.ExpectCommit()
-	// finalizeJob runs post-commit; its internal DB calls are not mocked here —
-	// it handles errors gracefully (log + enqueue retry). Only CancelJob and
-	// DeleteWorkerJob are verified via the recording orchestrator.
-
-	recovered, err := scheduler.FailStaleTasks(context.Background())
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if recovered != 1 {
-		t.Fatalf("expected 1 recovered task, got %d", recovered)
-	}
-	if len(rec.deletedJobs) != 1 || rec.deletedJobs[0] != taskID {
-		t.Fatalf("expected DeleteWorkerJob called with %s, got %v", taskID, rec.deletedJobs)
 	}
 }
 
