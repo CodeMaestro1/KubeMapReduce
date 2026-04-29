@@ -157,7 +157,7 @@ func TestTaskInput_Serialization(t *testing.T) {
 	input := TaskInput{
 		InputAssignmentID: 42,
 		TaskID:            taskID,
-		InputURI:          "s3://bucket/inputs/split-0.jsonl",
+		InputURI:          "s3://bucket/mapreduce-inputs/split-0.jsonl",
 		ByteStart:         0,
 		ByteEnd:           65536,
 		SplitChecksum:     "sha256-abc123",
@@ -179,8 +179,8 @@ func TestTaskInput_Serialization(t *testing.T) {
 	if unmarshaled.TaskID != taskID {
 		t.Errorf("Expected TaskID %s, got %s", taskID, unmarshaled.TaskID)
 	}
-	if unmarshaled.InputURI != "s3://bucket/inputs/split-0.jsonl" {
-		t.Errorf("Expected InputURI 's3://bucket/inputs/split-0.jsonl', got %q", unmarshaled.InputURI)
+	if unmarshaled.InputURI != "s3://bucket/mapreduce-inputs/split-0.jsonl" {
+		t.Errorf("Expected InputURI 's3://bucket/mapreduce-inputs/split-0.jsonl', got %q", unmarshaled.InputURI)
 	}
 	if unmarshaled.ByteStart != 0 {
 		t.Errorf("Expected ByteStart 0, got %d", unmarshaled.ByteStart)
@@ -210,7 +210,7 @@ func TestJobConfig_Serialization(t *testing.T) {
 	jobID := uuid.New()
 	config := JobConfig{
 		JobID:         jobID,
-		InputURI:      "s3://bucket/inputs/data.jsonl",
+		InputURI:      "s3://bucket/mapreduce-inputs/data.jsonl",
 		MapperURI:     "s3://code/mapper.py",
 		ReducerURI:    "s3://code/reducer.py",
 		CombinerURI:   "s3://code/combiner.py",

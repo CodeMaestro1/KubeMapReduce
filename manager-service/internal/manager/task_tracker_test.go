@@ -171,7 +171,7 @@ func TestTask_NewFields(t *testing.T) {
 			CombinerURI: "s3://code/combiner.py",
 			InputSplits: []TaskInputSplit{
 				{
-					InputURI:      "s3://inputs/split-0.jsonl",
+					InputURI:      "s3://mapreduce-inputs/split-0.jsonl",
 					ByteStart:     0,
 					ByteEnd:       128,
 					SplitChecksum: "sha256-split",
@@ -197,7 +197,7 @@ func TestTask_NewFields(t *testing.T) {
 	if task.CombinerURI != "s3://code/combiner.py" {
 		t.Fatalf("expected CombinerURI 's3://code/combiner.py', got %q", task.CombinerURI)
 	}
-	if len(task.InputSplits) != 1 || task.InputSplits[0].InputURI != "s3://inputs/split-0.jsonl" {
+	if len(task.InputSplits) != 1 || task.InputSplits[0].InputURI != "s3://mapreduce-inputs/split-0.jsonl" {
 		t.Fatalf("expected defensive copy of input splits, got %+v", task.InputSplits)
 	}
 	if task.ReplicaIndex != 3 {

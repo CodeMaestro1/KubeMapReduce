@@ -127,7 +127,7 @@ func expectTaskMetadataQueries(mock sqlmock.Sqlmock, taskID uuid.UUID, mapperURI
 	mock.ExpectQuery(regexp.QuoteMeta(QueryGetTaskInputs)).
 		WithArgs(taskID.String()).
 		WillReturnRows(sqlmock.NewRows([]string{"input_uri", "byte_start", "byte_end", "split_checksum"}).
-			AddRow("s3://inputs/split-0.jsonl", 0, 128, "sha256-split-0"))
+			AddRow("s3://mapreduce-inputs/split-0.jsonl", 0, 128, "sha256-split-0"))
 }
 
 func expectReduceTaskMetadataQueries(mock sqlmock.Sqlmock, taskID uuid.UUID, mapperURI, reducerURI string, rTasks int) {
@@ -274,7 +274,7 @@ func TestScheduler_GetNextTask_MapSuccess(t *testing.T) {
 	if len(task.InputSplits) != 1 {
 		t.Fatalf("expected 1 input split, got %d", len(task.InputSplits))
 	}
-	if task.InputSplits[0].InputURI != "s3://inputs/split-0.jsonl" {
+	if task.InputSplits[0].InputURI != "s3://mapreduce-inputs/split-0.jsonl" {
 		t.Errorf("unexpected split URI %s", task.InputSplits[0].InputURI)
 	}
 }
@@ -1342,7 +1342,7 @@ func TestScheduler_ScheduleJob_PersistsDDSRecords(t *testing.T) {
 	req := ScheduleJobRequest{
 		JobID:         uuid.NewString(),
 		UserID:        uuid.NewString(),
-		InputURI:      "s3://inputs/job-1/data.jsonl",
+		InputURI:      "s3://mapreduce-inputs/job-1/data.jsonl",
 		MapperURI:     "s3://code/mapper.py",
 		ReducerURI:    "s3://code/reducer.py",
 		CombinerURI:   "s3://code/combiner.py",
@@ -1355,7 +1355,7 @@ func TestScheduler_ScheduleJob_PersistsDDSRecords(t *testing.T) {
 				TaskType:     "Map",
 				ReplicaIndex: 99,
 				InputSplits: []ScheduleTaskInput{{
-					InputURI:      "s3://inputs/job-1/split-0.jsonl",
+					InputURI:      "s3://mapreduce-inputs/job-1/split-0.jsonl",
 					ByteStart:     0,
 					ByteEnd:       128,
 					SplitChecksum: "sha256-split-0",
@@ -1384,7 +1384,7 @@ func TestScheduler_ScheduleJob_PersistsDDSRecords(t *testing.T) {
 		WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg(), "Map", expectedReplicaIndex).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 	mock.ExpectExec(regexp.QuoteMeta(QueryInsertTaskInput)).
-		WithArgs(sqlmock.AnyArg(), "s3://inputs/job-1/split-0.jsonl", int64(0), int64(128), "sha256-split-0").
+		WithArgs(sqlmock.AnyArg(), "s3://mapreduce-inputs/job-1/split-0.jsonl", int64(0), int64(128), "sha256-split-0").
 		WillReturnResult(sqlmock.NewResult(1, 1))
 	mock.ExpectExec(regexp.QuoteMeta(QueryInsertTask)).
 		WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg(), "Reduce", 3).
@@ -1403,7 +1403,7 @@ func TestScheduler_ScheduleJob_RejectsInvalidRequest(t *testing.T) {
 	err := scheduler.ScheduleJob(context.Background(), ScheduleJobRequest{
 		JobID:         "not-a-uuid",
 		UserID:        uuid.NewString(),
-		InputURI:      "s3://inputs/job-1/data.jsonl",
+		InputURI:      "s3://mapreduce-inputs/job-1/data.jsonl",
 		MapperURI:     "s3://code/mapper.py",
 		ReducerURI:    "s3://code/reducer.py",
 		MTasks:        1,

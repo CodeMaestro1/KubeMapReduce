@@ -121,13 +121,13 @@ func TestWorker_MapSuccess(t *testing.T) {
 
 	// Pre-load input data and code.
 	inputData := `{"key":"apple","value":"1"}` + "\n" + `{"key":"banana","value":"2"}` + "\n"
-	store.put("inputs", "data.jsonl", []byte(inputData))
+	store.put("mapreduce-inputs", "data.jsonl", []byte(inputData))
 	store.put("code", "mapper.py", []byte("# mock"))
 
 	var completedReq *pb.TaskCompleteRequest
 	grpcClient := &mockGRPCClient{
 		registerFn: func(_ context.Context, _ *pb.RegisterRequest, _ ...grpc.CallOption) (*pb.TaskAssignment, error) {
-			return mapAssignment("s3://inputs/data.jsonl"), nil
+			return mapAssignment("s3://mapreduce-inputs/data.jsonl"), nil
 		},
 		heartbeatFn: func(_ context.Context, _ *pb.HeartbeatRequest, _ ...grpc.CallOption) (*pb.HeartbeatResponse, error) {
 			return &pb.HeartbeatResponse{Action: pb.HeartbeatResponse_CONTINUE}, nil
@@ -177,12 +177,12 @@ func TestWorker_MapPartitionsRecords(t *testing.T) {
 	for _, r := range records {
 		enc.Encode(map[string]string{"key": r.K, "value": r.V})
 	}
-	store.put("inputs", "data.jsonl", buf.Bytes())
+	store.put("mapreduce-inputs", "data.jsonl", buf.Bytes())
 	store.put("code", "mapper.py", []byte("# mock"))
 
 	grpcClient := &mockGRPCClient{
 		registerFn: func(_ context.Context, _ *pb.RegisterRequest, _ ...grpc.CallOption) (*pb.TaskAssignment, error) {
-			return mapAssignment("s3://inputs/data.jsonl"), nil
+			return mapAssignment("s3://mapreduce-inputs/data.jsonl"), nil
 		},
 		heartbeatFn: func(_ context.Context, _ *pb.HeartbeatRequest, _ ...grpc.CallOption) (*pb.HeartbeatResponse, error) {
 			return &pb.HeartbeatResponse{Action: pb.HeartbeatResponse_CONTINUE}, nil
@@ -221,8 +221,8 @@ func TestWorker_MapUsesPerSplitMetadata(t *testing.T) {
 	store := newMockStorage()
 	part1 := []byte(`{"key":"apple","value":"1"}` + "\n")
 	part2 := []byte(`{"key":"banana","value":"2"}` + "\n")
-	store.put("inputs", "part-1.jsonl", part1)
-	store.put("inputs", "part-2.jsonl", part2)
+	store.put("mapreduce-inputs", "part-1.jsonl", part1)
+	store.put("mapreduce-inputs", "part-2.jsonl", part2)
 	store.put("code", "mapper.py", []byte("# mock"))
 
 	inputSeen := make(chan []byte, 1)
@@ -237,13 +237,13 @@ func TestWorker_MapUsesPerSplitMetadata(t *testing.T) {
 				CodeLocation: "s3://code/mapper.py",
 				InputSplits: []*pb.InputSplit{
 					{
-						InputUri:      "s3://inputs/part-1.jsonl",
+						InputUri:      "s3://mapreduce-inputs/part-1.jsonl",
 						ByteStart:     0,
 						ByteEnd:       int64(len(part1) - 1),
 						SplitChecksum: fmt.Sprintf("%x", sha256.Sum256(part1)),
 					},
 					{
-						InputUri:      "s3://inputs/part-2.jsonl",
+						InputUri:      "s3://mapreduce-inputs/part-2.jsonl",
 						ByteStart:     0,
 						ByteEnd:       int64(len(part2) - 1),
 						SplitChecksum: fmt.Sprintf("%x", sha256.Sum256(part2)),
@@ -293,8 +293,8 @@ func TestWorker_MapRejectsBadPerSplitChecksum(t *testing.T) {
 	store := newMockStorage()
 	part1 := []byte(`{"key":"apple","value":"1"}` + "\n")
 	part2 := []byte(`{"key":"banana","value":"2"}` + "\n")
-	store.put("inputs", "part-1.jsonl", part1)
-	store.put("inputs", "part-2.jsonl", part2)
+	store.put("mapreduce-inputs", "part-1.jsonl", part1)
+	store.put("mapreduce-inputs", "part-2.jsonl", part2)
 	store.put("code", "mapper.py", []byte("# mock"))
 
 	var failedReq *pb.TaskFailedRequest
@@ -309,13 +309,13 @@ func TestWorker_MapRejectsBadPerSplitChecksum(t *testing.T) {
 				CodeLocation: "s3://code/mapper.py",
 				InputSplits: []*pb.InputSplit{
 					{
-						InputUri:      "s3://inputs/part-1.jsonl",
+						InputUri:      "s3://mapreduce-inputs/part-1.jsonl",
 						ByteStart:     0,
 						ByteEnd:       int64(len(part1) - 1),
 						SplitChecksum: fmt.Sprintf("%x", sha256.Sum256(part1)),
 					},
 					{
-						InputUri:      "s3://inputs/part-2.jsonl",
+						InputUri:      "s3://mapreduce-inputs/part-2.jsonl",
 						ByteStart:     0,
 						ByteEnd:       int64(len(part2) - 1),
 						SplitChecksum: "deadbeef",
@@ -417,7 +417,7 @@ func TestWorker_ReduceSuccess(t *testing.T) {
 
 func TestWorker_SIGTERMCausesTaskFailed(t *testing.T) {
 	store := newMockStorage()
-	store.put("inputs", "data.jsonl", []byte(`{"key":"k","value":"v"}`+"\n"))
+	store.put("mapreduce-inputs", "data.jsonl", []byte(`{"key":"k","value":"v"}`+"\n"))
 	store.put("code", "mapper.py", []byte("# mock"))
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -425,7 +425,7 @@ func TestWorker_SIGTERMCausesTaskFailed(t *testing.T) {
 	var failedReq *pb.TaskFailedRequest
 	grpcClient := &mockGRPCClient{
 		registerFn: func(_ context.Context, _ *pb.RegisterRequest, _ ...grpc.CallOption) (*pb.TaskAssignment, error) {
-			return mapAssignment("s3://inputs/data.jsonl"), nil
+			return mapAssignment("s3://mapreduce-inputs/data.jsonl"), nil
 		},
 		heartbeatFn: func(_ context.Context, _ *pb.HeartbeatRequest, _ ...grpc.CallOption) (*pb.HeartbeatResponse, error) {
 			return &pb.HeartbeatResponse{Action: pb.HeartbeatResponse_CONTINUE}, nil
@@ -482,7 +482,7 @@ func TestWorker_SIGTERMCausesTaskFailed(t *testing.T) {
 
 func TestWorker_SIGTERMReportsFailureBeforeExecReturns(t *testing.T) {
 	store := newMockStorage()
-	store.put("inputs", "data.jsonl", []byte(`{"key":"k","value":"v"}`+"\n"))
+	store.put("mapreduce-inputs", "data.jsonl", []byte(`{"key":"k","value":"v"}`+"\n"))
 	store.put("code", "mapper.py", []byte("# mock"))
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -494,7 +494,7 @@ func TestWorker_SIGTERMReportsFailureBeforeExecReturns(t *testing.T) {
 
 	grpcClient := &mockGRPCClient{
 		registerFn: func(_ context.Context, _ *pb.RegisterRequest, _ ...grpc.CallOption) (*pb.TaskAssignment, error) {
-			return mapAssignment("s3://inputs/data.jsonl"), nil
+			return mapAssignment("s3://mapreduce-inputs/data.jsonl"), nil
 		},
 		heartbeatFn: func(_ context.Context, _ *pb.HeartbeatRequest, _ ...grpc.CallOption) (*pb.HeartbeatResponse, error) {
 			return &pb.HeartbeatResponse{Action: pb.HeartbeatResponse_CONTINUE}, nil
@@ -572,7 +572,7 @@ func TestWorker_SIGTERMReportsFailureBeforeExecReturns(t *testing.T) {
 
 func TestWorker_HeartbeatTerminateCausesTaskFailed(t *testing.T) {
 	store := newMockStorage()
-	store.put("inputs", "data.jsonl", []byte(`{"key":"k","value":"v"}`+"\n"))
+	store.put("mapreduce-inputs", "data.jsonl", []byte(`{"key":"k","value":"v"}`+"\n"))
 	store.put("code", "mapper.py", []byte("# mock"))
 
 	terminated := make(chan struct{})
@@ -584,7 +584,7 @@ func TestWorker_HeartbeatTerminateCausesTaskFailed(t *testing.T) {
 				TaskId: "task-1", AttemptId: "attempt-1", JobId: "job-1",
 				Type: pb.TaskType_MAP, LeaseId: "lease-1",
 				CodeLocation:  "s3://code/mapper.py",
-				DataLocations: []string{"s3://inputs/data.jsonl"},
+				DataLocations: []string{"s3://mapreduce-inputs/data.jsonl"},
 				TotalReducers: 1,
 			}, nil
 		},
@@ -670,7 +670,7 @@ func TestWorker_MissingStorageReportsTaskFailed(t *testing.T) {
 				Type:          pb.TaskType_MAP,
 				LeaseId:       "lease-1",
 				CodeLocation:  "s3://code/mapper.py",
-				DataLocations: []string{"s3://inputs/data.jsonl"},
+				DataLocations: []string{"s3://mapreduce-inputs/data.jsonl"},
 				TotalReducers: 1,
 			}, nil
 		},
