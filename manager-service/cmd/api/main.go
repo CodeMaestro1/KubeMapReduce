@@ -95,7 +95,11 @@ func main() {
 	store := api.NewPostgresJobStore(db)
 	handlers := api.NewHandlers(adminClient, store, minioClient, cfg.ManagerAddr, cfg.InternalAPIKey)
 
+	// Register Prometheus collectors and mount the /metrics endpoint
+	// before user-facing routes so scrapes never block on auth middleware.
+	observability.SetDefaultMetrics(observability.NewMetrics())
 	mux := http.NewServeMux()
+	mux.Handle("/metrics", observability.MetricsHandler())
 	api.RegisterRoutes(mux, handlers, validator)
 
 	srv := &http.Server{

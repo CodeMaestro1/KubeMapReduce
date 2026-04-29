@@ -56,6 +56,10 @@ func main() {
 	log.SetFlags(0)
 	log.SetOutput(loggerWriter{logger: logger})
 
+	// Register Prometheus collectors so internal packages can record
+	// observations through observability.DefaultMetrics().
+	observability.SetDefaultMetrics(observability.NewMetrics())
+
 	cfg, err := config.Load()
 	if err != nil {
 		log.Fatalf("failed to load configuration: %v", err)
@@ -141,8 +145,15 @@ func main() {
 				return
 			case <-ticker.C:
 				reaperCtx, reaperCancel := context.WithTimeout(ctx, 30*time.Second)
+				cycleStart := time.Now()
 				recovered, err := scheduler.FailStaleTasks(reaperCtx)
 				reaperCancel()
+				if m := observability.DefaultMetrics(); m != nil {
+					m.SchedulerCycleSeconds.Observe(time.Since(cycleStart).Seconds())
+					if recovered > 0 {
+						m.ReaperRecovered.Add(float64(recovered))
+					}
+				}
 				if err != nil {
 					slog.Error("reaper cycle failed", slog.Any("err", err))
 				} else if recovered > 0 {
@@ -374,6 +385,7 @@ type Pingable interface {
 
 func setupInternalMux(scheduler JobScheduler, db Pingable, cfg *config.Config) *http.ServeMux {
 	mux := http.NewServeMux()
+	mux.Handle("/metrics", observability.MetricsHandler())
 	mux.HandleFunc("DELETE /internal/jobs/{job_id}", func(w http.ResponseWriter, r *http.Request) {
 		if !isAuthorizedInternalRequest(r, cfg.InternalAPIKey, cfg.AllowInsecureInternalCancelAuth) {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
