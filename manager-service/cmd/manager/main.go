@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"log"
+	"log/slog"
 	"net"
 	"net/http"
 	"os"
@@ -30,6 +31,7 @@ import (
 	"kubemapreduce/manager-service/internal/config"
 	mgrpc "kubemapreduce/manager-service/internal/grpc"
 	"kubemapreduce/manager-service/internal/manager"
+	"kubemapreduce/manager-service/pkg/observability"
 	pb "kubemapreduce/proto"
 )
 
@@ -45,6 +47,15 @@ import (
 //  7. Start the gRPC server for Worker communication (Register, Heartbeat, etc.) with optional TLS and token auth.
 //  8. Handle graceful shutdown by stopping background loops and draining gRPC/HTTP connections.
 func main() {
+	// Bootstrap structured logging before anything else so all subsequent
+	// records (including legacy log.Printf calls bridged via the loggerWriter
+	// adapter below) follow the same JSON schema and carry the service
+	// attribute.
+	logger := observability.NewLogger("manager")
+	slog.SetDefault(logger)
+	log.SetFlags(0)
+	log.SetOutput(loggerWriter{logger: logger})
+
 	cfg, err := config.Load()
 	if err != nil {
 		log.Fatalf("failed to load configuration: %v", err)
@@ -146,7 +157,7 @@ func main() {
 
 	httpSrv := &http.Server{
 		Addr:              cfg.ServerAddr,
-		Handler:           mux,
+		Handler:           observability.RequestIDMiddleware(logger)(mux),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,
 		WriteTimeout:      30 * time.Second,
@@ -439,4 +450,21 @@ func setupInternalMux(scheduler JobScheduler, db Pingable, cfg *config.Config) *
 	// existing probe configurations and documentation.
 	mux.HandleFunc("/ready", readinessHandler)
 	return mux
+}
+
+// loggerWriter is an [io.Writer] that forwards every line written by the
+// stdlib [log] package through the supplied [*slog.Logger] at INFO level,
+// stripping the trailing newline. This bridge ensures that legacy log.Printf
+// callsites still emit structured JSON without requiring a sweeping rewrite.
+type loggerWriter struct {
+	logger *slog.Logger
+}
+
+func (w loggerWriter) Write(p []byte) (int, error) {
+	msg := strings.TrimRight(string(p), "\r\n")
+	if msg == "" {
+		return len(p), nil
+	}
+	w.logger.Info(msg)
+	return len(p), nil
 }
