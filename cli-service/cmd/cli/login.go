@@ -14,6 +14,8 @@ import (
 	"golang.org/x/term"
 )
 
+var readPasswordFn = term.ReadPassword
+
 // ── login ──────────────────────────────────────────────────
 
 // cmdLogin authenticates a user against Keycloak and stores the resulting tokens.
@@ -23,9 +25,17 @@ import (
 // to a local configuration file (typically in the user's home directory),
 // enabling subsequent commands to be authenticated without further user interaction.
 func cmdLogin(args []string) {
-	fs := flag.NewFlagSet("login", flag.ExitOnError)
+	if err := runLogin(args); err != nil {
+		log.Fatal(err)
+	}
+}
+
+func runLogin(args []string) error {
+	fs := flag.NewFlagSet("login", flag.ContinueOnError)
 	username := fs.String("username", "", "Username (prompted if empty)")
-	_ = fs.Parse(args)
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
 
 	u := strings.TrimSpace(*username)
 	if u == "" {
@@ -34,18 +44,18 @@ func cmdLogin(args []string) {
 		u = strings.TrimSpace(u)
 	}
 	if u == "" {
-		log.Fatal("username is required")
+		return fmt.Errorf("username is required")
 	}
 
 	fmt.Print("Password: ")
-	rawPw, err := term.ReadPassword(int(os.Stdin.Fd()))
+	rawPw, err := readPasswordFn(int(os.Stdin.Fd()))
 	fmt.Println()
 	if err != nil {
-		log.Fatalf("failed to read password: %v", err)
+		return fmt.Errorf("failed to read password: %w", err)
 	}
 	pw := strings.TrimSpace(string(rawPw))
 	if pw == "" {
-		log.Fatal("password is required")
+		return fmt.Errorf("password is required")
 	}
 
 	ctx, cancel := cliRequestContext()
@@ -61,7 +71,7 @@ func cmdLogin(args []string) {
 		pw,
 	)
 	if err != nil {
-		log.Fatalf("login failed: %v", err)
+		return fmt.Errorf("login failed: %w", err)
 	}
 
 	if err := auth.SaveTokens(&auth.StoredTokens{
@@ -70,12 +80,13 @@ func cmdLogin(args []string) {
 		ExpiresAt:    time.Now().Unix() + int64(tokenResp.ExpiresIn),
 		ServerURL:    apiURL(),
 	}); err != nil {
-		log.Fatalf("failed to save credentials: %v", err)
+		return fmt.Errorf("failed to save credentials: %w", err)
 	}
 
 	path, _ := auth.TokenStorePath()
 	fmt.Println("Login successful!")
 	fmt.Printf("Credentials saved to %s\n", path)
+	return nil
 }
 
 // ── logout ─────────────────────────────────────────────────
@@ -85,10 +96,17 @@ func cmdLogin(args []string) {
 // This effectively logs the user out of the CLI by removing the credentials
 // that [getValidToken] would otherwise use to authenticate requests.
 func cmdLogout() {
+	if err := runLogout(); err != nil {
+		log.Fatal(err)
+	}
+}
+
+func runLogout() error {
 	if err := auth.ClearTokens(); err != nil {
-		log.Fatalf("logout failed: %v", err)
+		return fmt.Errorf("logout failed: %w", err)
 	}
 	fmt.Println("Logged out.")
+	return nil
 }
 
 // ── health ─────────────────────────────────────────────────
@@ -99,27 +117,34 @@ func cmdLogout() {
 // and that the backend itself is operational. It does not require authentication,
 // making it a useful first-step diagnostic tool.
 func cmdHealth() {
+	if err := runHealth(); err != nil {
+		log.Fatal(err)
+	}
+}
+
+func runHealth() error {
 	ctx, cancel := cliRequestContext()
 	defer cancel()
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, apiURL()+"/health", nil)
 	if err != nil {
-		log.Fatalf("health check request failed: %v", err)
+		return fmt.Errorf("health check request failed: %w", err)
 	}
 
 	resp, err := cliHTTPClient.Do(req)
 	if err != nil {
-		log.Fatalf("health check failed: %v", err)
+		return fmt.Errorf("health check failed: %w", err)
 	}
 	defer resp.Body.Close()
 
 	body, err := readResponseBody(resp.Body)
 	if err != nil {
-		log.Fatalf("health check failed while reading response body: %v", err)
+		return fmt.Errorf("health check failed while reading response body: %w", err)
 	}
 	if resp.StatusCode != http.StatusOK {
-		log.Fatalf("health check failed (HTTP %s): %s", resp.Status, strings.TrimSpace(string(body)))
+		return fmt.Errorf("health check failed (HTTP %s): %s", resp.Status, strings.TrimSpace(string(body)))
 	}
 
 	fmt.Print(string(body))
+	return nil
 }
