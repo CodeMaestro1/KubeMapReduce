@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -20,11 +21,8 @@ import (
 	"kubemapreduce/manager-service/internal/validation"
 	"kubemapreduce/manager-service/pkg/httputil"
 
-	"crypto/sha256"
-	"encoding/hex"
 	"github.com/google/uuid"
 	"github.com/minio/minio-go/v7"
-	"io"
 )
 
 // Handlers holds HTTP handler state for the API server.
@@ -43,8 +41,7 @@ const (
 	defaultListLimit  = 100
 	maxListLimit      = 500
 	maxJSONBodyBytes  = 1 << 20 // 1 MiB
-	inputBucketName   = "mapreduce-inputs"
-	stagingBucketName = "mapreduce-staging"
+	inputBucketName = "inputs"
 )
 
 var defaultTargetSplitSizeBytes int64 = 64 * 1024 * 1024
@@ -158,7 +155,11 @@ func (h *Handlers) HandleJobsSubmit(w http.ResponseWriter, r *http.Request) {
 		combinerURI = request.Combiner.Artifact
 	}
 
-	schedReq := buildScheduleRequest(r.Context(), newScheduleObjectClient(h.minioClient), jobID, userID, request, combinerURI)
+	schedReq, err := buildScheduleRequest(r.Context(), newScheduleObjectClient(h.minioClient), jobID, userID, request, combinerURI)
+	if err != nil {
+		httputil.WriteErrorJSON(w, http.StatusInternalServerError, fmt.Sprintf("failed to prepare job splits: %v", err))
+		return
+	}
 
 	rec := JobRecord{
 		JobID:       jobID,
@@ -178,11 +179,6 @@ func (h *Handlers) HandleJobsSubmit(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if h.managerAddr != "" {
-		schedReq, err := buildScheduleRequest(r.Context(), newScheduleObjectClient(h.minioClient), jobID, userID, request, combinerURI)
-		if err != nil {
-			httputil.WriteErrorJSON(w, http.StatusInternalServerError, fmt.Sprintf("failed to prepare job splits: %v", err))
-			return
-		}
 		if err := h.postSchedule(r.Context(), schedReq); err != nil {
 			log.Printf("[api] job %s persisted but schedule failed: %v", jobID, err)
 		}
@@ -586,6 +582,84 @@ func (h *Handlers) HandleWorkerConfig(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// HandleAdminConfigWorkers is the unified POST /api/v1/admin/config/workers handler.
+// It consolidates worker scaling and node resource configuration into a single call.
+func (h *Handlers) HandleAdminConfigWorkers(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		httputil.WriteErrorJSON(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+
+	var req models.AdminWorkerConfigRequest
+	if !decodeJSONBody(w, r, &req, "invalid worker config payload") {
+		return
+	}
+
+	if req.MaxPods < 0 {
+		httputil.WriteErrorJSON(w, http.StatusBadRequest, "maxPods must be non-negative")
+		return
+	}
+	if req.WorkerReplicas < 0 {
+		httputil.WriteErrorJSON(w, http.StatusBadRequest, "workerReplicas must be non-negative")
+		return
+	}
+	if req.MaxJobsPerNode < 0 {
+		httputil.WriteErrorJSON(w, http.StatusBadRequest, "maxJobsPerNode must be non-negative")
+		return
+	}
+	if req.MaxPods == 0 && req.WorkerReplicas == 0 && req.MaxJobsPerNode == 0 &&
+		strings.TrimSpace(req.CPULimit) == "" && strings.TrimSpace(req.MemoryLimit) == "" {
+		httputil.WriteErrorJSON(w, http.StatusBadRequest, "at least one configuration field must be provided")
+		return
+	}
+
+	update := manager.SystemConfigUpdate{
+		MaxConcurrentPods: req.MaxPods,
+		CPULimit:          req.CPULimit,
+		MemoryLimit:       req.MemoryLimit,
+		WorkerReplicas:    req.WorkerReplicas,
+		MaxJobsPerNode:    req.MaxJobsPerNode,
+	}
+
+	payload, err := json.Marshal(update)
+	if err != nil {
+		httputil.WriteErrorJSON(w, http.StatusInternalServerError, "failed to serialize config update")
+		return
+	}
+	managerURL := fmt.Sprintf("http://%s/internal/config", h.managerAddr)
+	proxyReq, err := http.NewRequestWithContext(r.Context(), http.MethodPut, managerURL, bytes.NewReader(payload))
+	if err != nil {
+		httputil.WriteErrorJSON(w, http.StatusInternalServerError, "failed to build proxy request")
+		return
+	}
+	if h.internalAPIKey != "" {
+		proxyReq.Header.Set("X-Internal-Token", h.internalAPIKey)
+	}
+
+	resp, err := h.httpClient.Do(proxyReq)
+	if err != nil {
+		http.Error(w, "manager service unreachable", http.StatusServiceUnavailable)
+		return
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		http.Error(w, "failed to update config via manager", resp.StatusCode)
+		return
+	}
+
+	if err := httputil.WriteJSON(w, http.StatusOK, map[string]any{
+		"status":         "accepted",
+		"maxPods":        req.MaxPods,
+		"cpuLimit":       req.CPULimit,
+		"memoryLimit":    req.MemoryLimit,
+		"workerReplicas": req.WorkerReplicas,
+		"maxJobsPerNode": req.MaxJobsPerNode,
+	}); err != nil {
+		return
+	}
+}
+
 // postSchedule POSTs a ScheduleJobRequest to the Manager's internal schedule endpoint.
 func (h *Handlers) postSchedule(ctx context.Context, req manager.ScheduleJobRequest) error {
 	body, err := json.Marshal(req)
@@ -637,39 +711,20 @@ func (m *minioScheduleObjectClient) GetObject(ctx context.Context, bucketName, o
 }
 
 // buildScheduleRequest constructs a ScheduleJobRequest for a fresh job submission.
-// It creates one Map task covering the full input and R Reduce tasks.
+// It uses buildInputSplits to create one Map task per input split and R Reduce tasks.
 func buildScheduleRequest(ctx context.Context, storage scheduleObjectClient, jobID, userID string, req models.JobSubmissionRequest, combinerURI string) (manager.ScheduleJobRequest, error) {
-	size := int64(0)
-	checksum := ""
-	if storage != nil {
-		info, err := storage.StatObject(ctx, inputBucketName, req.Filename, minio.StatObjectOptions{})
-		if err == nil {
-			size = info.Size
-			if size > 0 {
-				c, cErr := checksumObjectRange(ctx, storage, inputBucketName, req.Filename, 0, size-1)
-				if cErr == nil {
-					checksum = c
-				} else {
-					log.Printf("[api] warning: failed to compute checksum for %s: %v", req.Filename, cErr)
-				}
-			}
-		} else {
-			log.Printf("[api] warning: failed to stat %s: %v", req.Filename, err)
-		}
-	}
+	inputURI := fmt.Sprintf("s3://%s/%s", inputBucketName, req.Filename)
+	inputSplits := buildInputSplits(ctx, storage, req.Filename, inputURI)
 
-	mapTaskID := uuid.New().String()
-	tasks := make([]manager.ScheduleTask, 0, 1+req.Reducers)
-	tasks = append(tasks, manager.ScheduleTask{
-		TaskID:   mapTaskID,
-		TaskType: "Map",
-		InputSplits: []manager.ScheduleTaskInput{{
-			InputURI:      req.Filename,
-			ByteStart:     0,
-			ByteEnd:       size - 1,
-			SplitChecksum: checksum,
-		}},
-	})
+	tasks := make([]manager.ScheduleTask, 0, len(inputSplits)+req.Reducers)
+	for _, split := range inputSplits {
+		split := split
+		tasks = append(tasks, manager.ScheduleTask{
+			TaskID:      uuid.New().String(),
+			TaskType:    "Map",
+			InputSplits: []manager.ScheduleTaskInput{split},
+		})
+	}
 	for i := 0; i < req.Reducers; i++ {
 		tasks = append(tasks, manager.ScheduleTask{
 			TaskID:       uuid.New().String(),
@@ -760,32 +815,6 @@ func buildInputSplits(ctx context.Context, storage scheduleObjectClient, objectN
 		return []manager.ScheduleTaskInput{{InputURI: inputURI}}
 	}
 	return splits
-}
-
-func checksumObjectRange(ctx context.Context, storage scheduleObjectClient, bucketName, objectName string, start, end int64) (string, error) {
-	opts := minio.GetObjectOptions{}
-	if err := opts.SetRange(start, end); err != nil {
-		return "", fmt.Errorf("set range [%d,%d]: %w", start, end, err)
-	}
-
-	rc, err := storage.GetObject(ctx, bucketName, objectName, opts)
-	if err != nil {
-		return "", fmt.Errorf("get object range %s/%s [%d,%d]: %w", bucketName, objectName, start, end, err)
-	}
-	defer rc.Close()
-
-	h := sha256.New()
-	n, err := io.Copy(h, rc)
-	if err != nil {
-		return "", fmt.Errorf("read object range %s/%s [%d,%d]: %w", bucketName, objectName, start, end, err)
-	}
-
-	expected := end - start + 1
-	if n != expected {
-		return "", fmt.Errorf("short read %s/%s [%d,%d]: got %d bytes, expected %d", bucketName, objectName, start, end, n, expected)
-	}
-
-	return fmt.Sprintf("%x", h.Sum(nil)), nil
 }
 
 func currentRequestUserID(r *http.Request) (string, error) {
@@ -1060,26 +1089,3 @@ func decodeJSONBody(w http.ResponseWriter, r *http.Request, out any, invalidMess
 	return true
 }
 
-type scheduleObjectClient interface {
-	StatObject(ctx context.Context, bucketName, objectName string, opts minio.StatObjectOptions) (minio.ObjectInfo, error)
-	GetObject(ctx context.Context, bucketName, objectName string, opts minio.GetObjectOptions) (io.ReadCloser, error)
-}
-
-func newScheduleObjectClient(c *minio.Client) scheduleObjectClient {
-	if c == nil {
-		return nil
-	}
-	return &minioWrapper{c}
-}
-
-type minioWrapper struct {
-	client *minio.Client
-}
-
-func (w *minioWrapper) StatObject(ctx context.Context, bucketName, objectName string, opts minio.StatObjectOptions) (minio.ObjectInfo, error) {
-	return w.client.StatObject(ctx, bucketName, objectName, opts)
-}
-
-func (w *minioWrapper) GetObject(ctx context.Context, bucketName, objectName string, opts minio.GetObjectOptions) (io.ReadCloser, error) {
-	return w.client.GetObject(ctx, bucketName, objectName, opts)
-}

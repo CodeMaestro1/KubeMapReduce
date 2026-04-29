@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
+	"fmt"
 	"io"
 	"kubemapreduce/auth-service/pkg/auth"
 	"kubemapreduce/manager-service/internal/manager"
@@ -257,7 +258,10 @@ func TestBuildScheduleRequest_SplitsLargeInputAndHashesEachSplit(t *testing.T) {
 		},
 	}
 
-	req := buildScheduleRequest(context.Background(), store, "job-1", "user-1", body, "")
+	req, err := buildScheduleRequest(context.Background(), store, "job-1", "user-1", body, "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 	if req.InputURI != "s3://inputs/input.jsonl" {
 		t.Fatalf("InputURI = %q, want %q", req.InputURI, "s3://inputs/input.jsonl")
 	}
