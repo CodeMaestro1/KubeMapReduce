@@ -2,6 +2,7 @@ package validation
 
 import (
 	"fmt"
+	"net/url"
 	"path/filepath"
 	"strings"
 
@@ -38,12 +39,19 @@ func ValidateJobSubmission(req models.JobSubmissionRequest) error {
 		return NewBadRequestError("filename is required")
 	}
 
-	clean := filepath.Clean(req.Filename)
-	// Enforce that filename is a simple basename (no directories) and not a traversal token.
-	// This prevents path traversal attacks where a user might try to read /etc/passwd or
-	// write to sensitive system directories via the MapReduce input/output paths.
-	if clean == "." || clean == ".." || filepath.IsAbs(clean) || filepath.Base(clean) != clean {
-		return NewBadRequestError("filename is invalid")
+	if strings.HasPrefix(req.Filename, "s3://") {
+		u, err := url.Parse(req.Filename)
+		if err != nil || u.Scheme != "s3" || u.Host == "" || strings.TrimSpace(u.Path) == "" {
+			return NewBadRequestError("filename is invalid")
+		}
+	} else {
+		clean := filepath.Clean(req.Filename)
+		// Enforce that filename is a simple basename (no directories) and not a traversal token.
+		// This prevents path traversal attacks where a user might try to read /etc/passwd or
+		// write to sensitive system directories via the MapReduce input/output paths.
+		if clean == "." || clean == ".." || filepath.IsAbs(clean) || filepath.Base(clean) != clean {
+			return NewBadRequestError("filename is invalid")
+		}
 	}
 
 	if err := validateFunctionSpec("mapper", req.Mapper, MapInterface); err != nil {

@@ -29,17 +29,18 @@ func TestPostgresJobStore_CreateJob_PersistsToDatabase(t *testing.T) {
 		WithArgs(sqlmock.AnyArg(), ownerUUID, now, now).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec("INSERT INTO JOB_CONFIGS").
-		WithArgs(sqlmock.AnyArg(), "data.csv", "", "", "", 0, 4).
+		WithArgs(sqlmock.AnyArg(), "data.csv", "", "", "", 0, 4, "sha256-input").
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectCommit()
 
 	rec := JobRecord{
-		JobID:     jobID,
-		UserID:    ownerUUID.String(),
-		Status:    "Pending",
-		Filename:  "data.csv",
-		Reducers:  4,
-		CreatedAt: now,
+		JobID:         jobID,
+		UserID:        ownerUUID.String(),
+		Status:        "Pending",
+		Filename:      "data.csv",
+		InputChecksum: "sha256-input",
+		Reducers:      4,
+		CreatedAt:     now,
 	}
 	if err := store.CreateJob(context.Background(), rec); err != nil {
 		t.Fatalf("CreateJob failed: %v", err)
@@ -208,17 +209,18 @@ func TestPostgresJobStore_CreateThenGet_Consistent(t *testing.T) {
 		WithArgs(sqlmock.AnyArg(), ownerUUID, now, now).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec("INSERT INTO JOB_CONFIGS").
-		WithArgs(sqlmock.AnyArg(), "input.jsonl", "", "", "", 0, 3).
+		WithArgs(sqlmock.AnyArg(), "input.jsonl", "", "", "", 0, 3, "sha256-input").
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectCommit()
 
 	rec := JobRecord{
-		JobID:     jobUUID.String(),
-		UserID:    ownerUUID.String(),
-		Status:    "Pending",
-		Filename:  "input.jsonl",
-		Reducers:  3,
-		CreatedAt: now,
+		JobID:         jobUUID.String(),
+		UserID:        ownerUUID.String(),
+		Status:        "Pending",
+		Filename:      "input.jsonl",
+		InputChecksum: "sha256-input",
+		Reducers:      3,
+		CreatedAt:     now,
 	}
 	if err := store.CreateJob(context.Background(), rec); err != nil {
 		t.Fatalf("CreateJob failed: %v", err)
@@ -259,11 +261,12 @@ func TestMemoryJobStore_SurvivesRoundTrip(t *testing.T) {
 	store := NewMemoryJobStore(time.Hour, 100, nil)
 
 	rec := JobRecord{
-		JobID:     "test-id",
-		Status:    "Pending",
-		Filename:  "data.csv",
-		Reducers:  2,
-		CreatedAt: time.Now().UTC(),
+		JobID:         "test-id",
+		Status:        "Pending",
+		Filename:      "data.csv",
+		InputChecksum: "sha256-input",
+		Reducers:      2,
+		CreatedAt:     time.Now().UTC(),
 	}
 
 	if err := store.CreateJob(context.Background(), rec); err != nil {

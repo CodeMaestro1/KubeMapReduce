@@ -32,6 +32,14 @@ func TestValidateJobSubmission(t *testing.T) {
 			wantErr: "filename is invalid",
 		},
 		{
+			name: "valid s3 filename",
+			req: func() models.JobSubmissionRequest {
+				req := validJobSubmissionRequest()
+				req.Filename = "s3://inputs/job-123/input.txt"
+				return req
+			}(),
+		},
+		{
 			name: "invalid mapper language",
 			req: func() models.JobSubmissionRequest {
 				req := validJobSubmissionRequest()

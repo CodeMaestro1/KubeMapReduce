@@ -20,11 +20,12 @@ type FunctionSpec struct {
 // This is the primary entrypoint for users of the platform. The [Mapper] and
 // [Reducer] fields are required, while [Combiner] is an optional optimization.
 type JobSubmissionRequest struct {
-	Filename string        `json:"filename"`
-	Mapper   FunctionSpec  `json:"mapper"`
-	Reducer  FunctionSpec  `json:"reducer"`
-	Combiner *FunctionSpec `json:"combiner,omitempty"`
-	Reducers int           `json:"reducers,omitempty"`
+	Filename      string        `json:"filename"`
+	Mapper        FunctionSpec  `json:"mapper"`
+	Reducer       FunctionSpec  `json:"reducer"`
+	Combiner      *FunctionSpec `json:"combiner,omitempty"`
+	Reducers      int           `json:"reducers,omitempty"`
+	InputChecksum string        `json:"inputChecksum,omitempty"`
 }
 
 // JobSubmissionResponse is returned to the user immediately after a job is queued.

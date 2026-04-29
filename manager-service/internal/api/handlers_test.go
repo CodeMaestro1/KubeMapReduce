@@ -147,7 +147,7 @@ func TestHandleJobsSubmit_SchedulesJobAfterPersist(t *testing.T) {
 	h := newTestHandlers()
 	h.managerAddr = managerSrv.Listener.Addr().String()
 
-	body := `{"filename":"input.jsonl","mapper":{"language":"python","artifact":"mapper.py","entrypoint":"map","interface":"map(key,value)->[]KeyValue"},"reducer":{"language":"python","artifact":"reducer.py","entrypoint":"reduce","interface":"reduce(key,values)->Value"},"reducers":2}`
+	body := `{"filename":"s3://inputs/job-123/input.jsonl","inputChecksum":"sha256-input","mapper":{"language":"python","artifact":"s3://code/job-123/mapper.py","entrypoint":"map","interface":"map(key,value)->[]KeyValue"},"reducer":{"language":"python","artifact":"s3://code/job-123/reducer.py","entrypoint":"reduce","interface":"reduce(key,values)->Value"},"reducers":2}`
 	req := authedReq(http.MethodPost, "/api/v1/jobs", body)
 	rec := httptest.NewRecorder()
 	h.HandleJobsSubmit(rec, req)
@@ -166,11 +166,17 @@ func TestHandleJobsSubmit_SchedulesJobAfterPersist(t *testing.T) {
 	if capturedReq.JobID != submitResp.JobID {
 		t.Errorf("schedule request JobID %q != submitted JobID %q", capturedReq.JobID, submitResp.JobID)
 	}
-	if capturedReq.MapperURI != "mapper.py" {
-		t.Errorf("expected MapperURI mapper.py, got %q", capturedReq.MapperURI)
+	if capturedReq.InputChecksum != "sha256-input" {
+		t.Errorf("expected InputChecksum sha256-input, got %q", capturedReq.InputChecksum)
 	}
-	if capturedReq.ReducerURI != "reducer.py" {
-		t.Errorf("expected ReducerURI reducer.py, got %q", capturedReq.ReducerURI)
+	if capturedReq.InputURI != "s3://inputs/job-123/input.jsonl" {
+		t.Errorf("expected InputURI s3://inputs/job-123/input.jsonl, got %q", capturedReq.InputURI)
+	}
+	if capturedReq.MapperURI != "s3://code/job-123/mapper.py" {
+		t.Errorf("expected MapperURI s3://code/job-123/mapper.py, got %q", capturedReq.MapperURI)
+	}
+	if capturedReq.ReducerURI != "s3://code/job-123/reducer.py" {
+		t.Errorf("expected ReducerURI s3://code/job-123/reducer.py, got %q", capturedReq.ReducerURI)
 	}
 	if capturedReq.MTasks != 1 {
 		t.Errorf("expected MTasks=1, got %d", capturedReq.MTasks)

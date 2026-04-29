@@ -7,7 +7,8 @@ import (
 
 func TestJobSubmissionRequest_JSON(t *testing.T) {
 	input := `{
-		"filename": "data.csv",
+		"filename": "s3://inputs/job-123/input-data.csv",
+		"inputChecksum": "sha256-123",
 		"mapper": {
 			"language": "python",
 			"artifact": "mapper.py",
@@ -27,8 +28,11 @@ func TestJobSubmissionRequest_JSON(t *testing.T) {
 		t.Fatalf("unmarshal failed: %v", err)
 	}
 
-	if req.Filename != "data.csv" {
-		t.Errorf("Filename = %q, want %q", req.Filename, "data.csv")
+	if req.Filename != "s3://inputs/job-123/input-data.csv" {
+		t.Errorf("Filename = %q, want %q", req.Filename, "s3://inputs/job-123/input-data.csv")
+	}
+	if req.InputChecksum != "sha256-123" {
+		t.Errorf("InputChecksum = %q, want %q", req.InputChecksum, "sha256-123")
 	}
 	if req.Mapper.Language != "python" {
 		t.Errorf("Mapper.Language = %q, want %q", req.Mapper.Language, "python")
@@ -133,7 +137,8 @@ func TestWorkerConfigRequest_ZeroValues(t *testing.T) {
 
 func TestJobSubmissionRequest_MarshalRoundTrip(t *testing.T) {
 	original := JobSubmissionRequest{
-		Filename: "input.txt",
+		Filename:      "s3://inputs/job-123/input.txt",
+		InputChecksum: "sha256-abc",
 		Mapper: FunctionSpec{
 			Language:   "go",
 			Artifact:   "mapper.wasm",
@@ -160,6 +165,9 @@ func TestJobSubmissionRequest_MarshalRoundTrip(t *testing.T) {
 
 	if decoded.Filename != original.Filename {
 		t.Errorf("Filename = %q, want %q", decoded.Filename, original.Filename)
+	}
+	if decoded.InputChecksum != original.InputChecksum {
+		t.Errorf("InputChecksum = %q, want %q", decoded.InputChecksum, original.InputChecksum)
 	}
 	if decoded.Mapper != original.Mapper {
 		t.Errorf("Mapper = %+v, want %+v", decoded.Mapper, original.Mapper)

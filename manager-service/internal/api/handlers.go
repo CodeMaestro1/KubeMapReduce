@@ -150,16 +150,17 @@ func (h *Handlers) HandleJobsSubmit(w http.ResponseWriter, r *http.Request) {
 	}
 
 	rec := JobRecord{
-		JobID:       jobID,
-		UserID:      userID,
-		Status:      "Pending",
-		Filename:    request.Filename,
-		Reducers:    request.Reducers,
-		CreatedAt:   now,
-		MapperURI:   request.Mapper.Artifact,
-		ReducerURI:  request.Reducer.Artifact,
-		CombinerURI: combinerURI,
-		MTasks:      1,
+		JobID:         jobID,
+		UserID:        userID,
+		Status:        "Pending",
+		Filename:      request.Filename,
+		InputChecksum: request.InputChecksum,
+		Reducers:      request.Reducers,
+		CreatedAt:     now,
+		MapperURI:     request.Mapper.Artifact,
+		ReducerURI:    request.Reducer.Artifact,
+		CombinerURI:   combinerURI,
+		MTasks:        1,
 	}
 	if err := h.store.CreateJob(r.Context(), rec); err != nil {
 		httputil.WriteErrorJSON(w, http.StatusInternalServerError, "failed to persist job")
@@ -554,15 +555,16 @@ func buildScheduleRequest(jobID, userID string, req models.JobSubmissionRequest,
 		})
 	}
 	return manager.ScheduleJobRequest{
-		JobID:       jobID,
-		UserID:      userID,
-		InputURI:    req.Filename,
-		MapperURI:   req.Mapper.Artifact,
-		ReducerURI:  req.Reducer.Artifact,
-		CombinerURI: combinerURI,
-		MTasks:      1,
-		RTasks:      req.Reducers,
-		Tasks:       tasks,
+		JobID:         jobID,
+		UserID:        userID,
+		InputURI:      req.Filename,
+		MapperURI:     req.Mapper.Artifact,
+		ReducerURI:    req.Reducer.Artifact,
+		CombinerURI:   combinerURI,
+		MTasks:        1,
+		RTasks:        req.Reducers,
+		InputChecksum: req.InputChecksum,
+		Tasks:         tasks,
 	}
 }
 

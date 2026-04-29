@@ -1,6 +1,10 @@
 package main
 
 import (
+	"bytes"
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -16,6 +20,11 @@ import (
 
 // ── jobs submit ────────────────────────────────────────────
 
+const (
+	inputBucketName = "inputs"
+	codeBucketName  = "code"
+)
+
 type cliJobFuncSpec struct {
 	Language   string `json:"language"`
 	Artifact   string `json:"artifact"`
@@ -24,15 +33,18 @@ type cliJobFuncSpec struct {
 }
 
 type cliJobPayload struct {
-	Filename string          `json:"filename"`
-	Mapper   cliJobFuncSpec  `json:"mapper"`
-	Reducer  cliJobFuncSpec  `json:"reducer"`
-	Combiner *cliJobFuncSpec `json:"combiner,omitempty"`
-	Reducers int             `json:"reducers,omitempty"`
+	Filename      string          `json:"filename"`
+	Mapper        cliJobFuncSpec  `json:"mapper"`
+	Reducer       cliJobFuncSpec  `json:"reducer"`
+	Combiner      *cliJobFuncSpec `json:"combiner,omitempty"`
+	Reducers      int             `json:"reducers,omitempty"`
+	InputChecksum string          `json:"inputChecksum,omitempty"`
 }
 
 var jobsSubmitGetValidToken = getValidToken
+var jobsSubmitDoAuthRequest = doAuthRequest
 var jobsSubmitDoAuthRequestExpect = doAuthRequestExpect
+var jobsSubmitHTTPClient = cliHTTPClient
 var jobsSubmitExit = os.Exit
 var jobsListGetValidToken = getValidToken
 var jobsListDoAuthRequestExpect = doAuthRequestExpect
@@ -64,11 +76,9 @@ func inferLanguage(path string) string {
 
 // cmdJobsSubmit handles the 'jobs submit' command.
 //
-// It parses job specification flags (mapper, reducer, input, etc.) and constructs
-// a JSON payload to send to the API server. This command is designed to be
-// metadata-only: it tells the system where to find the code and data, but does
-// not upload the files themselves, assuming a shared storage environment or
-// pre-staged artifacts.
+// It parses job specification flags (mapper, reducer, input, etc.), uploads
+// the referenced files to object storage, and constructs the JSON payload sent
+// to the API server with MinIO URIs and the input checksum.
 func cmdJobsSubmit(args []string) {
 	fs := flag.NewFlagSet("jobs submit", flag.ExitOnError)
 	mapperPath := fs.String("mapper", "", "path to mapper file (required)")
@@ -80,12 +90,14 @@ func cmdJobsSubmit(args []string) {
 	_ = fs.Parse(args)
 
 	var data []byte
+	var token, serverURL string
 	if *specFile != "" {
 		var err error
 		data, err = os.ReadFile(*specFile)
 		if err != nil {
 			log.Fatalf("failed to read spec file: %v", err)
 		}
+		token, serverURL = jobsSubmitGetValidToken()
 	} else {
 		if *mapperPath == "" || *reducerPath == "" || *inputFile == "" {
 			fmt.Fprintln(os.Stderr, "usage: kubemapreduce jobs submit --mapper <file> --reducer <file> --input <file> [--combiner <file>] [--reducers N]")
@@ -98,41 +110,62 @@ func cmdJobsSubmit(args []string) {
 			jobsSubmitExit(1)
 			return
 		}
+		token, serverURL = jobsSubmitGetValidToken()
+		uploadPrefix := fmt.Sprintf("submission-%d", time.Now().UTC().UnixNano())
+
+		inputArtifact, err := presignAndUploadFile(context.Background(), token, serverURL, inputBucketName, buildUploadObjectKey(uploadPrefix, "input", *inputFile), *inputFile)
+		if err != nil {
+			log.Fatalf("failed to upload input file: %v", err)
+		}
+
+		mapperArtifact, err := presignAndUploadFile(context.Background(), token, serverURL, codeBucketName, buildUploadObjectKey(uploadPrefix, "mapper", *mapperPath), *mapperPath)
+		if err != nil {
+			log.Fatalf("failed to upload mapper file: %v", err)
+		}
+
+		reducerArtifact, err := presignAndUploadFile(context.Background(), token, serverURL, codeBucketName, buildUploadObjectKey(uploadPrefix, "reducer", *reducerPath), *reducerPath)
+		if err != nil {
+			log.Fatalf("failed to upload reducer file: %v", err)
+		}
+
 		payload := cliJobPayload{
-			Filename: filepath.Base(*inputFile),
+			Filename: inputArtifact.URI,
 			Mapper: cliJobFuncSpec{
 				Language:   inferLanguage(*mapperPath),
-				Artifact:   filepath.Base(*mapperPath),
+				Artifact:   mapperArtifact.URI,
 				Entrypoint: "map",
 				Interface:  "map(key,value)->[]KeyValue",
 			},
 			Reducer: cliJobFuncSpec{
 				Language:   inferLanguage(*reducerPath),
-				Artifact:   filepath.Base(*reducerPath),
+				Artifact:   reducerArtifact.URI,
 				Entrypoint: "reduce",
 				Interface:  "reduce(key,values)->Value",
 			},
-			Reducers: *numReducers,
+			Reducers:      *numReducers,
+			InputChecksum: inputArtifact.Checksum,
 		}
 		if *combinerPath != "" {
+			combinerArtifact, err := presignAndUploadFile(context.Background(), token, serverURL, codeBucketName, buildUploadObjectKey(uploadPrefix, "combiner", *combinerPath), *combinerPath)
+			if err != nil {
+				log.Fatalf("failed to upload combiner file: %v", err)
+			}
 			payload.Combiner = &cliJobFuncSpec{
 				Language:   inferLanguage(*combinerPath),
-				Artifact:   filepath.Base(*combinerPath),
+				Artifact:   combinerArtifact.URI,
 				Entrypoint: "combine",
 				Interface:  "reduce(key,values)->Value",
 			}
 		}
-		var err error
 		data, err = json.Marshal(payload)
 		if err != nil {
 			log.Fatalf("failed to build job request: %v", err)
 		}
 	}
 
-	token, serverURL := jobsSubmitGetValidToken()
 	resp := jobsSubmitDoAuthRequestExpect(
 		http.MethodPost,
-		serverURL+"/jobs",
+		serverURL+"/api/v1/jobs",
 		token,
 		data,
 		http.StatusAccepted,
@@ -141,7 +174,100 @@ func cmdJobsSubmit(args []string) {
 	defer resp.Body.Close()
 
 	printResponse(resp)
-	fmt.Println("\nNote: this submits job metadata only. No file data is transferred to the server.")
+	fmt.Println("\nUploaded files to object storage and submitted the job specification.")
+}
+
+type uploadedArtifact struct {
+	URI      string
+	Checksum string
+}
+
+func presignAndUploadFile(ctx context.Context, token, serverURL, bucket, objectKey, localPath string) (uploadedArtifact, error) {
+	data, err := os.ReadFile(localPath)
+	if err != nil {
+		return uploadedArtifact{}, err
+	}
+
+	checksum := sha256.Sum256(data)
+	presignedURL, err := requestPresignedUploadURL(token, serverURL, bucket, objectKey)
+	if err != nil {
+		return uploadedArtifact{}, err
+	}
+
+	if err := uploadBytesToPresignedURL(ctx, presignedURL, data); err != nil {
+		return uploadedArtifact{}, err
+	}
+
+	return uploadedArtifact{URI: fmt.Sprintf("s3://%s/%s", bucket, objectKey), Checksum: hex.EncodeToString(checksum[:])}, nil
+}
+
+func requestPresignedUploadURL(token, serverURL, bucket, objectKey string) (string, error) {
+	body, err := json.Marshal(map[string]string{"bucket": bucket, "key": objectKey})
+	if err != nil {
+		return "", err
+	}
+
+	requestFunc := jobsSubmitDoAuthRequest
+	if requestFunc == nil {
+		requestFunc = doAuthRequest
+	}
+	resp, err := requestFunc(http.MethodPost, serverURL+"/api/v1/uploads/presigned", token, body)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		respBody, readErr := readResponseBody(resp.Body)
+		if readErr != nil {
+			return "", fmt.Errorf("presign upload request failed (HTTP %d): %v", resp.StatusCode, readErr)
+		}
+		return "", fmt.Errorf("presign upload request failed (HTTP %d): %s", resp.StatusCode, strings.TrimSpace(string(respBody)))
+	}
+
+	var presignResp struct {
+		URL string `json:"url"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&presignResp); err != nil {
+		return "", fmt.Errorf("decode presign response: %w", err)
+	}
+	if presignResp.URL == "" {
+		return "", fmt.Errorf("presign upload response did not include a URL")
+	}
+	return presignResp.URL, nil
+}
+
+func uploadBytesToPresignedURL(ctx context.Context, rawURL string, data []byte) error {
+	client := jobsSubmitHTTPClient
+	if client == nil {
+		client = cliHTTPClient
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPut, rawURL, bytes.NewReader(data))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/octet-stream")
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode < 200 || resp.StatusCode > 299 {
+		respBody, readErr := readResponseBody(resp.Body)
+		if readErr != nil {
+			return fmt.Errorf("upload failed (HTTP %d): %v", resp.StatusCode, readErr)
+		}
+		return fmt.Errorf("upload failed (HTTP %d): %s", resp.StatusCode, strings.TrimSpace(string(respBody)))
+	}
+
+	return nil
+}
+
+func buildUploadObjectKey(prefix, role, localPath string) string {
+	return fmt.Sprintf("%s/%s-%s", prefix, role, filepath.Base(localPath))
 }
 
 // ── jobs list ──────────────────────────────────────────────
