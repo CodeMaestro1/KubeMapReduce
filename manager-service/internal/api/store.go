@@ -55,6 +55,9 @@ type JobStore interface {
 	ListAllJobs(ctx context.Context, limit, offset int) ([]JobRecord, error)
 	// GetJobOutputs returns ordered output URIs for completed reduce tasks of a job.
 	GetJobOutputs(ctx context.Context, jobID string) ([]string, error)
+	// Ping verifies that the underlying storage is reachable. Used by the
+	// /readyz readiness probe.
+	Ping(ctx context.Context) error
 }
 
 // ── PostgreSQL implementation ───────────────────────────────
@@ -128,6 +131,14 @@ type PostgresJobStore struct {
 // NewPostgresJobStore returns a PostgreSQL-backed JobStore.
 func NewPostgresJobStore(db *sql.DB) *PostgresJobStore {
 	return &PostgresJobStore{db: db}
+}
+
+// Ping verifies that the underlying database connection is healthy.
+func (s *PostgresJobStore) Ping(ctx context.Context) error {
+	if s == nil || s.db == nil {
+		return errors.New("postgres job store: nil database handle")
+	}
+	return s.db.PingContext(ctx)
 }
 
 // CreateJob inserts a new job and its configuration into the DDS within a
@@ -295,6 +306,12 @@ type MemoryJobStore struct {
 	jobStatusTTL  time.Duration
 	maxStoredJobs int
 	now           func() time.Time
+}
+
+// Ping always returns nil for the in-memory store; it is always reachable
+// in-process and is intended only for tests.
+func (m *MemoryJobStore) Ping(_ context.Context) error {
+	return nil
 }
 
 // NewMemoryJobStore creates an in-memory store with configurable TTL and
