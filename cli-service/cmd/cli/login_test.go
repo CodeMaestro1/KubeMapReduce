@@ -40,6 +40,7 @@ func TestRunLogin_Success(t *testing.T) {
 	// Mock home directory for token storage
 	tmpHome := t.TempDir()
 	t.Setenv("HOME", tmpHome)
+	t.Setenv("XDG_CONFIG_HOME", "") // Ensure we use HOME/.config
 
 	// Mock password input
 	oldReadPasswordFn := readPasswordFn
@@ -73,6 +74,7 @@ func TestRunLogin_Failure(t *testing.T) {
 
 	t.Setenv("KEYCLOAK_BASE_URL", ts.URL)
 	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", "")
 
 	oldReadPasswordFn := readPasswordFn
 	defer func() { readPasswordFn = oldReadPasswordFn }()
@@ -89,20 +91,26 @@ func TestRunLogin_Failure(t *testing.T) {
 func TestRunLogout(t *testing.T) {
 	tmpHome := t.TempDir()
 	t.Setenv("HOME", tmpHome)
+	t.Setenv("XDG_CONFIG_HOME", "")
+
+	// Use the library to get the correct path
+	path, err := auth.TokenStorePath()
+	if err != nil {
+		t.Fatalf("failed to get token store path: %v", err)
+	}
 
 	// Pre-create a token file
-	configDir := filepath.Join(tmpHome, ".config", "kubemapreduce")
-	os.MkdirAll(configDir, 0755)
-	os.WriteFile(filepath.Join(configDir, "credentials.json"), []byte("{}"), 0644)
+	os.MkdirAll(filepath.Dir(path), 0755)
+	os.WriteFile(path, []byte("{}"), 0644)
 
-	err := runLogout()
+	err = runLogout()
 	if err != nil {
 		t.Fatalf("runLogout failed: %v", err)
 	}
 
 	// Verify token file is gone
-	if _, err := os.Stat(filepath.Join(configDir, "credentials.json")); !os.IsNotExist(err) {
-		t.Errorf("token file should have been deleted")
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Errorf("token file at %s should have been deleted", path)
 	}
 }
 
