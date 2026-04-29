@@ -99,18 +99,45 @@ func (h *Handlers) HandleRoot(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// HandleHealth provides an unauthenticated endpoint for monitoring tools.
+// HandleHealthz provides an unauthenticated liveness probe endpoint.
 //
-// It returns a simple 200 OK status to indicate the web server is processing
-// requests. This is distinct from deep health checks that might probe the
-// database or Keycloak.
-func (h *Handlers) HandleHealth(w http.ResponseWriter, r *http.Request) {
+// It returns a simple 200 OK status to indicate the web server process is
+// running and able to serve requests. It does NOT exercise downstream
+// dependencies (database, MinIO, Keycloak); use [Handlers.HandleReadyz] for
+// dependency-aware readiness checks.
+func (h *Handlers) HandleHealthz(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		httputil.WriteErrorJSON(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
 
 	if err := httputil.WriteJSON(w, http.StatusOK, map[string]string{"status": "ok"}); err != nil {
+		return
+	}
+}
+
+// HandleReadyz reports whether the API service is ready to serve traffic.
+//
+// It pings the underlying [JobStore] (PostgreSQL DDS in production) to
+// confirm the database connection is healthy. Returns 503 Service Unavailable
+// if the store is unreachable, 200 OK otherwise. The DB ping is bounded by a
+// short context timeout to prevent the readiness probe from blocking.
+func (h *Handlers) HandleReadyz(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		httputil.WriteErrorJSON(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+
+	if h.store != nil {
+		ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
+		defer cancel()
+		if err := h.store.Ping(ctx); err != nil {
+			httputil.WriteErrorJSON(w, http.StatusServiceUnavailable, "database not ready")
+			return
+		}
+	}
+
+	if err := httputil.WriteJSON(w, http.StatusOK, map[string]string{"status": "ready"}); err != nil {
 		return
 	}
 }

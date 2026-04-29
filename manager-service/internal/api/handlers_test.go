@@ -84,13 +84,13 @@ func (f *fakeScheduleObjectClient) GetObject(_ context.Context, bucketName, obje
 	return io.NopCloser(bytes.NewReader(data[int(start) : int(end)+1])), nil
 }
 
-func TestHandleHealth(t *testing.T) {
+func TestHandleHealthz(t *testing.T) {
 	h := newTestHandlers()
 
-	req := httptest.NewRequest(http.MethodGet, "/health", nil)
+	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
 	rec := httptest.NewRecorder()
 
-	h.HandleHealth(rec, req)
+	h.HandleHealthz(rec, req)
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected status %d, got %d", http.StatusOK, rec.Code)
@@ -101,17 +101,70 @@ func TestHandleHealth(t *testing.T) {
 	}
 }
 
-func TestHandleHealth_RejectsNonGet(t *testing.T) {
+func TestHandleHealthz_RejectsNonGet(t *testing.T) {
 	h := newTestHandlers()
 
-	req := httptest.NewRequest(http.MethodPost, "/health", nil)
+	req := httptest.NewRequest(http.MethodPost, "/healthz", nil)
 	rec := httptest.NewRecorder()
 
-	h.HandleHealth(rec, req)
+	h.HandleHealthz(rec, req)
 
 	if rec.Code != http.StatusMethodNotAllowed {
 		t.Fatalf("expected status %d, got %d", http.StatusMethodNotAllowed, rec.Code)
 	}
+}
+
+func TestHandleReadyz_OK(t *testing.T) {
+	h := newTestHandlers()
+
+	req := httptest.NewRequest(http.MethodGet, "/readyz", nil)
+	rec := httptest.NewRecorder()
+
+	h.HandleReadyz(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d (body=%q)", http.StatusOK, rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"status":"ready"`) {
+		t.Fatalf("expected body to contain status ready, got %q", rec.Body.String())
+	}
+}
+
+func TestHandleReadyz_DBUnreachable(t *testing.T) {
+	store := &failingPingStore{JobStore: NewMemoryJobStore(24*time.Hour, 100, nil)}
+	h := NewHandlers(nil, store, nil, "", "")
+
+	req := httptest.NewRequest(http.MethodGet, "/readyz", nil)
+	rec := httptest.NewRecorder()
+
+	h.HandleReadyz(rec, req)
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected status %d, got %d (body=%q)", http.StatusServiceUnavailable, rec.Code, rec.Body.String())
+	}
+}
+
+func TestHandleReadyz_RejectsNonGet(t *testing.T) {
+	h := newTestHandlers()
+
+	req := httptest.NewRequest(http.MethodPost, "/readyz", nil)
+	rec := httptest.NewRecorder()
+
+	h.HandleReadyz(rec, req)
+
+	if rec.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("expected status %d, got %d", http.StatusMethodNotAllowed, rec.Code)
+	}
+}
+
+// failingPingStore is a JobStore decorator whose Ping always fails, used to
+// exercise the /readyz error path.
+type failingPingStore struct {
+	JobStore
+}
+
+func (f *failingPingStore) Ping(_ context.Context) error {
+	return fmt.Errorf("simulated db outage")
 }
 
 func TestHandleJobsSubmit_RejectsInvalidPayload(t *testing.T) {
