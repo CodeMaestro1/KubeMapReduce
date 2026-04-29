@@ -583,7 +583,10 @@ func (h *Handlers) HandleWorkerConfig(w http.ResponseWriter, r *http.Request) {
 }
 
 // HandleAdminConfigWorkers is the unified POST /api/v1/admin/config/workers handler.
-// It consolidates worker scaling and node resource configuration into a single call.
+//
+// It replaces the legacy PUT /api/v1/admin/workers/config and PUT /api/v1/admin/nodes/config
+// endpoints, consolidating all cluster configuration into a single call per the design spec.
+// All fields are optional; callers may supply any subset.
 func (h *Handlers) HandleAdminConfigWorkers(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		httputil.WriteErrorJSON(w, http.StatusMethodNotAllowed, "method not allowed")

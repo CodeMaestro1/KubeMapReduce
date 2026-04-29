@@ -38,11 +38,11 @@ func TestRunAdminConfigureNodes_SendsPutToCorrectEndpoint(t *testing.T) {
 	if err := runAdminConfigureNodes([]string{"--max-pods", "4"}, stub); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if capturedMethod != http.MethodPut {
-		t.Errorf("expected PUT, got %s", capturedMethod)
+	if capturedMethod != http.MethodPost {
+		t.Errorf("expected POST, got %s", capturedMethod)
 	}
-	if capturedURL != "http://example.test/api/v1/admin/nodes/config" {
-		t.Errorf("expected /api/v1/admin/nodes/config, got %s", capturedURL)
+	if capturedURL != "http://example.test/api/v1/admin/config/workers" {
+		t.Errorf("expected /api/v1/admin/config/workers, got %s", capturedURL)
 	}
 }
 

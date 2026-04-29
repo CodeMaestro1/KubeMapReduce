@@ -182,7 +182,7 @@ func runAdminConfigureNodes(args []string, doAuthReq func(method, url string, be
 		return fmt.Errorf("failed to build configure-nodes request: %v", err)
 	}
 
-	resp, err := doAuthReq(http.MethodPut, serverURL+"/api/v1/admin/nodes/config", token, payload)
+	resp, err := doAuthReq(http.MethodPost, serverURL+"/api/v1/admin/config/workers", token, payload)
 	if err != nil {
 		return fmt.Errorf("configure-nodes request failed: %v", err)
 	}
@@ -249,8 +249,8 @@ func cmdAdminWorkerConfig(args []string) {
 	}
 
 	resp := doAuthRequestExpect(
-		http.MethodPut,
-		serverURL+"/api/v1/admin/workers/config",
+		http.MethodPost,
+		serverURL+"/api/v1/admin/config/workers",
 		token,
 		payload,
 		http.StatusAccepted,
