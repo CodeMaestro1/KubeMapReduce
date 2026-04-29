@@ -1506,6 +1506,7 @@ func TestHandleJobsDelete_Returns204NoContent(t *testing.T) {
 	if delRec.Body.Len() != 0 {
 		t.Fatalf("expected empty body for 204, got %q", delRec.Body.String())
 	}
+}
 func TestBuildScheduleRequest_ComputesChecksum(t *testing.T) {
 	mockStorage := &mockScheduleObjectClient{
 		size:     1024,
