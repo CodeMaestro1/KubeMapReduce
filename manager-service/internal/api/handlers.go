@@ -37,11 +37,12 @@ type Handlers struct {
 }
 
 const (
-	defaultReducers  = 1
-	defaultListLimit = 100
-	maxListLimit     = 500
-	maxJSONBodyBytes = 1 << 20 // 1 MiB
-	inputBucketName  = "inputs"
+	defaultReducers   = 1
+	defaultListLimit  = 100
+	maxListLimit      = 500
+	maxJSONBodyBytes  = 1 << 20 // 1 MiB
+	inputBucketName   = "mapreduce-inputs"
+	stagingBucketName = "mapreduce-staging"
 )
 
 var defaultTargetSplitSizeBytes int64 = 64 * 1024 * 1024
