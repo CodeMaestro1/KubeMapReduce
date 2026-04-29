@@ -138,7 +138,7 @@ func TestCmdJobsSubmit_ValidReducersCallsSubmit(t *testing.T) {
 		if method != http.MethodPost {
 			t.Fatalf("expected POST, got %s", method)
 		}
-		if reqURL != "http://example.test/jobs" {
+		if reqURL != "http://example.test/api/v1/jobs" {
 			t.Fatalf("unexpected URL: %s", reqURL)
 		}
 		if token != "test-token" {
@@ -166,7 +166,7 @@ func TestCmdJobsSubmit_ValidReducersCallsSubmit(t *testing.T) {
 
 func TestJobRequestPath_EscapesJobID(t *testing.T) {
 	got := jobRequestPath("../jobs/abc 123", "/results")
-	want := "/jobs/..%2Fjobs%2Fabc%20123/results"
+	want := "/api/v1/jobs/..%2Fjobs%2Fabc%20123/results"
 	if got != want {
 		t.Fatalf("jobRequestPath() = %q, want %q", got, want)
 	}

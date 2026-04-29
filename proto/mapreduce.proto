@@ -37,6 +37,14 @@ message TaskAssignment {
   int32 total_reducers = 13;
   string split_checksum = 14;
   string lease_id = 15;
+  repeated InputSplit input_splits = 16;
+}
+
+message InputSplit {
+  string input_uri = 1;
+  int64 byte_start = 2;
+  int64 byte_end = 3;
+  string split_checksum = 4;
 }
 
 message HeartbeatRequest {

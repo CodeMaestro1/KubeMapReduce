@@ -1,10 +1,71 @@
 package main
 
 import (
+	"encoding/json"
+	"io"
 	"net/http"
 	"strings"
 	"testing"
 )
+
+func TestRunAdminConfigureNodes_SendsPutToCorrectEndpoint(t *testing.T) {
+	origGetToken := adminGetValidToken
+	origRequireAdmin := adminRequireAdminRole
+	defer func() {
+		adminGetValidToken = origGetToken
+		adminRequireAdminRole = origRequireAdmin
+	}()
+	adminGetValidToken = func() (string, string) { return "test-token", "http://example.test" }
+	adminRequireAdminRole = func(_ string) {}
+
+	var capturedMethod, capturedURL string
+	stub := func(method, url, _ string, body []byte) (*http.Response, error) {
+		capturedMethod = method
+		capturedURL = url
+		var m map[string]any
+		if err := json.Unmarshal(body, &m); err != nil {
+			t.Fatalf("body is not valid JSON: %v", err)
+		}
+		if _, ok := m["maxConcurrentPods"]; !ok {
+			t.Fatalf("expected maxConcurrentPods in payload, got %v", m)
+		}
+		return &http.Response{
+			StatusCode: http.StatusAccepted,
+			Body:       io.NopCloser(strings.NewReader(`{"status":"accepted"}`)),
+		}, nil
+	}
+
+	if err := runAdminConfigureNodes([]string{"--max-pods", "4"}, stub); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if capturedMethod != http.MethodPut {
+		t.Errorf("expected PUT, got %s", capturedMethod)
+	}
+	if capturedURL != "http://example.test/api/v1/admin/nodes/config" {
+		t.Errorf("expected /api/v1/admin/nodes/config, got %s", capturedURL)
+	}
+}
+
+func TestRunAdminConfigureNodes_MissingMaxPodsReturnsError(t *testing.T) {
+	origGetToken := adminGetValidToken
+	origRequireAdmin := adminRequireAdminRole
+	defer func() {
+		adminGetValidToken = origGetToken
+		adminRequireAdminRole = origRequireAdmin
+	}()
+	adminGetValidToken = func() (string, string) { return "test-token", "http://example.test" }
+	adminRequireAdminRole = func(_ string) {}
+
+	neverCalled := func(_, _, _ string, _ []byte) (*http.Response, error) {
+		t.Fatal("doAuthReq must not be called when --max-pods is missing or zero")
+		return nil, nil
+	}
+
+	err := runAdminConfigureNodes([]string{"--max-pods", "0"}, neverCalled)
+	if err == nil {
+		t.Fatal("expected error for missing --max-pods, got nil")
+	}
+}
 
 func TestConfigureNodesStatusError_AcceptedIsNil(t *testing.T) {
 	if err := configureNodesStatusError(http.StatusAccepted, `{"status":"accepted"}`); err != nil {

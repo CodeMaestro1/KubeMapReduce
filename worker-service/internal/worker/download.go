@@ -112,6 +112,21 @@ func validateChecksum(data []byte, expectedHex string) error {
 	return nil
 }
 
+// splitChecksumURI splits a URI of the form "s3://bucket/key#sha256=<hex>"
+// into the base URI and the hex checksum. If no fragment is present the
+// checksum is returned as an empty string.
+func splitChecksumURI(raw string) (uri, checksum string) {
+	idx := strings.LastIndexByte(raw, '#')
+	if idx < 0 {
+		return raw, ""
+	}
+	fragment := raw[idx+1:]
+	if after, ok := strings.CutPrefix(fragment, "sha256="); ok {
+		return raw[:idx], after
+	}
+	return raw, ""
+}
+
 // getRawRange downloads bytes starting at byteStart and keeps extending the
 // read in fixed chunks until it reaches the newline that terminates the record
 // crossing byteEnd.

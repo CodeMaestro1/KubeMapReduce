@@ -3,9 +3,11 @@ package api
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"strconv"
@@ -44,6 +46,8 @@ const (
 	inputBucketName   = "mapreduce-inputs"
 	stagingBucketName = "mapreduce-staging"
 )
+
+var defaultTargetSplitSizeBytes int64 = 64 * 1024 * 1024
 
 // NewHandlers creates production-ready Handlers.
 func NewHandlers(adminClient *auth.KeycloakAdminClient, store JobStore, minioClient *minio.Client, managerAddr string, internalAPIKey string) *Handlers {
@@ -154,6 +158,8 @@ func (h *Handlers) HandleJobsSubmit(w http.ResponseWriter, r *http.Request) {
 		combinerURI = request.Combiner.Artifact
 	}
 
+	schedReq := buildScheduleRequest(r.Context(), newScheduleObjectClient(h.minioClient), jobID, userID, request, combinerURI)
+
 	rec := JobRecord{
 		JobID:       jobID,
 		UserID:      userID,
@@ -164,7 +170,7 @@ func (h *Handlers) HandleJobsSubmit(w http.ResponseWriter, r *http.Request) {
 		MapperURI:   request.Mapper.Artifact,
 		ReducerURI:  request.Reducer.Artifact,
 		CombinerURI: combinerURI,
-		MTasks:      1,
+		MTasks:      schedReq.MTasks,
 	}
 	if err := h.store.CreateJob(r.Context(), rec); err != nil {
 		httputil.WriteErrorJSON(w, http.StatusInternalServerError, "failed to persist job")
@@ -216,7 +222,12 @@ func (h *Handlers) HandleJobsList(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	records, err := h.store.ListJobs(r.Context(), userID, limit, offset)
+	var records []JobRecord
+	if auth.HasRole(r, "ADMIN") {
+		records, err = h.store.ListAllJobs(r.Context(), limit, offset)
+	} else {
+		records, err = h.store.ListJobs(r.Context(), userID, limit, offset)
+	}
 	if err != nil {
 		if errors.Is(err, ErrInvalidUserID) {
 			httputil.WriteErrorJSON(w, http.StatusForbidden, "forbidden: invalid subject")
@@ -294,7 +305,12 @@ func (h *Handlers) HandleJobsGet(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	rec, err := h.store.GetJob(r.Context(), userID, jobID)
+	var rec *JobRecord
+	if auth.HasRole(r, "ADMIN") {
+		rec, err = h.store.GetAnyJob(r.Context(), jobID)
+	} else {
+		rec, err = h.store.GetJob(r.Context(), userID, jobID)
+	}
 	if err != nil {
 		if errors.Is(err, ErrInvalidJobID) {
 			httputil.WriteErrorJSON(w, http.StatusBadRequest, "invalid job id")
@@ -348,7 +364,12 @@ func (h *Handlers) HandleJobsDownload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	rec, err := h.store.GetJob(r.Context(), userID, jobID)
+	var rec *JobRecord
+	if auth.HasRole(r, "ADMIN") {
+		rec, err = h.store.GetAnyJob(r.Context(), jobID)
+	} else {
+		rec, err = h.store.GetJob(r.Context(), userID, jobID)
+	}
 	if err != nil {
 		if errors.Is(err, ErrInvalidJobID) {
 			httputil.WriteErrorJSON(w, http.StatusBadRequest, "invalid job id")
@@ -366,13 +387,61 @@ func (h *Handlers) HandleJobsDownload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := httputil.WriteJSON(w, http.StatusNotImplemented, map[string]interface{}{
-		"status":  "not_implemented",
-		"message": "result download is not available yet; job processing backend is not implemented",
-		"jobId":   rec.JobID,
-	}); err != nil {
+	if rec.Status != "Completed" {
+		httputil.WriteJSON(w, http.StatusConflict, map[string]any{
+			"error":  "job_not_complete",
+			"status": rec.Status,
+		})
 		return
 	}
+
+	outputURIs, err := h.store.GetJobOutputs(r.Context(), jobID)
+	if err != nil {
+		log.Printf("GetJobOutputs failed for job %s: %v", jobID, err)
+		httputil.WriteErrorJSON(w, http.StatusInternalServerError, "failed to retrieve job outputs")
+		return
+	}
+
+	if h.minioClient == nil {
+		httputil.WriteErrorJSON(w, http.StatusServiceUnavailable, "storage not available")
+		return
+	}
+
+	presigned := make([]string, 0, len(outputURIs))
+	for _, uri := range outputURIs {
+		bucket, key, parseErr := parseOutputURI(uri)
+		if parseErr != nil {
+			log.Printf("invalid output URI for job %s: %v", jobID, parseErr)
+			httputil.WriteErrorJSON(w, http.StatusInternalServerError, "invalid output URI")
+			return
+		}
+		u, presignErr := h.minioClient.PresignedGetObject(r.Context(), bucket, key, 15*time.Minute, nil)
+		if presignErr != nil {
+			log.Printf("presign failed for job %s uri %s: %v", jobID, uri, presignErr)
+			httputil.WriteErrorJSON(w, http.StatusInternalServerError, "failed to generate download URL")
+			return
+		}
+		presigned = append(presigned, u.String())
+	}
+
+	httputil.WriteJSON(w, http.StatusOK, map[string]any{
+		"jobId": jobID,
+		"urls":  presigned,
+	})
+}
+
+// parseOutputURI splits an s3://bucket/key URI into bucket and key components.
+func parseOutputURI(uri string) (bucket, key string, err error) {
+	const prefix = "s3://"
+	if !strings.HasPrefix(uri, prefix) {
+		return "", "", fmt.Errorf("unsupported URI scheme: %q", uri)
+	}
+	rest := uri[len(prefix):]
+	idx := strings.IndexByte(rest, '/')
+	if idx < 0 {
+		return "", "", fmt.Errorf("missing key in URI: %q", uri)
+	}
+	return rest[:idx], rest[idx+1:], nil
 }
 
 // HandleConfigureNodes updates resource limits for the MapReduce cluster nodes.
@@ -543,6 +612,30 @@ func (h *Handlers) postSchedule(ctx context.Context, req manager.ScheduleJobRequ
 	return nil
 }
 
+type scheduleObjectClient interface {
+	StatObject(ctx context.Context, bucketName, objectName string, opts minio.StatObjectOptions) (minio.ObjectInfo, error)
+	GetObject(ctx context.Context, bucketName, objectName string, opts minio.GetObjectOptions) (io.ReadCloser, error)
+}
+
+type minioScheduleObjectClient struct {
+	client *minio.Client
+}
+
+func newScheduleObjectClient(client *minio.Client) scheduleObjectClient {
+	if client == nil {
+		return nil
+	}
+	return &minioScheduleObjectClient{client: client}
+}
+
+func (m *minioScheduleObjectClient) StatObject(ctx context.Context, bucketName, objectName string, opts minio.StatObjectOptions) (minio.ObjectInfo, error) {
+	return m.client.StatObject(ctx, bucketName, objectName, opts)
+}
+
+func (m *minioScheduleObjectClient) GetObject(ctx context.Context, bucketName, objectName string, opts minio.GetObjectOptions) (io.ReadCloser, error) {
+	return m.client.GetObject(ctx, bucketName, objectName, opts)
+}
+
 // buildScheduleRequest constructs a ScheduleJobRequest for a fresh job submission.
 // It creates one Map task covering the full input and R Reduce tasks.
 func buildScheduleRequest(ctx context.Context, storage scheduleObjectClient, jobID, userID string, req models.JobSubmissionRequest, combinerURI string) (manager.ScheduleJobRequest, error) {
@@ -587,11 +680,11 @@ func buildScheduleRequest(ctx context.Context, storage scheduleObjectClient, job
 	return manager.ScheduleJobRequest{
 		JobID:       jobID,
 		UserID:      userID,
-		InputURI:    req.Filename,
+		InputURI:    inputURI,
 		MapperURI:   req.Mapper.Artifact,
 		ReducerURI:  req.Reducer.Artifact,
 		CombinerURI: combinerURI,
-		MTasks:      1,
+		MTasks:      len(inputSplits),
 		RTasks:      req.Reducers,
 		Tasks:       tasks,
 	}, nil
@@ -621,6 +714,78 @@ func checksumObjectRange(ctx context.Context, storage scheduleObjectClient, buck
 	}
 
 	return hex.EncodeToString(h.Sum(nil)), nil
+}
+
+func buildInputSplits(ctx context.Context, storage scheduleObjectClient, objectName, inputURI string) []manager.ScheduleTaskInput {
+	if storage == nil {
+		return []manager.ScheduleTaskInput{{
+			InputURI: inputURI,
+		}}
+	}
+
+	info, err := storage.StatObject(ctx, inputBucketName, objectName, minio.StatObjectOptions{})
+	if err != nil || info.Size <= 0 {
+		return []manager.ScheduleTaskInput{{
+			InputURI: inputURI,
+		}}
+	}
+
+	splitSize := int64(defaultTargetSplitSizeBytes)
+	if splitSize <= 0 {
+		splitSize = 64 * 1024 * 1024
+	}
+
+	splits := make([]manager.ScheduleTaskInput, 0, int((info.Size+splitSize-1)/splitSize))
+	for start := int64(0); start < info.Size; start += splitSize {
+		end := start + splitSize - 1
+		if end >= info.Size {
+			end = info.Size - 1
+		}
+		checksum, checksumErr := checksumObjectRange(ctx, storage, inputBucketName, objectName, start, end)
+		if checksumErr != nil {
+			log.Printf("[api] falling back to a single split for %s after checksum error: %v", inputURI, checksumErr)
+			return []manager.ScheduleTaskInput{{
+				InputURI: inputURI,
+			}}
+		}
+		splits = append(splits, manager.ScheduleTaskInput{
+			InputURI:      inputURI,
+			ByteStart:     start,
+			ByteEnd:       end,
+			SplitChecksum: checksum,
+		})
+	}
+
+	if len(splits) == 0 {
+		return []manager.ScheduleTaskInput{{InputURI: inputURI}}
+	}
+	return splits
+}
+
+func checksumObjectRange(ctx context.Context, storage scheduleObjectClient, bucketName, objectName string, start, end int64) (string, error) {
+	opts := minio.GetObjectOptions{}
+	if err := opts.SetRange(start, end); err != nil {
+		return "", fmt.Errorf("set range [%d,%d]: %w", start, end, err)
+	}
+
+	rc, err := storage.GetObject(ctx, bucketName, objectName, opts)
+	if err != nil {
+		return "", fmt.Errorf("get object range %s/%s [%d,%d]: %w", bucketName, objectName, start, end, err)
+	}
+	defer rc.Close()
+
+	h := sha256.New()
+	n, err := io.Copy(h, rc)
+	if err != nil {
+		return "", fmt.Errorf("read object range %s/%s [%d,%d]: %w", bucketName, objectName, start, end, err)
+	}
+
+	expected := end - start + 1
+	if n != expected {
+		return "", fmt.Errorf("short read %s/%s [%d,%d]: got %d bytes, expected %d", bucketName, objectName, start, end, n, expected)
+	}
+
+	return fmt.Sprintf("%x", h.Sum(nil)), nil
 }
 
 func currentRequestUserID(r *http.Request) (string, error) {
@@ -771,7 +936,12 @@ func (h *Handlers) HandleJobsDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	rec, err := h.store.GetJob(r.Context(), userID, jobID)
+	var rec *JobRecord
+	if auth.HasRole(r, "ADMIN") {
+		rec, err = h.store.GetAnyJob(r.Context(), jobID)
+	} else {
+		rec, err = h.store.GetJob(r.Context(), userID, jobID)
+	}
 	if err != nil {
 		if errors.Is(err, ErrInvalidUserID) {
 			httputil.WriteErrorJSON(w, http.StatusForbidden, "forbidden: invalid subject")
