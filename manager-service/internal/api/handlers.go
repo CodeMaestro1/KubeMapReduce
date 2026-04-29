@@ -1010,12 +1010,7 @@ func (h *Handlers) HandleJobsDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := httputil.WriteJSON(w, http.StatusOK, map[string]string{
-		"status": "cancelled",
-		"jobId":  jobID,
-	}); err != nil {
-		return
-	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // HandlePresignUpload generates a temporary URL for direct file upload to object storage.
