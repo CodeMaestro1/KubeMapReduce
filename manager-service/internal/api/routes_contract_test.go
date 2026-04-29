@@ -1,6 +1,7 @@
 package api
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -53,15 +54,12 @@ func TestDeleteJobContract_Returns204(t *testing.T) {
 
 	store := NewMemoryJobStore(24*time.Hour, 10000, nil)
 	h := NewHandlers(nil, store, nil, mgr.Listener.Addr().String(), "")
-	mux := http.NewServeMux()
-	v := new(auth.JWTValidator)
-	RegisterRoutes(mux, h, v)
 
-	// Submit a job so a valid job_id is available.
+	// Submit a job directly so a valid job_id is available.
 	submitBody := `{"filename":"f.json","mapper":{"language":"python","artifact":"m.py","entrypoint":"map","interface":"map(key,value)->[]KeyValue"},"reducer":{"language":"python","artifact":"r.py","entrypoint":"reduce","interface":"reduce(key,values)->Value"}}`
 	submitReq := newAuthedRequest(http.MethodPost, "/api/v1/jobs", submitBody, testSubject)
 	submitRec := httptest.NewRecorder()
-	mux.ServeHTTP(submitRec, submitReq)
+	h.HandleJobsSubmit(submitRec, submitReq)
 	if submitRec.Code != http.StatusAccepted {
 		t.Fatalf("setup: job submit returned %d: %s", submitRec.Code, submitRec.Body.String())
 	}
@@ -69,13 +67,14 @@ func TestDeleteJobContract_Returns204(t *testing.T) {
 	var resp struct {
 		JobID string `json:"jobId"`
 	}
-	if err := decodeTestJSON(submitRec.Body.Bytes(), &resp); err != nil {
+	if err := json.Unmarshal(submitRec.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("decode submit response: %v", err)
 	}
 
 	delReq := newAuthedRequest(http.MethodDelete, "/api/v1/jobs/"+resp.JobID, "", testSubject)
+	delReq.SetPathValue("job_id", resp.JobID)
 	delRec := httptest.NewRecorder()
-	mux.ServeHTTP(delRec, delReq)
+	h.HandleJobsDelete(delRec, delReq)
 
 	if delRec.Code != http.StatusNoContent {
 		t.Fatalf("contract violation: DELETE /api/v1/jobs/{job_id} must return 204, got %d: %s",
