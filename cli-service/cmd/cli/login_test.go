@@ -116,7 +116,7 @@ func TestRunLogout(t *testing.T) {
 
 func TestRunHealth_Success(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/health" {
+		if r.URL.Path != "/healthz" {
 			t.Errorf("unexpected path: %s", r.URL.Path)
 		}
 		fmt.Fprint(w, "OK")
