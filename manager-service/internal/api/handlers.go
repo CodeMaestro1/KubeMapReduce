@@ -9,7 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
@@ -181,7 +181,10 @@ func (h *Handlers) HandleJobsSubmit(w http.ResponseWriter, r *http.Request) {
 
 	if h.managerAddr != "" {
 		if err := h.postSchedule(r.Context(), schedReq); err != nil {
-			log.Printf("[api] job %s persisted but schedule failed: %v", jobID, err)
+			slog.ErrorContext(r.Context(), "job persisted but schedule call failed",
+				slog.String("job_id", jobID),
+				slog.Any("err", err),
+			)
 		}
 	}
 
@@ -394,7 +397,10 @@ func (h *Handlers) HandleJobsDownload(w http.ResponseWriter, r *http.Request) {
 
 	outputURIs, err := h.store.GetJobOutputs(r.Context(), jobID)
 	if err != nil {
-		log.Printf("GetJobOutputs failed for job %s: %v", jobID, err)
+		slog.ErrorContext(r.Context(), "GetJobOutputs failed",
+			slog.String("job_id", jobID),
+			slog.Any("err", err),
+		)
 		httputil.WriteErrorJSON(w, http.StatusInternalServerError, "failed to retrieve job outputs")
 		return
 	}
@@ -408,13 +414,21 @@ func (h *Handlers) HandleJobsDownload(w http.ResponseWriter, r *http.Request) {
 	for _, uri := range outputURIs {
 		bucket, key, parseErr := parseOutputURI(uri)
 		if parseErr != nil {
-			log.Printf("invalid output URI for job %s: %v", jobID, parseErr)
+			slog.ErrorContext(r.Context(), "invalid output URI",
+				slog.String("job_id", jobID),
+				slog.String("uri", uri),
+				slog.Any("err", parseErr),
+			)
 			httputil.WriteErrorJSON(w, http.StatusInternalServerError, "invalid output URI")
 			return
 		}
 		u, presignErr := h.minioClient.PresignedGetObject(r.Context(), bucket, key, 15*time.Minute, nil)
 		if presignErr != nil {
-			log.Printf("presign failed for job %s uri %s: %v", jobID, uri, presignErr)
+			slog.ErrorContext(r.Context(), "presign failed for output URI",
+				slog.String("job_id", jobID),
+				slog.String("uri", uri),
+				slog.Any("err", presignErr),
+			)
 			httputil.WriteErrorJSON(w, http.StatusInternalServerError, "failed to generate download URL")
 			return
 		}
@@ -802,7 +816,10 @@ func buildInputSplits(ctx context.Context, storage scheduleObjectClient, objectN
 		}
 		checksum, checksumErr := checksumObjectRange(ctx, storage, inputBucketName, objectName, start, end)
 		if checksumErr != nil {
-			log.Printf("[api] falling back to a single split for %s after checksum error: %v", inputURI, checksumErr)
+			slog.WarnContext(ctx, "falling back to a single split after checksum error",
+				slog.String("input_uri", inputURI),
+				slog.Any("err", checksumErr),
+			)
 			return []manager.ScheduleTaskInput{{
 				InputURI: inputURI,
 			}}

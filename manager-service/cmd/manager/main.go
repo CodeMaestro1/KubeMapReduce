@@ -144,9 +144,9 @@ func main() {
 				recovered, err := scheduler.FailStaleTasks(reaperCtx)
 				reaperCancel()
 				if err != nil {
-					log.Printf("reaper error: %v", err)
+					slog.Error("reaper cycle failed", slog.Any("err", err))
 				} else if recovered > 0 {
-					log.Printf("reaper recovered %d stale tasks", recovered)
+					slog.Info("reaper recovered stale tasks", slog.Int("recovered", recovered))
 				}
 			}
 		}
