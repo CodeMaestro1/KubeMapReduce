@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"os"
 
 	"github.com/minio/minio-go/v7"
 
@@ -46,24 +47,45 @@ func (w *Worker) runReduce(ctx context.Context, a *pb.TaskAssignment) (outputURI
 		if getErr != nil {
 			return nil, nil, fmt.Errorf("GetObject %s: %w", dataURI, getErr)
 		}
-		var buf bytes.Buffer
+
+		tmpFile, err := os.CreateTemp(w.cfg.TempDir, "shuffle-input-*.jsonl")
+		if err != nil {
+			obj.Close()
+			return nil, nil, fmt.Errorf("create temp file for shuffle input %s: %w", dataURI, err)
+		}
+		closers = append(closers, tmpFile)
+		// Mark for deletion on close
+		fileName := tmpFile.Name()
+		defer os.Remove(fileName)
+
 		h := sha256.New()
-		if _, copyErr := io.Copy(io.MultiWriter(&buf, h), obj); copyErr != nil {
+		if _, copyErr := io.Copy(io.MultiWriter(tmpFile, h), obj); copyErr != nil {
 			obj.Close()
 			return nil, nil, fmt.Errorf("reading shuffle input %s: %w", dataURI, copyErr)
 		}
 		obj.Close()
+
 		if expectedChecksum != "" {
 			got := hex.EncodeToString(h.Sum(nil))
 			if got != expectedChecksum {
 				return nil, nil, fmt.Errorf("checksum mismatch for shuffle input %s: want %s got %s", dataURI, expectedChecksum, got)
 			}
 		}
-		readers = append(readers, &buf)
+
+		if _, err := tmpFile.Seek(0, 0); err != nil {
+			return nil, nil, fmt.Errorf("seek shuffle input %s: %w", dataURI, err)
+		}
+		readers = append(readers, tmpFile)
 	}
 
 	// External k-way merge sort over pre-sorted mapper output files.
-	var merged bytes.Buffer
+	mergedFile, err := os.CreateTemp(w.cfg.TempDir, "merged-*.jsonl")
+	if err != nil {
+		return nil, nil, fmt.Errorf("create temp file for merged output: %w", err)
+	}
+	closers = append(closers, mergedFile)
+	defer os.Remove(mergedFile.Name())
+
 	mergeCfg := shuffle.DefaultMergeConfig()
 	mergeCfg.TempDir = w.cfg.TempDir
 	if w.cfg.ShuffleBatchSize > 0 {
@@ -72,15 +94,19 @@ func (w *Worker) runReduce(ctx context.Context, a *pb.TaskAssignment) (outputURI
 	if w.cfg.ShuffleMaxRecordBytes > 0 {
 		mergeCfg.MaxRecordBytes = w.cfg.ShuffleMaxRecordBytes
 	}
-	mergeStats, mergeErr := shuffle.MergeInputs(readers, &merged, mergeCfg)
+	mergeStats, mergeErr := shuffle.MergeInputs(readers, mergedFile, mergeCfg)
 	if mergeErr != nil {
 		return nil, nil, fmt.Errorf("merge: %w", mergeErr)
+	}
+
+	if _, err := mergedFile.Seek(0, 0); err != nil {
+		return nil, nil, fmt.Errorf("seek merged output: %w", err)
 	}
 	log.Printf("[reduce] merge stats task=%s passes=%d spills=%d peak_streams=%d records=%d",
 		a.TaskId, mergeStats.TotalPasses, mergeStats.SpillCount, mergeStats.PeakOpenStreams, mergeStats.TotalRecords)
 
 	// Execute reducer with globally sorted JSONL on stdin.
-	reduceOut, err := w.execCode(ctx, codePath, a.RuntimeEnv, &merged)
+	reduceOut, err := w.execCode(ctx, codePath, a.RuntimeEnv, mergedFile)
 	if err != nil {
 		return nil, nil, fmt.Errorf("reducer: %w", err)
 	}
