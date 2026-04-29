@@ -577,6 +577,87 @@ func (h *Handlers) HandleWorkerConfig(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// HandleAdminConfigWorkers is the unified POST /api/v1/admin/config/workers handler.
+//
+// It replaces the legacy PUT /api/v1/admin/workers/config and PUT /api/v1/admin/nodes/config
+// endpoints, consolidating all cluster configuration into a single call per the design spec.
+// All fields are optional; callers may supply any subset.
+func (h *Handlers) HandleAdminConfigWorkers(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		httputil.WriteErrorJSON(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+
+	var req models.AdminWorkerConfigRequest
+	if !decodeJSONBody(w, r, &req, "invalid worker config payload") {
+		return
+	}
+
+	if req.MaxPods < 0 {
+		httputil.WriteErrorJSON(w, http.StatusBadRequest, "maxPods must be non-negative")
+		return
+	}
+	if req.WorkerReplicas < 0 {
+		httputil.WriteErrorJSON(w, http.StatusBadRequest, "workerReplicas must be non-negative")
+		return
+	}
+	if req.MaxJobsPerNode < 0 {
+		httputil.WriteErrorJSON(w, http.StatusBadRequest, "maxJobsPerNode must be non-negative")
+		return
+	}
+	if req.MaxPods == 0 && req.WorkerReplicas == 0 && req.MaxJobsPerNode == 0 &&
+		strings.TrimSpace(req.CPULimit) == "" && strings.TrimSpace(req.MemoryLimit) == "" {
+		httputil.WriteErrorJSON(w, http.StatusBadRequest, "at least one configuration field must be provided")
+		return
+	}
+
+	update := manager.SystemConfigUpdate{
+		MaxConcurrentPods: req.MaxPods,
+		CPULimit:          req.CPULimit,
+		MemoryLimit:       req.MemoryLimit,
+		WorkerReplicas:    req.WorkerReplicas,
+		MaxJobsPerNode:    req.MaxJobsPerNode,
+	}
+
+	payload, err := json.Marshal(update)
+	if err != nil {
+		httputil.WriteErrorJSON(w, http.StatusInternalServerError, "failed to serialize config update")
+		return
+	}
+	managerURL := fmt.Sprintf("http://%s/internal/config", h.managerAddr)
+	proxyReq, err := http.NewRequestWithContext(r.Context(), http.MethodPut, managerURL, bytes.NewReader(payload))
+	if err != nil {
+		httputil.WriteErrorJSON(w, http.StatusInternalServerError, "failed to build proxy request")
+		return
+	}
+	if h.internalAPIKey != "" {
+		proxyReq.Header.Set("X-Internal-Token", h.internalAPIKey)
+	}
+
+	resp, err := h.httpClient.Do(proxyReq)
+	if err != nil {
+		http.Error(w, "manager service unreachable", http.StatusServiceUnavailable)
+		return
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		http.Error(w, "failed to update config via manager", resp.StatusCode)
+		return
+	}
+
+	if err := httputil.WriteJSON(w, http.StatusOK, map[string]any{
+		"status":         "accepted",
+		"maxPods":        req.MaxPods,
+		"cpuLimit":       req.CPULimit,
+		"memoryLimit":    req.MemoryLimit,
+		"workerReplicas": req.WorkerReplicas,
+		"maxJobsPerNode": req.MaxJobsPerNode,
+	}); err != nil {
+		return
+	}
+}
+
 // postSchedule POSTs a ScheduleJobRequest to the Manager's internal schedule endpoint.
 func (h *Handlers) postSchedule(ctx context.Context, req manager.ScheduleJobRequest) error {
 	body, err := json.Marshal(req)

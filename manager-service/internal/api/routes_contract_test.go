@@ -22,8 +22,7 @@ func TestCLIAdminRoutes_MatchAPIRoutes(t *testing.T) {
 		path   string
 		cmd    string
 	}{
-		{http.MethodPut, "/api/v1/admin/workers/config", "admin worker-config"},
-		{http.MethodPut, "/api/v1/admin/nodes/config", "admin configure-nodes"},
+		{http.MethodPost, "/api/v1/admin/config/workers", "admin configure-nodes / worker-config"},
 		{http.MethodPost, "/api/v1/admin/users", "admin create-user"},
 		{http.MethodDelete, "/api/v1/admin/users/testuser", "admin delete-user"},
 	}

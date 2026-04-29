@@ -1294,6 +1294,88 @@ func TestHandleConfigureNodes_AcceptsValidConfig(t *testing.T) {
 	}
 }
 
+// ── HandleAdminConfigWorkers tests ──────────────────────────
+
+func TestHandleAdminConfigWorkers_RejectsNonPost(t *testing.T) {
+	h := newTestHandlers()
+	req := httptest.NewRequest(http.MethodPut, "/api/v1/admin/config/workers", nil)
+	rec := httptest.NewRecorder()
+	h.HandleAdminConfigWorkers(rec, req)
+	if rec.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("expected %d, got %d", http.StatusMethodNotAllowed, rec.Code)
+	}
+}
+
+func TestHandleAdminConfigWorkers_RejectsEmptyPayload(t *testing.T) {
+	h := newTestHandlers()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/config/workers", strings.NewReader(`{}`))
+	rec := httptest.NewRecorder()
+	h.HandleAdminConfigWorkers(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected %d, got %d", http.StatusBadRequest, rec.Code)
+	}
+}
+
+func TestHandleAdminConfigWorkers_WorkerReplicasOnly(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	h := newTestHandlers()
+	h.managerAddr = server.Listener.Addr().String()
+
+	body := `{"workerReplicas":4,"maxJobsPerNode":8}`
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/config/workers", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	h.HandleAdminConfigWorkers(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected %d, got %d: %s", http.StatusOK, rec.Code, rec.Body.String())
+	}
+}
+
+func TestHandleAdminConfigWorkers_NodeConfigOnly(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	h := newTestHandlers()
+	h.managerAddr = server.Listener.Addr().String()
+
+	body := `{"maxPods":10,"cpuLimit":"500m","memoryLimit":"1Gi"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/config/workers", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	h.HandleAdminConfigWorkers(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected %d, got %d: %s", http.StatusOK, rec.Code, rec.Body.String())
+	}
+}
+
+func TestHandleAdminConfigWorkers_CombinedConfig(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	h := newTestHandlers()
+	h.managerAddr = server.Listener.Addr().String()
+
+	body := `{"maxPods":20,"cpuLimit":"1","memoryLimit":"2Gi","workerReplicas":3,"maxJobsPerNode":5}`
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/config/workers", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	h.HandleAdminConfigWorkers(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected %d, got %d: %s", http.StatusOK, rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"status":"accepted"`) {
+		t.Fatalf("expected accepted status in body, got %q", rec.Body.String())
+	}
+}
+
 // ── Route parsing edge-case regression tests ────────────────
 
 func TestHandleJobsGet_EmptyPathValue_Returns400(t *testing.T) {
