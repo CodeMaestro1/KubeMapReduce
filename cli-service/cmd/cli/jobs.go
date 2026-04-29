@@ -132,7 +132,7 @@ func cmdJobsSubmit(args []string) {
 	token, serverURL := jobsSubmitGetValidToken()
 	resp := jobsSubmitDoAuthRequestExpect(
 		http.MethodPost,
-		serverURL+"/jobs",
+		serverURL+"/api/v1/jobs",
 		token,
 		data,
 		http.StatusAccepted,
@@ -155,7 +155,7 @@ func cmdJobsList() {
 	token, serverURL := jobsListGetValidToken()
 	resp := jobsListDoAuthRequestExpect(
 		http.MethodGet,
-		serverURL+"/jobs",
+		serverURL+"/api/v1/jobs",
 		token,
 		nil,
 		http.StatusOK,
@@ -346,7 +346,7 @@ func cmdJobsStatus(args []string) {
 // Example: jobRequestPath("../jobs/abc 123", "/results") → "/jobs/..%2Fjobs%2Fabc%20123/results"
 func jobRequestPath(jobID, suffix string) string {
 	escaped := url.PathEscape(jobID)
-	return fmt.Sprintf("/jobs/%s%s", escaped, suffix)
+	return fmt.Sprintf("/api/v1/jobs/%s%s", escaped, suffix)
 }
 
 // safeJobResultFilename sanitizes a job ID to create a safe filesystem filename.

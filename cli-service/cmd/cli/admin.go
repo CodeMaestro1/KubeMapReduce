@@ -98,7 +98,7 @@ func cmdAdminCreateUser(args []string) {
 
 	resp := doAuthRequestExpect(
 		http.MethodPost,
-		serverURL+"/admin/users",
+		serverURL+"/api/v1/admin/users",
 		token,
 		payload,
 		http.StatusCreated,
@@ -131,7 +131,7 @@ func cmdAdminDeleteUser(args []string) {
 
 	resp := doAuthRequestExpect(
 		http.MethodDelete,
-		serverURL+"/admin/users/"+url.PathEscape(normalizedUsername),
+		serverURL+"/api/v1/admin/users/"+url.PathEscape(normalizedUsername),
 		token,
 		nil,
 		http.StatusNoContent,
@@ -182,7 +182,7 @@ func runAdminConfigureNodes(args []string, doAuthReq func(method, url string, be
 		return fmt.Errorf("failed to build configure-nodes request: %v", err)
 	}
 
-	resp, err := doAuthReq(http.MethodPut, serverURL+"/admin/nodes/config", token, payload)
+	resp, err := doAuthReq(http.MethodPut, serverURL+"/api/v1/admin/nodes/config", token, payload)
 	if err != nil {
 		return fmt.Errorf("configure-nodes request failed: %v", err)
 	}
@@ -250,7 +250,7 @@ func cmdAdminWorkerConfig(args []string) {
 
 	resp := doAuthRequestExpect(
 		http.MethodPut,
-		serverURL+"/admin/workers/config",
+		serverURL+"/api/v1/admin/workers/config",
 		token,
 		payload,
 		http.StatusAccepted,

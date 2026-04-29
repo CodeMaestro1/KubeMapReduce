@@ -41,8 +41,8 @@ func TestRunAdminConfigureNodes_SendsPutToCorrectEndpoint(t *testing.T) {
 	if capturedMethod != http.MethodPut {
 		t.Errorf("expected PUT, got %s", capturedMethod)
 	}
-	if capturedURL != "http://example.test/admin/nodes/config" {
-		t.Errorf("expected /admin/nodes/config, got %s", capturedURL)
+	if capturedURL != "http://example.test/api/v1/admin/nodes/config" {
+		t.Errorf("expected /api/v1/admin/nodes/config, got %s", capturedURL)
 	}
 }
 
