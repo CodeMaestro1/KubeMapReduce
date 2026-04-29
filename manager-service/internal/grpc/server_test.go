@@ -84,7 +84,7 @@ func TestWorkerServer_Register_Success(t *testing.T) {
 	mock.ExpectQuery(regexp.QuoteMeta(manager.QueryGetTaskInputs)).
 		WithArgs(taskID).
 		WillReturnRows(sqlmock.NewRows([]string{"input_uri", "byte_start", "byte_end", "split_checksum"}).
-			AddRow("s3://inputs/split-0.jsonl", 0, 128, "sha256-split-0"))
+			AddRow("s3://mapreduce-inputs/split-0.jsonl", 0, 128, "sha256-split-0"))
 
 	mock.ExpectQuery(regexp.QuoteMeta(manager.QueryGetAttemptDetails)).
 		WithArgs(attemptID).
@@ -151,7 +151,7 @@ func TestWorkerServer_Register_RuntimeEnvInferredFromExtension(t *testing.T) {
 			mock.ExpectQuery(regexp.QuoteMeta(manager.QueryGetTaskInputs)).
 				WithArgs(taskID).
 				WillReturnRows(sqlmock.NewRows([]string{"input_uri", "byte_start", "byte_end", "split_checksum"}).
-					AddRow("s3://inputs/data.jsonl", 0, 0, ""))
+					AddRow("s3://mapreduce-inputs/data.jsonl", 0, 0, ""))
 
 			mock.ExpectQuery(regexp.QuoteMeta(manager.QueryGetAttemptDetails)).
 				WithArgs(attemptID).
@@ -194,7 +194,7 @@ func TestWorkerServer_Register_PermissionDenied(t *testing.T) {
 	mock.ExpectQuery(regexp.QuoteMeta(manager.QueryGetTaskInputs)).
 		WithArgs(taskID).
 		WillReturnRows(sqlmock.NewRows([]string{"input_uri", "byte_start", "byte_end", "split_checksum"}).
-			AddRow("s3://inputs/split-0.jsonl", 0, 128, "sha256-split-0"))
+			AddRow("s3://mapreduce-inputs/split-0.jsonl", 0, 128, "sha256-split-0"))
 
 	mock.ExpectQuery(regexp.QuoteMeta(manager.QueryGetAttemptDetails)).
 		WithArgs(attemptID).
@@ -358,7 +358,7 @@ func TestWorkerServer_Register_DirectModeUnderThreshold(t *testing.T) {
 	mock.ExpectQuery(regexp.QuoteMeta(manager.QueryGetTaskInputs)).
 		WithArgs(taskID).
 		WillReturnRows(sqlmock.NewRows([]string{"input_uri", "byte_start", "byte_end", "split_checksum"}).
-			AddRow("s3://inputs/split-0.jsonl", 0, 128, "sha256-split-0"))
+			AddRow("s3://mapreduce-inputs/split-0.jsonl", 0, 128, "sha256-split-0"))
 	mock.ExpectQuery(regexp.QuoteMeta(manager.QueryGetAttemptDetails)).
 		WithArgs(attemptID).
 		WillReturnRows(sqlmock.NewRows([]string{"worker_id", "lease_id", "start_time", "last_renewed_at"}).
@@ -377,7 +377,7 @@ func TestWorkerServer_Register_DirectModeUnderThreshold(t *testing.T) {
 	if resp.IsManifest {
 		t.Fatalf("expected direct mode, got IsManifest=true")
 	}
-	if len(resp.DataLocations) != 1 || resp.DataLocations[0] != "s3://inputs/split-0.jsonl" {
+	if len(resp.DataLocations) != 1 || resp.DataLocations[0] != "s3://mapreduce-inputs/split-0.jsonl" {
 		t.Fatalf("expected inline data_locations, got %+v", resp.DataLocations)
 	}
 	if len(uploader.payload) != 0 {
@@ -407,7 +407,7 @@ func TestWorkerServer_Register_ManifestFallback(t *testing.T) {
 			AddRow("s3://code/mapper.py", "s3://code/reducer.py", "s3://code/combiner.py", 3, "sha256-input"))
 
 	// A single split with a URI long enough to push the proto over the 500-byte threshold.
-	longURI := "s3://inputs/" + strings.Repeat("a", 600) + ".jsonl"
+	longURI := "s3://mapreduce-inputs/" + strings.Repeat("a", 600) + ".jsonl"
 	mock.ExpectQuery(regexp.QuoteMeta(manager.QueryGetTaskInputs)).
 		WithArgs(taskID).
 		WillReturnRows(sqlmock.NewRows([]string{"input_uri", "byte_start", "byte_end", "split_checksum"}).
@@ -468,7 +468,7 @@ func TestWorkerServer_Register_ManifestUploadFailureReturnsError(t *testing.T) {
 		WithArgs(taskID).
 		WillReturnRows(sqlmock.NewRows([]string{"mapper_uri", "reducer_uri", "combiner_uri", "r_tasks", "input_checksum"}).
 			AddRow("s3://code/mapper.py", "s3://code/reducer.py", "s3://code/combiner.py", 3, "sha256-input"))
-	longURI := "s3://inputs/" + strings.Repeat("b", 600) + ".jsonl"
+	longURI := "s3://mapreduce-inputs/" + strings.Repeat("b", 600) + ".jsonl"
 	mock.ExpectQuery(regexp.QuoteMeta(manager.QueryGetTaskInputs)).
 		WithArgs(taskID).
 		WillReturnRows(sqlmock.NewRows([]string{"input_uri", "byte_start", "byte_end", "split_checksum"}).
@@ -516,7 +516,7 @@ func TestWorkerServer_Register_ManifestTooLargeReturnsResourceExhausted(t *testi
 		WithArgs(taskID).
 		WillReturnRows(sqlmock.NewRows([]string{"mapper_uri", "reducer_uri", "combiner_uri", "r_tasks", "input_checksum"}).
 			AddRow("s3://code/mapper.py", "s3://code/reducer.py", "s3://code/combiner.py", 3, "sha256-input"))
-	longURI := "s3://inputs/" + strings.Repeat("c", 600) + ".jsonl"
+	longURI := "s3://mapreduce-inputs/" + strings.Repeat("c", 600) + ".jsonl"
 	mock.ExpectQuery(regexp.QuoteMeta(manager.QueryGetTaskInputs)).
 		WithArgs(taskID).
 		WillReturnRows(sqlmock.NewRows([]string{"input_uri", "byte_start", "byte_end", "split_checksum"}).
@@ -723,7 +723,7 @@ func TestWorkerServer_Register_MapTaskSingleSplitURI(t *testing.T) {
 	mock.ExpectQuery(regexp.QuoteMeta(manager.QueryGetTaskInputs)).
 		WithArgs(taskID).
 		WillReturnRows(sqlmock.NewRows([]string{"input_uri", "byte_start", "byte_end", "split_checksum"}).
-			AddRow("s3://inputs/split-0.jsonl", int64(100), int64(200), "sha256-0"))
+			AddRow("s3://mapreduce-inputs/split-0.jsonl", int64(100), int64(200), "sha256-0"))
 	mock.ExpectQuery(regexp.QuoteMeta(manager.QueryGetAttemptDetails)).
 		WithArgs(attemptID).
 		WillReturnRows(sqlmock.NewRows([]string{"worker_id", "lease_id", "start_time", "last_renewed_at"}).
@@ -733,8 +733,8 @@ func TestWorkerServer_Register_MapTaskSingleSplitURI(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(resp.DataLocations) != 1 || resp.DataLocations[0] != "s3://inputs/split-0.jsonl" {
-		t.Errorf("expected exactly 1 URI 's3://inputs/split-0.jsonl', got %v", resp.DataLocations)
+	if len(resp.DataLocations) != 1 || resp.DataLocations[0] != "s3://mapreduce-inputs/split-0.jsonl" {
+		t.Errorf("expected exactly 1 URI 's3://mapreduce-inputs/split-0.jsonl', got %v", resp.DataLocations)
 	}
 	if resp.ByteStart != 100 || resp.ByteEnd != 200 {
 		t.Errorf("expected byte range [100,200], got [%d,%d]", resp.ByteStart, resp.ByteEnd)
@@ -745,8 +745,8 @@ func TestWorkerServer_Register_MapTaskSingleSplitURI(t *testing.T) {
 	if len(resp.InputSplits) != 1 {
 		t.Fatalf("expected 1 input split, got %d", len(resp.InputSplits))
 	}
-	if resp.InputSplits[0].InputUri != "s3://inputs/split-0.jsonl" {
-		t.Fatalf("expected split URI s3://inputs/split-0.jsonl, got %q", resp.InputSplits[0].InputUri)
+	if resp.InputSplits[0].InputUri != "s3://mapreduce-inputs/split-0.jsonl" {
+		t.Fatalf("expected split URI s3://mapreduce-inputs/split-0.jsonl, got %q", resp.InputSplits[0].InputUri)
 	}
 }
 
@@ -772,8 +772,8 @@ func TestWorkerServer_Register_MapTaskMultipleSplitsPreservesAll(t *testing.T) {
 	mock.ExpectQuery(regexp.QuoteMeta(manager.QueryGetTaskInputs)).
 		WithArgs(taskID).
 		WillReturnRows(sqlmock.NewRows([]string{"input_uri", "byte_start", "byte_end", "split_checksum"}).
-			AddRow("s3://inputs/split-0.jsonl", int64(0), int64(128), "sha256-0").
-			AddRow("s3://inputs/split-1.jsonl", int64(128), int64(256), "sha256-1"))
+			AddRow("s3://mapreduce-inputs/split-0.jsonl", int64(0), int64(128), "sha256-0").
+			AddRow("s3://mapreduce-inputs/split-1.jsonl", int64(128), int64(256), "sha256-1"))
 	mock.ExpectQuery(regexp.QuoteMeta(manager.QueryGetAttemptDetails)).
 		WithArgs(attemptID).
 		WillReturnRows(sqlmock.NewRows([]string{"worker_id", "lease_id", "start_time", "last_renewed_at"}).
@@ -783,7 +783,7 @@ func TestWorkerServer_Register_MapTaskMultipleSplitsPreservesAll(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(resp.DataLocations) != 2 || resp.DataLocations[0] != "s3://inputs/split-0.jsonl" || resp.DataLocations[1] != "s3://inputs/split-1.jsonl" {
+	if len(resp.DataLocations) != 2 || resp.DataLocations[0] != "s3://mapreduce-inputs/split-0.jsonl" || resp.DataLocations[1] != "s3://mapreduce-inputs/split-1.jsonl" {
 		t.Errorf("expected both split URIs in data locations, got %v", resp.DataLocations)
 	}
 	if resp.ByteStart != 0 || resp.ByteEnd != 128 {
@@ -795,7 +795,7 @@ func TestWorkerServer_Register_MapTaskMultipleSplitsPreservesAll(t *testing.T) {
 	if len(resp.InputSplits) != 2 {
 		t.Fatalf("expected 2 input splits, got %d", len(resp.InputSplits))
 	}
-	if resp.InputSplits[0].InputUri != "s3://inputs/split-0.jsonl" || resp.InputSplits[1].InputUri != "s3://inputs/split-1.jsonl" {
+	if resp.InputSplits[0].InputUri != "s3://mapreduce-inputs/split-0.jsonl" || resp.InputSplits[1].InputUri != "s3://mapreduce-inputs/split-1.jsonl" {
 		t.Fatalf("unexpected split URIs: %+v", resp.InputSplits)
 	}
 	if resp.InputSplits[1].ByteStart != 128 || resp.InputSplits[1].ByteEnd != 256 {
