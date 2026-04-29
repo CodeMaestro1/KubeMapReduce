@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -154,7 +155,11 @@ func (h *Handlers) HandleJobsSubmit(w http.ResponseWriter, r *http.Request) {
 		combinerURI = request.Combiner.Artifact
 	}
 
-	schedReq := buildScheduleRequest(r.Context(), newScheduleObjectClient(h.minioClient), jobID, userID, request, combinerURI)
+	schedReq, err := buildScheduleRequest(r.Context(), newScheduleObjectClient(h.minioClient), jobID, userID, request, combinerURI)
+	if err != nil {
+		httputil.WriteErrorJSON(w, http.StatusInternalServerError, fmt.Sprintf("failed to prepare job splits: %v", err))
+		return
+	}
 
 	rec := JobRecord{
 		JobID:       jobID,
@@ -709,13 +714,14 @@ func (m *minioScheduleObjectClient) GetObject(ctx context.Context, bucketName, o
 }
 
 // buildScheduleRequest constructs a ScheduleJobRequest for a fresh job submission.
-// It computes a map-task count from the input size when object storage metadata is available.
-func buildScheduleRequest(ctx context.Context, storage scheduleObjectClient, jobID, userID string, req models.JobSubmissionRequest, combinerURI string) manager.ScheduleJobRequest {
+// It uses buildInputSplits to create one Map task per input split and R Reduce tasks.
+func buildScheduleRequest(ctx context.Context, storage scheduleObjectClient, jobID, userID string, req models.JobSubmissionRequest, combinerURI string) (manager.ScheduleJobRequest, error) {
 	inputURI := fmt.Sprintf("s3://%s/%s", inputBucketName, req.Filename)
 	inputSplits := buildInputSplits(ctx, storage, req.Filename, inputURI)
 
 	tasks := make([]manager.ScheduleTask, 0, len(inputSplits)+req.Reducers)
 	for _, split := range inputSplits {
+		split := split
 		tasks = append(tasks, manager.ScheduleTask{
 			TaskID:      uuid.New().String(),
 			TaskType:    "Map",
@@ -739,7 +745,33 @@ func buildScheduleRequest(ctx context.Context, storage scheduleObjectClient, job
 		MTasks:      len(inputSplits),
 		RTasks:      req.Reducers,
 		Tasks:       tasks,
+	}, nil
+}
+
+func checksumObjectRange(ctx context.Context, storage scheduleObjectClient, bucketName, objectName string, start, end int64) (string, error) {
+	opts := minio.GetObjectOptions{}
+	if err := opts.SetRange(start, end); err != nil {
+		return "", fmt.Errorf("set range [%d,%d]: %w", start, end, err)
 	}
+
+	rc, err := storage.GetObject(ctx, bucketName, objectName, opts)
+	if err != nil {
+		return "", fmt.Errorf("get object range %s/%s [%d,%d]: %w", bucketName, objectName, start, end, err)
+	}
+	defer rc.Close()
+
+	h := sha256.New()
+	n, err := io.Copy(h, rc)
+	if err != nil {
+		return "", fmt.Errorf("read object range %s/%s [%d,%d]: %w", bucketName, objectName, start, end, err)
+	}
+
+	expected := end - start + 1
+	if n != expected {
+		return "", fmt.Errorf("short read %s/%s [%d,%d]: got %d bytes, expected %d", bucketName, objectName, start, end, n, expected)
+	}
+
+	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
 func buildInputSplits(ctx context.Context, storage scheduleObjectClient, objectName, inputURI string) []manager.ScheduleTaskInput {
@@ -786,32 +818,6 @@ func buildInputSplits(ctx context.Context, storage scheduleObjectClient, objectN
 		return []manager.ScheduleTaskInput{{InputURI: inputURI}}
 	}
 	return splits
-}
-
-func checksumObjectRange(ctx context.Context, storage scheduleObjectClient, bucketName, objectName string, start, end int64) (string, error) {
-	opts := minio.GetObjectOptions{}
-	if err := opts.SetRange(start, end); err != nil {
-		return "", fmt.Errorf("set range [%d,%d]: %w", start, end, err)
-	}
-
-	rc, err := storage.GetObject(ctx, bucketName, objectName, opts)
-	if err != nil {
-		return "", fmt.Errorf("get object range %s/%s [%d,%d]: %w", bucketName, objectName, start, end, err)
-	}
-	defer rc.Close()
-
-	h := sha256.New()
-	n, err := io.Copy(h, rc)
-	if err != nil {
-		return "", fmt.Errorf("read object range %s/%s [%d,%d]: %w", bucketName, objectName, start, end, err)
-	}
-
-	expected := end - start + 1
-	if n != expected {
-		return "", fmt.Errorf("short read %s/%s [%d,%d]: got %d bytes, expected %d", bucketName, objectName, start, end, n, expected)
-	}
-
-	return fmt.Sprintf("%x", h.Sum(nil)), nil
 }
 
 func currentRequestUserID(r *http.Request) (string, error) {
