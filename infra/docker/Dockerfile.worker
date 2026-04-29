@@ -1,0 +1,22 @@
+FROM golang:1.26-bookworm AS builder
+WORKDIR /app
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /worker ./worker-service/cmd/worker
+
+FROM debian:bookworm-slim
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3 \
+    python3-pip \
+    default-jre-headless \
+    gcc \
+    g++ \
+    ca-certificates \
+  && rm -rf /var/lib/apt/lists/*
+
+RUN groupadd --gid 65532 nonroot && useradd --uid 65532 --gid 65532 --no-create-home nonroot
+COPY --from=builder /worker /worker
+USER nonroot
+EXPOSE 50052
+ENTRYPOINT ["/worker"]

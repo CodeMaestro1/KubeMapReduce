@@ -7,3 +7,57 @@ services:
     ports:
       - "8080:8080"
     command: start-dev
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8080/health/ready || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  auth-setup:
+    build:
+      context: ../..
+      dockerfile: infra/docker/Dockerfile.auth-setup
+    container_name: mapreduce-auth-setup
+    env_file:
+      - .env
+    depends_on:
+      keycloak:
+        condition: service_healthy
+    restart: on-failure
+
+  api:
+    build:
+      context: ../..
+      dockerfile: infra/docker/Dockerfile.api
+    container_name: mapreduce-api
+    env_file:
+      - .env
+    ports:
+      - "8081:8081"
+    depends_on:
+      keycloak:
+        condition: service_healthy
+
+  manager:
+    build:
+      context: ../..
+      dockerfile: infra/docker/Dockerfile.manager
+    container_name: mapreduce-manager
+    env_file:
+      - .env
+    ports:
+      - "50051:50051"
+    depends_on:
+      - api
+
+  worker:
+    build:
+      context: ../..
+      dockerfile: infra/docker/Dockerfile.worker
+    container_name: mapreduce-worker
+    env_file:
+      - .env
+    ports:
+      - "50052:50052"
+    depends_on:
+      - manager

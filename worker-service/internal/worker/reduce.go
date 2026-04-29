@@ -36,17 +36,30 @@ func (w *Worker) runReduce(ctx context.Context, a *pb.TaskAssignment) (outputURI
 		}
 	}()
 
-	for _, uri := range a.DataLocations {
-		bucket, key, parseErr := parseS3URI(uri)
+	for _, rawURI := range a.DataLocations {
+		dataURI, expectedChecksum := splitChecksumURI(rawURI)
+		bucket, key, parseErr := parseS3URI(dataURI)
 		if parseErr != nil {
 			return nil, nil, parseErr
 		}
 		obj, getErr := w.storage.GetObject(ctx, bucket, key, minio.GetObjectOptions{})
 		if getErr != nil {
-			return nil, nil, fmt.Errorf("GetObject %s: %w", uri, getErr)
+			return nil, nil, fmt.Errorf("GetObject %s: %w", dataURI, getErr)
 		}
-		readers = append(readers, obj)
-		closers = append(closers, obj)
+		var buf bytes.Buffer
+		h := sha256.New()
+		if _, copyErr := io.Copy(io.MultiWriter(&buf, h), obj); copyErr != nil {
+			obj.Close()
+			return nil, nil, fmt.Errorf("reading shuffle input %s: %w", dataURI, copyErr)
+		}
+		obj.Close()
+		if expectedChecksum != "" {
+			got := hex.EncodeToString(h.Sum(nil))
+			if got != expectedChecksum {
+				return nil, nil, fmt.Errorf("checksum mismatch for shuffle input %s: want %s got %s", dataURI, expectedChecksum, got)
+			}
+		}
+		readers = append(readers, &buf)
 	}
 
 	// External k-way merge sort over pre-sorted mapper output files.

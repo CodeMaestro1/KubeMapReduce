@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"sync"
 	"time"
 
 	"github.com/minio/minio-go/v7"
@@ -87,7 +88,8 @@ func (w *Worker) Run(ctx context.Context) error {
 
 	// terminated receives the reason string when the task must abort.
 	terminated := make(chan string, 1)
-	go w.heartbeatLoop(ctx, assignment, taskCancel, terminated)
+	reporter := &failureReporter{}
+	go w.heartbeatLoop(ctx, assignment, taskCancel, terminated, reporter)
 
 	var outputURIs, outputChecksums []string
 	switch assignment.Type {
@@ -102,15 +104,25 @@ func (w *Worker) Run(ctx context.Context) error {
 	// Use a fresh context for the final RPC (taskCtx may already be cancelled).
 	reportCtx := context.Background()
 
-	// If the heartbeat loop sent a termination signal, report failure and exit.
-	select {
-	case reason := <-terminated:
-		_ = w.reportFailure(reportCtx, assignment, "terminated: "+reason)
+	if reason, ok := terminationReason(terminated, ctx, taskCtx); ok {
+		reporter.start(w, assignment, reason)
+		reporter.wait(5 * time.Second)
 		return fmt.Errorf("terminated: %s", reason)
-	default:
 	}
 
 	if err != nil {
+		if ctx.Err() != nil || taskCtx.Err() != nil {
+			reason := "SIGTERM"
+			if ctx.Err() == nil {
+				reason = "manager TERMINATE"
+			}
+			if bufferedReason, ok := terminationReason(terminated, ctx, taskCtx); ok {
+				reason = bufferedReason
+			}
+			reporter.start(w, assignment, reason)
+			reporter.wait(5 * time.Second)
+			return fmt.Errorf("terminated: %s", reason)
+		}
 		_ = w.reportFailure(reportCtx, assignment, err.Error())
 		return err
 	}
@@ -128,7 +140,7 @@ func (w *Worker) Run(ctx context.Context) error {
 // heartbeatLoop sends periodic Heartbeat RPCs.
 // On TERMINATE response or context cancellation it cancels taskCancel and
 // sends the reason to terminated (buffered, so it never blocks).
-func (w *Worker) heartbeatLoop(ctx context.Context, a *pb.TaskAssignment, taskCancel context.CancelFunc, terminated chan<- string) {
+func (w *Worker) heartbeatLoop(ctx context.Context, a *pb.TaskAssignment, taskCancel context.CancelFunc, terminated chan<- string, reporter *failureReporter) {
 	ticker := time.NewTicker(time.Duration(w.cfg.HeartbeatIntervalSec) * time.Second)
 	defer ticker.Stop()
 
@@ -136,6 +148,7 @@ func (w *Worker) heartbeatLoop(ctx context.Context, a *pb.TaskAssignment, taskCa
 		select {
 		case <-ctx.Done():
 			// Parent context cancelled: SIGTERM or caller shutdown.
+			reporter.start(w, a, "SIGTERM")
 			terminated <- "SIGTERM"
 			taskCancel()
 			return
@@ -153,6 +166,7 @@ func (w *Worker) heartbeatLoop(ctx context.Context, a *pb.TaskAssignment, taskCa
 			}
 			if resp.Action == pb.HeartbeatResponse_TERMINATE {
 				log.Printf("[worker] manager sent TERMINATE")
+				reporter.start(w, a, "manager TERMINATE")
 				terminated <- "manager TERMINATE"
 				taskCancel()
 				return
@@ -171,4 +185,49 @@ func (w *Worker) reportFailure(ctx context.Context, a *pb.TaskAssignment, reason
 		ErrorMessage: reason,
 	})
 	return err
+}
+
+type failureReporter struct {
+	once sync.Once
+	wg   sync.WaitGroup
+}
+
+func (r *failureReporter) start(w *Worker, a *pb.TaskAssignment, reason string) {
+	r.once.Do(func() {
+		r.wg.Add(1)
+		go func() {
+			defer r.wg.Done()
+			reportCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			_ = w.reportFailure(reportCtx, a, reason)
+		}()
+	})
+}
+
+func (r *failureReporter) wait(timeout time.Duration) {
+	done := make(chan struct{})
+	go func() {
+		r.wg.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(timeout):
+	}
+}
+
+func terminationReason(terminated <-chan string, ctx, taskCtx context.Context) (string, bool) {
+	select {
+	case reason := <-terminated:
+		return reason, true
+	default:
+	}
+	if ctx.Err() != nil {
+		return "SIGTERM", true
+	}
+	if taskCtx.Err() != nil {
+		return "manager TERMINATE", true
+	}
+	return "", false
 }

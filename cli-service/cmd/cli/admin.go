@@ -98,7 +98,7 @@ func cmdAdminCreateUser(args []string) {
 
 	resp := doAuthRequestExpect(
 		http.MethodPost,
-		serverURL+"/admin/users",
+		serverURL+"/api/v1/admin/users",
 		token,
 		payload,
 		http.StatusCreated,
@@ -131,7 +131,7 @@ func cmdAdminDeleteUser(args []string) {
 
 	resp := doAuthRequestExpect(
 		http.MethodDelete,
-		serverURL+"/admin/users/"+url.PathEscape(normalizedUsername),
+		serverURL+"/api/v1/admin/users/"+url.PathEscape(normalizedUsername),
 		token,
 		nil,
 		http.StatusNoContent,
@@ -161,8 +161,8 @@ func cmdAdminConfigureNodes(args []string) {
 // runAdminConfigureNodes is the implementation of the admin configure-nodes command.
 // It accepts optional doAuthRequest override for testing purposes.
 func runAdminConfigureNodes(args []string, doAuthReq func(method, url string, bearerToken string, body []byte) (*http.Response, error)) error {
-	token, serverURL := getValidToken()
-	requireAdminRole(token)
+	token, serverURL := adminGetValidToken()
+	adminRequireAdminRole(token)
 	fs := flag.NewFlagSet("admin configure-nodes", flag.ExitOnError)
 	maxPods := fs.Int("max-pods", 0, "Maximum concurrent pods (required, > 0)")
 	cpuLimit := fs.String("cpu", "", "CPU limit per worker pod (e.g., 500m)")
@@ -182,7 +182,7 @@ func runAdminConfigureNodes(args []string, doAuthReq func(method, url string, be
 		return fmt.Errorf("failed to build configure-nodes request: %v", err)
 	}
 
-	resp, err := doAuthReq(http.MethodPost, serverURL+"/admin/configure-nodes", token, payload)
+	resp, err := doAuthReq(http.MethodPost, serverURL+"/api/v1/admin/config/workers", token, payload)
 	if err != nil {
 		return fmt.Errorf("configure-nodes request failed: %v", err)
 	}
@@ -249,8 +249,8 @@ func cmdAdminWorkerConfig(args []string) {
 	}
 
 	resp := doAuthRequestExpect(
-		http.MethodPut,
-		serverURL+"/admin/workers/config",
+		http.MethodPost,
+		serverURL+"/api/v1/admin/config/workers",
 		token,
 		payload,
 		http.StatusAccepted,
