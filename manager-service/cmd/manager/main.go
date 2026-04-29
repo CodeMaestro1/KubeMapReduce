@@ -418,7 +418,7 @@ func setupInternalMux(scheduler JobScheduler, db Pingable, cfg *config.Config) *
 		}
 		w.WriteHeader(http.StatusOK)
 	})
-	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte("OK"))
 	})
@@ -435,8 +435,5 @@ func setupInternalMux(scheduler JobScheduler, db Pingable, cfg *config.Config) *
 		w.Write([]byte("OK"))
 	}
 	mux.HandleFunc("/readyz", readinessHandler)
-	// /ready is kept as an alias for /readyz for backwards compatibility with
-	// existing probe configurations and documentation.
-	mux.HandleFunc("/ready", readinessHandler)
 	return mux
 }

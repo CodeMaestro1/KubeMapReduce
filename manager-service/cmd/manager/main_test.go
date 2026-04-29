@@ -210,27 +210,15 @@ func TestSetupInternalMux_Readyz(t *testing.T) {
 			t.Errorf("expected 503 Service Unavailable, got %d", rec.Code)
 		}
 	})
-	t.Run("ready alias db ping success", func(t *testing.T) {
-		db := &mockPingable{pingFunc: func(ctx context.Context) error { return nil }}
-		mux := setupInternalMux(sched, db, cfg)
-		req := httptest.NewRequest("GET", "/ready", nil)
+
+	t.Run("healthz liveness", func(t *testing.T) {
+		mux := setupInternalMux(sched, nil, cfg)
+		req := httptest.NewRequest("GET", "/healthz", nil)
 		rec := httptest.NewRecorder()
 		mux.ServeHTTP(rec, req)
 
 		if rec.Code != http.StatusOK {
-			t.Errorf("/ready: expected 200 OK, got %d", rec.Code)
-		}
-	})
-
-	t.Run("ready alias db ping failure", func(t *testing.T) {
-		db := &mockPingable{pingFunc: func(ctx context.Context) error { return errors.New("db down") }}
-		mux := setupInternalMux(sched, db, cfg)
-		req := httptest.NewRequest("GET", "/ready", nil)
-		rec := httptest.NewRecorder()
-		mux.ServeHTTP(rec, req)
-
-		if rec.Code != http.StatusServiceUnavailable {
-			t.Errorf("/ready: expected 503 Service Unavailable, got %d", rec.Code)
+			t.Errorf("/healthz: expected 200 OK, got %d", rec.Code)
 		}
 	})
 }

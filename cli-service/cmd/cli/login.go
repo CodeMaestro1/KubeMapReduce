@@ -126,7 +126,7 @@ func runHealth() error {
 	ctx, cancel := cliRequestContext()
 	defer cancel()
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, apiURL()+"/health", nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, apiURL()+"/healthz", nil)
 	if err != nil {
 		return fmt.Errorf("health check request failed: %w", err)
 	}
