@@ -215,8 +215,8 @@ func TestHandleJobsSubmit_SchedulesJobAfterPersist(t *testing.T) {
 	if capturedReq.ReducerURI != "reducer.py" {
 		t.Errorf("expected ReducerURI reducer.py, got %q", capturedReq.ReducerURI)
 	}
-	if capturedReq.InputURI != "s3://inputs/input.jsonl" {
-		t.Errorf("expected InputURI s3://inputs/input.jsonl, got %q", capturedReq.InputURI)
+	if capturedReq.InputURI != "s3://mapreduce-inputs/input.jsonl" {
+		t.Errorf("expected InputURI s3://mapreduce-inputs/input.jsonl, got %q", capturedReq.InputURI)
 	}
 	if capturedReq.MTasks != 1 {
 		t.Errorf("expected MTasks=1, got %d", capturedReq.MTasks)
@@ -254,7 +254,7 @@ func TestBuildScheduleRequest_SplitsLargeInputAndHashesEachSplit(t *testing.T) {
 	payload := []byte("abcdefgh")
 	store := &fakeScheduleObjectClient{
 		objects: map[string][]byte{
-			"inputs/input.jsonl": payload,
+			"mapreduce-inputs/input.jsonl": payload,
 		},
 	}
 
@@ -262,8 +262,8 @@ func TestBuildScheduleRequest_SplitsLargeInputAndHashesEachSplit(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if req.InputURI != "s3://inputs/input.jsonl" {
-		t.Fatalf("InputURI = %q, want %q", req.InputURI, "s3://inputs/input.jsonl")
+	if req.InputURI != "s3://mapreduce-inputs/input.jsonl" {
+		t.Fatalf("InputURI = %q, want %q", req.InputURI, "s3://mapreduce-inputs/input.jsonl")
 	}
 	if req.MTasks != 2 {
 		t.Fatalf("MTasks = %d, want 2", req.MTasks)
