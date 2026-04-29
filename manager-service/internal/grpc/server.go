@@ -18,6 +18,7 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	"kubemapreduce/manager-service/internal/manager"
+	"kubemapreduce/manager-service/pkg/observability"
 	pb "kubemapreduce/proto"
 )
 
@@ -209,14 +210,23 @@ func (s *WorkerServer) Heartbeat(ctx context.Context, req *pb.HeartbeatRequest) 
 	err := s.scheduler.RenewLease(ctx, req.TaskId, req.AttemptId, req.LeaseId)
 	if err != nil {
 		if errors.Is(err, manager.ErrTaskNotFound) {
+			if m := observability.DefaultMetrics(); m != nil {
+				m.HeartbeatsTotal.WithLabelValues("TERMINATE").Inc()
+			}
 			return &pb.HeartbeatResponse{Action: pb.HeartbeatResponse_TERMINATE}, nil
 		}
 		if errors.Is(err, manager.ErrStaleAttempt) || errors.Is(err, manager.ErrExpiredLease) || errors.Is(err, manager.ErrInvalidStateTransition) {
+			if m := observability.DefaultMetrics(); m != nil {
+				m.HeartbeatsTotal.WithLabelValues("TERMINATE").Inc()
+			}
 			return &pb.HeartbeatResponse{Action: pb.HeartbeatResponse_TERMINATE}, nil
 		}
 		return nil, status.Errorf(codes.Internal, "failed to renew lease: %v", err)
 	}
 
+	if m := observability.DefaultMetrics(); m != nil {
+		m.HeartbeatsTotal.WithLabelValues("CONTINUE").Inc()
+	}
 	return &pb.HeartbeatResponse{Action: pb.HeartbeatResponse_CONTINUE}, nil
 }
 

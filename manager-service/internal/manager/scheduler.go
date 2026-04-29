@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"kubemapreduce/manager-service/pkg/observability"
 	"log/slog"
 	"strings"
 	"sync"
@@ -544,6 +545,9 @@ func (s *Scheduler) ScheduleJob(ctx context.Context, req ScheduleJobRequest) err
 			return err
 		}
 		scheduledTasks = append(scheduledTasks, taskID.String())
+		if m := observability.DefaultMetrics(); m != nil {
+			m.TasksScheduled.WithLabelValues(task.TaskType).Inc()
+		}
 
 		for _, split := range task.InputSplits {
 			if _, err := tx.ExecContext(ctx, QueryInsertTaskInput,
@@ -724,6 +728,10 @@ func (s *Scheduler) CompleteTask(ctx context.Context, taskID string, attemptID s
 		return err
 	}
 
+	if m := observability.DefaultMetrics(); m != nil {
+		m.TasksCompleted.Inc()
+	}
+
 	if jobCompleted {
 		go func() {
 			cancelCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Minute)
@@ -881,6 +889,10 @@ func (s *Scheduler) FailTask(ctx context.Context, taskID string, attemptID strin
 
 	if err := tx.Commit(); err != nil {
 		return err
+	}
+
+	if m := observability.DefaultMetrics(); m != nil {
+		m.TasksFailed.Inc()
 	}
 
 	if newState == "Failed" {

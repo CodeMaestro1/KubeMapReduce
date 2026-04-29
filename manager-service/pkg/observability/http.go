@@ -107,11 +107,35 @@ func RequestIDMiddleware(base *slog.Logger) func(http.Handler) http.Handler {
 			if status == 0 {
 				status = http.StatusOK
 			}
+			duration := time.Since(start)
+			if m := DefaultMetrics(); m != nil && m.HTTPRequestDurationSeconds != nil {
+				m.HTTPRequestDurationSeconds.WithLabelValues(r.Method, statusClass(status)).Observe(duration.Seconds())
+			}
 			reqLogger.LogAttrs(ctx, slog.LevelInfo, "http_request",
 				slog.Int("status", status),
-				slog.Duration("duration", time.Since(start)),
+				slog.Duration("duration", duration),
 				slog.Int("bytes", rec.bytes),
 			)
 		})
+	}
+}
+
+// statusClass maps an HTTP status code into the canonical "Nxx" bucket
+// (e.g. 200 -> "2xx", 404 -> "4xx") used as a Prometheus label value to
+// keep cardinality bounded.
+func statusClass(status int) string {
+	switch {
+	case status >= 500:
+		return "5xx"
+	case status >= 400:
+		return "4xx"
+	case status >= 300:
+		return "3xx"
+	case status >= 200:
+		return "2xx"
+	case status >= 100:
+		return "1xx"
+	default:
+		return "unknown"
 	}
 }
