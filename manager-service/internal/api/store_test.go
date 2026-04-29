@@ -184,7 +184,7 @@ func TestPostgresJobStore_ListJobs_ReturnsEmptySlice(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListJobs failed: %v", err)
 	}
-	if jobs != nil && len(jobs) != 0 {
+	if len(jobs) != 0 {
 		t.Fatalf("expected nil or empty, got %d jobs", len(jobs))
 	}
 }
