@@ -37,11 +37,11 @@ type Handlers struct {
 }
 
 const (
-	defaultReducers   = 1
-	defaultListLimit  = 100
-	maxListLimit      = 500
-	maxJSONBodyBytes  = 1 << 20 // 1 MiB
-	inputBucketName = "inputs"
+	defaultReducers  = 1
+	defaultListLimit = 100
+	maxListLimit     = 500
+	maxJSONBodyBytes = 1 << 20 // 1 MiB
+	inputBucketName  = "inputs"
 )
 
 var defaultTargetSplitSizeBytes int64 = 64 * 1024 * 1024
@@ -1091,4 +1091,3 @@ func decodeJSONBody(w http.ResponseWriter, r *http.Request, out any, invalidMess
 	}
 	return true
 }
-
