@@ -2,7 +2,6 @@ package validation
 
 import (
 	"fmt"
-	"path/filepath"
 	"strings"
 
 	"kubemapreduce/manager-service/internal/models"
@@ -34,15 +33,29 @@ var allowedLanguages = map[string]struct{}{
 // This early validation prevents malformed jobs from entering the scheduler and
 // wasting cluster resources.
 func ValidateJobSubmission(req models.JobSubmissionRequest) error {
-	if req.Filename == "" {
+	filename := strings.TrimSpace(req.Filename)
+	if filename == "" {
 		return NewBadRequestError("filename is required")
 	}
 
-	clean := filepath.Clean(req.Filename)
-	// Enforce that filename is a simple basename (no directories) and not a traversal token.
-	// This prevents path traversal attacks where a user might try to read /etc/passwd or
-	// write to sensitive system directories via the MapReduce input/output paths.
-	if clean == "." || clean == ".." || filepath.IsAbs(clean) || filepath.Base(clean) != clean {
+	// Accept object keys and prefixes (e.g. folder/file.jsonl, folder/), but reject
+	// absolute paths, traversal segments, Windows separators, and empty path segments.
+	if strings.HasPrefix(filename, "/") || strings.Contains(filename, "\\") {
+		return NewBadRequestError("filename is invalid")
+	}
+	parts := strings.Split(filename, "/")
+	for i, part := range parts {
+		if part == "" {
+			if i == len(parts)-1 {
+				continue
+			}
+			return NewBadRequestError("filename is invalid")
+		}
+		if part == "." || part == ".." {
+			return NewBadRequestError("filename is invalid")
+		}
+	}
+	if len(parts) == 1 && (parts[0] == "." || parts[0] == "..") {
 		return NewBadRequestError("filename is invalid")
 	}
 

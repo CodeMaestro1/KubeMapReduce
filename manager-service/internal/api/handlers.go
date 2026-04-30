@@ -11,6 +11,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -731,6 +732,12 @@ func (h *Handlers) postSchedule(ctx context.Context, req manager.ScheduleJobRequ
 type scheduleObjectClient interface {
 	StatObject(ctx context.Context, bucketName, objectName string, opts minio.StatObjectOptions) (minio.ObjectInfo, error)
 	GetObject(ctx context.Context, bucketName, objectName string, opts minio.GetObjectOptions) (io.ReadCloser, error)
+	ListObjects(ctx context.Context, bucketName, prefix string, recursive bool) ([]scheduleObjectInfo, error)
+}
+
+type scheduleObjectInfo struct {
+	Key  string
+	Size int64
 }
 
 type minioScheduleObjectClient struct {
@@ -752,20 +759,34 @@ func (m *minioScheduleObjectClient) GetObject(ctx context.Context, bucketName, o
 	return m.client.GetObject(ctx, bucketName, objectName, opts)
 }
 
+func (m *minioScheduleObjectClient) ListObjects(ctx context.Context, bucketName, prefix string, recursive bool) ([]scheduleObjectInfo, error) {
+	entries := make([]scheduleObjectInfo, 0)
+	for obj := range m.client.ListObjects(ctx, bucketName, minio.ListObjectsOptions{Prefix: prefix, Recursive: recursive}) {
+		if obj.Err != nil {
+			return nil, obj.Err
+		}
+		if strings.TrimSpace(obj.Key) == "" || strings.HasSuffix(obj.Key, "/") {
+			continue
+		}
+		entries = append(entries, scheduleObjectInfo{Key: obj.Key, Size: obj.Size})
+	}
+	return entries, nil
+}
+
 // buildScheduleRequest constructs a ScheduleJobRequest for a fresh job submission.
 // It uses buildInputSplits to create one Map task per input split and R Reduce tasks.
 // Checksum/stat errors are handled best-effort inside buildInputSplits (fallback to single split).
 func buildScheduleRequest(ctx context.Context, storage scheduleObjectClient, jobID, userID string, req models.JobSubmissionRequest, combinerURI string) manager.ScheduleJobRequest {
 	inputURI := fmt.Sprintf("s3://%s/%s", inputBucketName, req.Filename)
-	inputSplits := buildInputSplits(ctx, storage, req.Filename, inputURI)
+	inputBuckets := buildInputBuckets(ctx, storage, req.Filename, inputURI)
 
-	tasks := make([]manager.ScheduleTask, 0, len(inputSplits)+req.Reducers)
-	for _, split := range inputSplits {
-		split := split
+	tasks := make([]manager.ScheduleTask, 0, len(inputBuckets)+req.Reducers)
+	for _, bucket := range inputBuckets {
+		bucket := bucket
 		tasks = append(tasks, manager.ScheduleTask{
 			TaskID:      uuid.New().String(),
 			TaskType:    "Map",
-			InputSplits: []manager.ScheduleTaskInput{split},
+			InputSplits: bucket,
 		})
 	}
 	for i := 0; i < req.Reducers; i++ {
@@ -782,10 +803,112 @@ func buildScheduleRequest(ctx context.Context, storage scheduleObjectClient, job
 		MapperURI:   req.Mapper.Artifact,
 		ReducerURI:  req.Reducer.Artifact,
 		CombinerURI: combinerURI,
-		MTasks:      len(inputSplits),
+		MTasks:      len(inputBuckets),
 		RTasks:      req.Reducers,
 		Tasks:       tasks,
 	}
+}
+
+func buildInputBuckets(ctx context.Context, storage scheduleObjectClient, objectName, inputURI string) [][]manager.ScheduleTaskInput {
+	if strings.HasSuffix(objectName, "/") {
+		return buildPrefixInputBuckets(ctx, storage, objectName, inputURI)
+	}
+
+	single := buildInputSplits(ctx, storage, objectName, inputURI)
+	buckets := make([][]manager.ScheduleTaskInput, 0, len(single))
+	for _, split := range single {
+		split := split
+		buckets = append(buckets, []manager.ScheduleTaskInput{split})
+	}
+	if len(buckets) == 0 {
+		return [][]manager.ScheduleTaskInput{{{InputURI: inputURI}}}
+	}
+	return buckets
+}
+
+func buildPrefixInputBuckets(ctx context.Context, storage scheduleObjectClient, prefix, fallbackInputURI string) [][]manager.ScheduleTaskInput {
+	if storage == nil {
+		return [][]manager.ScheduleTaskInput{{{InputURI: fallbackInputURI}}}
+	}
+
+	objects, err := storage.ListObjects(ctx, inputBucketName, prefix, true)
+	if err != nil || len(objects) == 0 {
+		return [][]manager.ScheduleTaskInput{{{InputURI: fallbackInputURI}}}
+	}
+
+	totalSize := int64(0)
+	for _, obj := range objects {
+		if obj.Size > 0 {
+			totalSize += obj.Size
+		}
+	}
+
+	splitSize := int64(defaultTargetSplitSizeBytes)
+	if splitSize <= 0 {
+		splitSize = 64 * 1024 * 1024
+	}
+
+	mTasks := int((totalSize + splitSize - 1) / splitSize)
+	if mTasks < 1 {
+		mTasks = 1
+	}
+	if mTasks > len(objects) {
+		mTasks = len(objects)
+	}
+
+	sort.Slice(objects, func(i, j int) bool {
+		if objects[i].Size == objects[j].Size {
+			return objects[i].Key < objects[j].Key
+		}
+		return objects[i].Size > objects[j].Size
+	})
+
+	buckets := make([][]manager.ScheduleTaskInput, mTasks)
+	bucketSizes := make([]int64, mTasks)
+
+	for _, obj := range objects {
+		bucketIndex := 0
+		for i := 1; i < len(bucketSizes); i++ {
+			if bucketSizes[i] < bucketSizes[bucketIndex] {
+				bucketIndex = i
+			}
+		}
+
+		split := manager.ScheduleTaskInput{
+			InputURI: fmt.Sprintf("s3://%s/%s", inputBucketName, obj.Key),
+		}
+		if obj.Size > 0 {
+			split.ByteStart = 0
+			split.ByteEnd = obj.Size - 1
+			checksum, checksumErr := checksumObjectRange(ctx, storage, inputBucketName, obj.Key, 0, obj.Size-1)
+			if checksumErr != nil {
+				slog.WarnContext(ctx, "falling back to a single split after checksum error",
+					slog.String("input_uri", fallbackInputURI),
+					slog.String("object", obj.Key),
+					slog.Any("err", checksumErr),
+				)
+				return [][]manager.ScheduleTaskInput{{{InputURI: fallbackInputURI}}}
+			}
+			split.SplitChecksum = checksum
+		}
+
+		buckets[bucketIndex] = append(buckets[bucketIndex], split)
+		if obj.Size > 0 {
+			bucketSizes[bucketIndex] += obj.Size
+		}
+	}
+
+	result := make([][]manager.ScheduleTaskInput, 0, len(buckets))
+	for _, bucket := range buckets {
+		if len(bucket) > 0 {
+			result = append(result, bucket)
+		}
+	}
+	if len(result) == 0 {
+		return [][]manager.ScheduleTaskInput{{{InputURI: fallbackInputURI}}}
+	}
+
+	return result
 }
 
 func checksumObjectRange(ctx context.Context, storage scheduleObjectClient, bucketName, objectName string, start, end int64) (string, error) {
