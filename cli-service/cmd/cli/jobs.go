@@ -43,7 +43,7 @@ var jobsListGetValidToken = getValidToken
 var jobsListDoAuthRequestExpect = doAuthRequestExpect
 var jobsListExit = os.Exit
 var jobsCancelGetValidToken = getValidToken
-var jobsCancelDoAuthRequestExpect = doAuthRequestExpect
+var jobsCancelDoAuthRequest = doAuthRequest
 var jobsCancelExit = os.Exit
 
 // jobsSubmitUploadFile is the upload function used during job submission.
@@ -492,17 +492,32 @@ func cmdJobsCancel(args []string) {
 	}
 
 	token, serverURL := jobsCancelGetValidToken()
-	resp := jobsCancelDoAuthRequestExpect(
+	resp, err := jobsCancelDoAuthRequest(
 		http.MethodDelete,
 		serverURL+jobRequestPath(normalizedJobID, ""),
 		token,
 		nil,
-		http.StatusNoContent,
-		"job cancel failed",
 	)
+	if err != nil {
+		log.Fatalf("job cancel failed: %v", err)
+	}
 	defer resp.Body.Close()
 
+	if !isJobsCancelSuccessStatus(resp.StatusCode) {
+		body, readErr := readResponseBody(resp.Body)
+		if readErr != nil {
+			log.Fatalf("job cancel failed (HTTP %d): failed to read response body: %v", resp.StatusCode, readErr)
+		}
+		log.Fatalf("job cancel failed (HTTP %d): %s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+
 	fmt.Printf("Job %s cancelled.\n", normalizedJobID)
+}
+
+// isJobsCancelSuccessStatus identifies acceptable API success statuses for cancel/delete.
+// We accept both 204 from the API and 200 from some reverse-proxy configurations.
+func isJobsCancelSuccessStatus(statusCode int) bool {
+	return statusCode == http.StatusNoContent || statusCode == http.StatusOK
 }
 
 // ── jobs helpers ───────────────────────────────────────────
