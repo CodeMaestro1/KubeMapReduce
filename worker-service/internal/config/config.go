@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 )
@@ -76,6 +77,14 @@ func Load() (*Config, error) {
 	tempDir := strings.TrimSpace(os.Getenv("WORKER_TEMP_DIR"))
 	if tempDir == "" {
 		tempDir = os.TempDir()
+	} else {
+		if strings.Contains(tempDir, "..") {
+			return nil, fmt.Errorf("WORKER_TEMP_DIR contains directory traversal characters")
+		}
+		tempDir = filepath.Clean(tempDir)
+		if !filepath.IsAbs(tempDir) {
+			return nil, fmt.Errorf("WORKER_TEMP_DIR must be an absolute path")
+		}
 	}
 
 	return &Config{

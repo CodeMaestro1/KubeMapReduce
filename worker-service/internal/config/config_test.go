@@ -147,3 +147,27 @@ func TestLoad_S3EnvPreferredOverMinioEnv(t *testing.T) {
 		t.Fatalf("MinioSecretKey = %q, want %q", cfg.MinioSecretKey, "s3-sk")
 	}
 }
+
+func TestLoad_TempDirTraversal(t *testing.T) {
+	t.Setenv("TASK_ID", "t1")
+	t.Setenv("ATTEMPT_ID", "a1")
+	t.Setenv("MANAGER_ADDR", "m:1")
+	t.Setenv("WORKER_TEMP_DIR", "/tmp/path/../etc")
+
+	_, err := Load()
+	if err == nil {
+		t.Fatal("expected error for TempDir traversal")
+	}
+}
+
+func TestLoad_TempDirRelative(t *testing.T) {
+	t.Setenv("TASK_ID", "t1")
+	t.Setenv("ATTEMPT_ID", "a1")
+	t.Setenv("MANAGER_ADDR", "m:1")
+	t.Setenv("WORKER_TEMP_DIR", "relative/path")
+
+	_, err := Load()
+	if err == nil {
+		t.Fatal("expected error for relative TempDir")
+	}
+}
