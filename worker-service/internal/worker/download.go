@@ -17,6 +17,22 @@ import (
 
 const splitReadChunkSize int64 = 1 << 20
 
+// parseManifestURIFragment splits a manifest URI of the form
+// "s3://bucket/key#sha256=<hex>" into the bare URI and the expected
+// SHA-256 hex digest.  If no fragment is present, expectedDigest is "".
+// The function only recognises the "sha256=" prefix; any other fragment
+// is silently ignored (expectedDigest == "").
+func parseManifestURIFragment(rawURI string) (uri, expectedDigest string) {
+	uri, fragment, hasFragment := strings.Cut(rawURI, "#")
+	if !hasFragment {
+		return rawURI, ""
+	}
+	if strings.HasPrefix(fragment, "sha256=") {
+		expectedDigest = strings.TrimPrefix(fragment, "sha256=")
+	}
+	return uri, expectedDigest
+}
+
 // parseS3URI splits "s3://bucket/key/path" into (bucket, key).
 func parseS3URI(uri string) (bucket, key string, err error) {
 	if !strings.HasPrefix(uri, "s3://") {
