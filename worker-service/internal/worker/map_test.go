@@ -2,7 +2,10 @@ package worker
 
 import (
 	"encoding/json"
+	"hash/fnv"
+	"math/rand"
 	"sort"
+	"strconv"
 	"testing"
 
 	"kubemapreduce/worker-service/internal/shuffle"
@@ -30,13 +33,45 @@ func TestHashPartition_InRange(t *testing.T) {
 }
 
 func TestHashPartition_NegativeHash(t *testing.T) {
-	// A key that might produce a hash with the MSB set (uint32 > 0x7FFFFFFF)
-	// Key "4321" with FNV-32a is 0xEB0286F6 (3942811382)
-	key := "4321"
-	R := 10
-	p := hashPartition(key, R)
-	if p < 0 || p >= R {
-		t.Errorf("hashPartition(%q, %d) = %d: want [0, %d)", key, R, p, R)
+	// Scan numeric keys 0-9999 for those whose FNV-32a hash has the MSB set
+	// (value > 0x7FFFFFFF). Without the &0x7FFFFFFF mask in hashPartition,
+	// these keys would produce negative int values on 32-bit systems and
+	// therefore an invalid partition index.
+	const R = 10
+	tested := 0
+	for i := 0; i <= 9999; i++ {
+		key := strconv.Itoa(i)
+		h := fnv.New32a()
+		h.Write([]byte(key))
+		if h.Sum32()&0x80000000 == 0 {
+			continue
+		}
+		tested++
+		p := hashPartition(key, R)
+		if p < 0 || p >= R {
+			t.Errorf("hashPartition(%q, %d) = %d: out of [0, %d)", key, R, p, R)
+		}
+	}
+	if tested == 0 {
+		t.Fatal("no keys in 0-9999 produced an MSB-set FNV-32a hash — test exercised nothing")
+	}
+	t.Logf("tested %d/10000 keys with MSB-set FNV-32a hash", tested)
+}
+
+func TestHashPartition_PropertyNoNegative(t *testing.T) {
+	rng := rand.New(rand.NewSource(42))
+	for _, R := range []int{1, 3, 7, 10, 127} {
+		for i := 0; i < 20_000; i++ {
+			length := rng.Intn(64)
+			buf := make([]byte, length)
+			for j := range buf {
+				buf[j] = byte(rng.Intn(256))
+			}
+			p := hashPartition(string(buf), R)
+			if p < 0 || p >= R {
+				t.Fatalf("R=%d iter=%d: hashPartition(%q)=%d out of [0,%d)", R, i, buf, p, R)
+			}
+		}
 	}
 }
 
