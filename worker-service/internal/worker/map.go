@@ -11,7 +11,6 @@ import (
 	"hash/fnv"
 	"io"
 	"log"
-	"sort"
 
 	"github.com/minio/minio-go/v7"
 
@@ -88,17 +87,13 @@ func (w *Worker) runMap(ctx context.Context, a *pb.TaskAssignment) (outputURIs, 
 		if parseErr != nil {
 			return nil, nil, fmt.Errorf("parse combiner output: %w", parseErr)
 		}
-		// Combiner output is not guaranteed sorted; re-sort with the same budget.
-		// (Spill-aware re-sort is wired in a follow-up commit; for now, in-memory.)
-		sort.Slice(combinedRecords, func(i, j int) bool { return combinedRecords[i].Key < combinedRecords[j].Key })
-		var encBuf bytes.Buffer
-		enc := json.NewEncoder(&encBuf)
-		for _, rec := range combinedRecords {
-			if err := enc.Encode(rec); err != nil {
-				return nil, nil, fmt.Errorf("encode combiner output: %w", err)
-			}
+		// Combiner output is not guaranteed sorted; re-sort with the same
+		// memory budget, spilling to disk when exceeded.
+		sortedReader, err = sortRecordsSpilling(combinedRecords, w.spillThresholdBytes(), w.cfg.TempDir)
+		if err != nil {
+			return nil, nil, fmt.Errorf("sort combiner output: %w", err)
 		}
-		sortedReader = io.NopCloser(&encBuf)
+		combinedRecords = nil // help GC
 	}
 
 	// Hash-partition into R buckets by streaming the sorted JSONL output.
