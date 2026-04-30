@@ -371,6 +371,95 @@ func TestUploadFileToStorage_PresignAndPUT(t *testing.T) {
 	}
 }
 
+func TestCmdJobsCancel_NoJobIDFlagExits(t *testing.T) {
+	originalExit := jobsCancelExit
+	originalGetValidToken := jobsCancelGetValidToken
+	defer func() {
+		jobsCancelExit = originalExit
+		jobsCancelGetValidToken = originalGetValidToken
+	}()
+
+	exitCode := 0
+	jobsCancelExit = func(code int) {
+		exitCode = code
+		panic(testExit{code: code})
+	}
+
+	err := catchPanic(func() {
+		cmdJobsCancel([]string{})
+	})
+
+	if err == nil {
+		t.Fatal("expected panic from os.Exit")
+	}
+	if exitCode != 1 {
+		t.Errorf("exit code = %d, want 1", exitCode)
+	}
+}
+
+func TestCmdJobsCancel_DeletesJobAndDisplaysConfirmation(t *testing.T) {
+	originalGetValidToken := jobsCancelGetValidToken
+	originalDoAuthRequestExpect := jobsCancelDoAuthRequestExpect
+	defer func() {
+		jobsCancelGetValidToken = originalGetValidToken
+		jobsCancelDoAuthRequestExpect = originalDoAuthRequestExpect
+	}()
+
+	getTokenCalled := false
+	deleteRequestReceived := false
+	requestURL := ""
+
+	jobsCancelGetValidToken = func() (string, string) {
+		getTokenCalled = true
+		return "test-token", "http://api.test"
+	}
+
+	jobsCancelDoAuthRequestExpect = func(method, url, token string, body []byte, expectedStatus int, errMsg string) *http.Response {
+		requestURL = url
+		deleteRequestReceived = method == http.MethodDelete
+		if expectedStatus != http.StatusNoContent {
+			t.Errorf("expected status code %d, got %d", http.StatusNoContent, expectedStatus)
+		}
+		// Return mock 204 response
+		return &http.Response{
+			StatusCode: http.StatusNoContent,
+			Body:       io.NopCloser(bytes.NewBufferString("")),
+		}
+	}
+
+	// Capture stdout
+	oldStdout := os.Stdout
+	r, w, _ := os.Pipe()
+	os.Stdout = w
+
+	cmdJobsCancel([]string{"--id", "job-123"})
+
+	w.Close()
+	os.Stdout = oldStdout
+	output, _ := io.ReadAll(r)
+
+	if !getTokenCalled {
+		t.Error("jobsCancelGetValidToken was not called")
+	}
+	if !deleteRequestReceived {
+		t.Error("DELETE request was not sent")
+	}
+	if !strings.Contains(requestURL, "job-123") {
+		t.Errorf("request URL = %q, expected to contain 'job-123'", requestURL)
+	}
+	if !strings.Contains(string(output), "cancelled") {
+		t.Errorf("output = %q, expected to contain 'cancelled'", string(output))
+	}
+}
+
+func catchPanic(f func()) (panicVal interface{}) {
+	defer func() {
+		panicVal = recover()
+	}()
+	f()
+	return nil
+}
+
 func TestUserIDFromToken(t *testing.T) {
 	tests := []struct {
 		name  string

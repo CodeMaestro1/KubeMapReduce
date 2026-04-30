@@ -42,6 +42,9 @@ var jobsSubmitExit = os.Exit
 var jobsListGetValidToken = getValidToken
 var jobsListDoAuthRequestExpect = doAuthRequestExpect
 var jobsListExit = os.Exit
+var jobsCancelGetValidToken = getValidToken
+var jobsCancelDoAuthRequestExpect = doAuthRequestExpect
+var jobsCancelExit = os.Exit
 
 // jobsSubmitUploadFile is the upload function used during job submission.
 // Replaced in tests to avoid real HTTP calls.
@@ -477,17 +480,19 @@ func cmdJobsCancel(args []string) {
 
 	if *jobID == "" {
 		fmt.Fprintln(os.Stderr, "usage: kubemapreduce jobs cancel --id <job-id>")
-		os.Exit(1)
+		jobsCancelExit(1)
+		return
 	}
 
 	normalizedJobID := strings.TrimSpace(*jobID)
 	if normalizedJobID == "" {
 		fmt.Fprintln(os.Stderr, "usage: kubemapreduce jobs cancel --id <job-id>")
-		os.Exit(1)
+		jobsCancelExit(1)
+		return
 	}
 
-	token, serverURL := getValidToken()
-	resp := doAuthRequestExpect(
+	token, serverURL := jobsCancelGetValidToken()
+	resp := jobsCancelDoAuthRequestExpect(
 		http.MethodDelete,
 		serverURL+jobRequestPath(normalizedJobID, ""),
 		token,
