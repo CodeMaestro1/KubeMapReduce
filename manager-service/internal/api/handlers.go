@@ -876,15 +876,16 @@ func buildScheduleRequest(ctx context.Context, storage scheduleObjectClient, job
 		})
 	}
 	return manager.ScheduleJobRequest{
-		JobID:       jobID,
-		UserID:      userID,
-		InputURI:    inputURI,
-		MapperURI:   mapperURI,
-		ReducerURI:  reducerURI,
-		CombinerURI: combinerURI,
-		MTasks:      len(inputBuckets),
-		RTasks:      req.Reducers,
-		Tasks:       tasks,
+		JobID:         jobID,
+		UserID:        userID,
+		InputURI:      inputURI,
+		MapperURI:     mapperURI,
+		ReducerURI:    reducerURI,
+		CombinerURI:   combinerURI,
+		MTasks:        len(inputBuckets),
+		RTasks:        req.Reducers,
+		InputChecksum: req.InputChecksum,
+		Tasks:         tasks,
 	}
 }
 

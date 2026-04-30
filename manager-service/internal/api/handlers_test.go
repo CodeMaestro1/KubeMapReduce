@@ -275,7 +275,7 @@ func TestHandleJobsSubmit_SchedulesJobAfterPersist(t *testing.T) {
 	h := newTestHandlers()
 	h.managerAddr = managerSrv.Listener.Addr().String()
 
-	body := `{"filename":"input.jsonl","mapper":{"language":"python","artifact":"mapper.py","entrypoint":"map","interface":"map(key,value)->[]KeyValue"},"reducer":{"language":"python","artifact":"reducer.py","entrypoint":"reduce","interface":"reduce(key,values)->Value"},"reducers":2}`
+	body := `{"filename":"input.jsonl","inputChecksum":"deadbeef","mapper":{"language":"python","artifact":"mapper.py","entrypoint":"map","interface":"map(key,value)->[]KeyValue"},"reducer":{"language":"python","artifact":"reducer.py","entrypoint":"reduce","interface":"reduce(key,values)->Value"},"reducers":2}`
 	req := authedReq(http.MethodPost, "/api/v1/jobs", body)
 	rec := httptest.NewRecorder()
 	h.HandleJobsSubmit(rec, req)
@@ -310,8 +310,14 @@ func TestHandleJobsSubmit_SchedulesJobAfterPersist(t *testing.T) {
 	if capturedReq.RTasks != 2 {
 		t.Errorf("expected RTasks=2, got %d", capturedReq.RTasks)
 	}
+	if capturedReq.InputChecksum != "deadbeef" {
+		t.Errorf("expected InputChecksum deadbeef, got %q", capturedReq.InputChecksum)
+	}
 	if len(capturedReq.Tasks) != 3 {
 		t.Errorf("expected 3 tasks (1 Map + 2 Reduce), got %d", len(capturedReq.Tasks))
+	}
+	if capturedReq.InputChecksum != "deadbeef" {
+		t.Errorf("expected InputChecksum deadbeef, got %q", capturedReq.InputChecksum)
 	}
 }
 
@@ -436,7 +442,8 @@ func TestBuildScheduleRequest_SplitsLargeInputAndHashesEachSplit(t *testing.T) {
 	t.Cleanup(func() { defaultTargetSplitSizeBytes = origSplitSize })
 
 	body := models.JobSubmissionRequest{
-		Filename: "input.jsonl",
+		Filename:      "input.jsonl",
+		InputChecksum: "sha256-input-whole",
 		Mapper: models.FunctionSpec{
 			Artifact:   "mapper.py",
 			Entrypoint: "map",
@@ -466,6 +473,9 @@ func TestBuildScheduleRequest_SplitsLargeInputAndHashesEachSplit(t *testing.T) {
 		"")
 	if req.InputURI != "s3://mapreduce-inputs/input.jsonl" {
 		t.Fatalf("InputURI = %q, want %q", req.InputURI, "s3://mapreduce-inputs/input.jsonl")
+	}
+	if req.InputChecksum != "sha256-input-whole" {
+		t.Fatalf("InputChecksum = %q, want %q", req.InputChecksum, "sha256-input-whole")
 	}
 	if req.MTasks != 2 {
 		t.Fatalf("MTasks = %d, want 2", req.MTasks)
@@ -1794,7 +1804,8 @@ func TestBuildScheduleRequest_ComputesChecksum(t *testing.T) {
 	}
 
 	req := models.JobSubmissionRequest{
-		Filename: "large-file.bin",
+		Filename:      "large-file.bin",
+		InputChecksum: "cli-input-sha256",
 		Mapper: models.FunctionSpec{
 			Artifact: "mapper.py",
 		},
@@ -1816,6 +1827,9 @@ func TestBuildScheduleRequest_ComputesChecksum(t *testing.T) {
 
 	if len(schedReq.Tasks) == 0 {
 		t.Fatal("expected at least one task")
+	}
+	if schedReq.InputChecksum != "cli-input-sha256" {
+		t.Fatalf("InputChecksum = %q, want %q", schedReq.InputChecksum, "cli-input-sha256")
 	}
 
 	mapTask := schedReq.Tasks[0]
@@ -1858,6 +1872,34 @@ func (m *mockScheduleObjectClient) GetObject(ctx context.Context, bucketName, ob
 
 func (m *mockScheduleObjectClient) ListObjects(context.Context, string, string, bool) ([]scheduleObjectInfo, error) {
 	return nil, errors.New("not implemented")
+}
+
+func TestBuildScheduleRequest_ForwardsInputChecksum(t *testing.T) {
+	req := models.JobSubmissionRequest{
+		Filename:      "input.jsonl",
+		InputChecksum: "sha256-abc123",
+		Mapper: models.FunctionSpec{
+			Artifact:   "m.py",
+			Entrypoint: "map",
+			Interface:  "map(key,value)->[]KeyValue",
+			Language:   "python",
+		},
+		Reducer: models.FunctionSpec{
+			Artifact:   "r.py",
+			Entrypoint: "reduce",
+			Interface:  "reduce(key,values)->Value",
+			Language:   "python",
+		},
+		Reducers: 1,
+	}
+	schedReq := buildScheduleRequest(context.Background(), nil, "job-1", "user-1", req,
+		"s3://mapreduce-inputs/inputs/job-1/input.jsonl",
+		"s3://mapreduce-inputs/inputs/job-1/m.py",
+		"s3://mapreduce-inputs/inputs/job-1/r.py",
+		"")
+	if schedReq.InputChecksum != "sha256-abc123" {
+		t.Fatalf("InputChecksum = %q, want %q", schedReq.InputChecksum, "sha256-abc123")
+	}
 }
 
 func TestBuildInputSplits_ZeroSizeObject(t *testing.T) {
