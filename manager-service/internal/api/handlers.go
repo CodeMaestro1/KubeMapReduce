@@ -1056,10 +1056,94 @@ func (h *Handlers) HandleJobsDelete(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// HandlePresignUpload generates a temporary URL for direct file upload to object storage.
+// presignURLTTL is the validity window for issued pre-signed URLs.
+const presignURLTTL = 15 * time.Minute
+
+// outputsBucketName is the server-controlled bucket holding finalized job outputs.
+// Pre-signed download URLs may only target objects in this bucket.
+const outputsBucketName = "mapreduce-outputs"
+
+// validateUploadKey enforces that an upload key is exactly "temp/<userID>/<filename>".
+// userID must equal the authenticated subject and filename must contain no path
+// separators, traversal segments, or control characters. This prevents an
+// authenticated caller from minting pre-signed URLs that write outside their
+// own scope (issue #116).
+func validateUploadKey(key, userID string) error {
+	if key == "" {
+		return fmt.Errorf("key is required")
+	}
+	if len(key) > 512 {
+		return fmt.Errorf("key too long")
+	}
+	if strings.ContainsAny(key, "\x00\r\n") {
+		return fmt.Errorf("key contains invalid characters")
+	}
+	expectedPrefix := "temp/" + userID + "/"
+	if !strings.HasPrefix(key, expectedPrefix) {
+		return fmt.Errorf("key must start with %q", expectedPrefix)
+	}
+	filename := key[len(expectedPrefix):]
+	if filename == "" {
+		return fmt.Errorf("key must include a filename")
+	}
+	if strings.ContainsAny(filename, "/\\") {
+		return fmt.Errorf("key filename must not contain path separators")
+	}
+	if filename == "." || filename == ".." {
+		return fmt.Errorf("key filename is invalid")
+	}
+	return nil
+}
+
+// validateDownloadKey enforces that a download key starts with "outputs/<jobID>/"
+// and contains no traversal segments. Returns the parsed jobID on success.
+func validateDownloadKey(key string) (jobID string, err error) {
+	if key == "" {
+		return "", fmt.Errorf("key is required")
+	}
+	if len(key) > 512 {
+		return "", fmt.Errorf("key too long")
+	}
+	if strings.ContainsAny(key, "\x00\r\n") {
+		return "", fmt.Errorf("key contains invalid characters")
+	}
+	if strings.HasPrefix(key, "/") {
+		return "", fmt.Errorf("key must not start with '/'")
+	}
+	parts := strings.Split(key, "/")
+	if len(parts) < 3 || parts[0] != "outputs" {
+		return "", fmt.Errorf("key must start with 'outputs/<job_id>/'")
+	}
+	jobID = parts[1]
+	if _, parseErr := uuid.Parse(jobID); parseErr != nil {
+		return "", fmt.Errorf("invalid job id in key")
+	}
+	for _, seg := range parts {
+		if seg == "" || seg == "." || seg == ".." {
+			return "", fmt.Errorf("key contains invalid path segment")
+		}
+	}
+	return jobID, nil
+}
+
+// HandlePresignUpload generates a temporary URL for direct file upload to
+// object storage.
+//
+// Security (issue #116):
+//   - The destination bucket is server-controlled (mapreduce-inputs); any
+//     bucket value supplied by the client is ignored.
+//   - The object key must match "temp/<authenticated-user-id>/<filename>".
+//     Cross-tenant or staging/output paths are rejected.
+//   - Each issuance is audit-logged with subject, bucket, key prefix, and TTL.
 func (h *Handlers) HandlePresignUpload(w http.ResponseWriter, r *http.Request) {
 	if h.minioClient == nil {
 		httputil.WriteErrorJSON(w, http.StatusServiceUnavailable, "object storage not configured")
+		return
+	}
+
+	userID, err := currentRequestUserID(r)
+	if err != nil || userID == "" {
+		httputil.WriteErrorJSON(w, http.StatusForbidden, "forbidden: authenticated subject required")
 		return
 	}
 
@@ -1068,42 +1152,106 @@ func (h *Handlers) HandlePresignUpload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if req.Bucket == "" || req.Key == "" {
-		httputil.WriteErrorJSON(w, http.StatusBadRequest, "bucket and key are required")
+	if err := validateUploadKey(req.Key, userID); err != nil {
+		httputil.WriteErrorJSON(w, http.StatusBadRequest, err.Error())
 		return
 	}
 
-	url, err := h.minioClient.PresignedPutObject(r.Context(), req.Bucket, req.Key, 15*time.Minute)
+	bucket := inputBucketName
+	url, err := h.minioClient.PresignedPutObject(r.Context(), bucket, req.Key, presignURLTTL)
 	if err != nil {
+		slog.ErrorContext(r.Context(), "presign upload failed",
+			slog.String("user_id", userID),
+			slog.String("bucket", bucket),
+			slog.Any("err", err),
+		)
 		httputil.WriteErrorJSON(w, http.StatusInternalServerError, "failed to generate upload URL")
 		return
 	}
+
+	slog.InfoContext(r.Context(), "presign upload issued",
+		slog.String("user_id", userID),
+		slog.String("bucket", bucket),
+		slog.String("key_prefix", "temp/"+userID+"/"),
+		slog.Duration("ttl", presignURLTTL),
+	)
 
 	if err := httputil.WriteJSON(w, http.StatusOK, models.PresignResponse{URL: url.String()}); err != nil {
 		return
 	}
 }
 
-// HandlePresignDownload generates a temporary URL for direct file download from object storage.
+// HandlePresignDownload generates a temporary URL for direct file download from
+// object storage.
+//
+// Security (issue #116):
+//   - The source bucket is server-controlled (mapreduce-outputs); any bucket
+//     value supplied by the client is ignored.
+//   - The object key must match "outputs/<job_id>/...". The caller must own
+//     the referenced job (admins are exempt).
+//   - Each issuance is audit-logged with subject, bucket, job id, and TTL.
 func (h *Handlers) HandlePresignDownload(w http.ResponseWriter, r *http.Request) {
 	if h.minioClient == nil {
 		httputil.WriteErrorJSON(w, http.StatusServiceUnavailable, "object storage not configured")
 		return
 	}
 
-	bucket := r.URL.Query().Get("bucket")
-	key := r.URL.Query().Get("key")
-
-	if bucket == "" || key == "" {
-		httputil.WriteErrorJSON(w, http.StatusBadRequest, "bucket and key are required")
+	userID, err := currentRequestUserID(r)
+	if err != nil || userID == "" {
+		httputil.WriteErrorJSON(w, http.StatusForbidden, "forbidden: authenticated subject required")
 		return
 	}
 
-	url, err := h.minioClient.PresignedGetObject(r.Context(), bucket, key, 15*time.Minute, nil)
+	key := r.URL.Query().Get("key")
+	jobID, err := validateDownloadKey(key)
 	if err != nil {
+		httputil.WriteErrorJSON(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	// Ownership check: non-admins may only presign objects under jobs they own.
+	var rec *JobRecord
+	if auth.HasRole(r, "ADMIN") {
+		rec, err = h.store.GetAnyJob(r.Context(), jobID)
+	} else {
+		rec, err = h.store.GetJob(r.Context(), userID, jobID)
+	}
+	if err != nil {
+		if errors.Is(err, ErrInvalidJobID) {
+			httputil.WriteErrorJSON(w, http.StatusBadRequest, "invalid job id")
+			return
+		}
+		if errors.Is(err, ErrInvalidUserID) {
+			httputil.WriteErrorJSON(w, http.StatusForbidden, "forbidden: invalid subject")
+			return
+		}
+		httputil.WriteErrorJSON(w, http.StatusInternalServerError, "failed to verify job ownership")
+		return
+	}
+	if rec == nil {
+		httputil.WriteErrorJSON(w, http.StatusNotFound, "job not found")
+		return
+	}
+
+	bucket := outputsBucketName
+	url, err := h.minioClient.PresignedGetObject(r.Context(), bucket, key, presignURLTTL, nil)
+	if err != nil {
+		slog.ErrorContext(r.Context(), "presign download failed",
+			slog.String("user_id", userID),
+			slog.String("job_id", jobID),
+			slog.String("bucket", bucket),
+			slog.Any("err", err),
+		)
 		httputil.WriteErrorJSON(w, http.StatusInternalServerError, "failed to generate download URL")
 		return
 	}
+
+	slog.InfoContext(r.Context(), "presign download issued",
+		slog.String("user_id", userID),
+		slog.String("job_id", jobID),
+		slog.String("bucket", bucket),
+		slog.Duration("ttl", presignURLTTL),
+	)
 
 	if err := httputil.WriteJSON(w, http.StatusOK, models.PresignResponse{URL: url.String()}); err != nil {
 		return

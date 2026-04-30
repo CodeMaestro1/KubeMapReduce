@@ -91,8 +91,14 @@ type DeleteUserRequest struct {
 }
 
 // PresignRequest is used to request a temporary URL for object storage access.
+//
+// Bucket is accepted for backward compatibility but ignored by the server,
+// which enforces a fixed bucket per operation (see issue #116). Key must
+// match an identity-scoped prefix (e.g. "temp/<user-id>/<filename>" for
+// uploads).
 type PresignRequest struct {
-	Bucket string `json:"bucket"`
+	// Deprecated: Bucket is ignored. The server selects the bucket.
+	Bucket string `json:"bucket,omitempty"`
 	Key    string `json:"key"`
 }
 
