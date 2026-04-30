@@ -399,10 +399,10 @@ func TestCmdJobsCancel_NoJobIDFlagExits(t *testing.T) {
 
 func TestCmdJobsCancel_DeletesJobAndDisplaysConfirmation(t *testing.T) {
 	originalGetValidToken := jobsCancelGetValidToken
-	originalDoAuthRequestExpect := jobsCancelDoAuthRequestExpect
+	originalDoAuthRequest := jobsCancelDoAuthRequest
 	defer func() {
 		jobsCancelGetValidToken = originalGetValidToken
-		jobsCancelDoAuthRequestExpect = originalDoAuthRequestExpect
+		jobsCancelDoAuthRequest = originalDoAuthRequest
 	}()
 
 	getTokenCalled := false
@@ -414,17 +414,14 @@ func TestCmdJobsCancel_DeletesJobAndDisplaysConfirmation(t *testing.T) {
 		return "test-token", "http://api.test"
 	}
 
-	jobsCancelDoAuthRequestExpect = func(method, url, token string, body []byte, expectedStatus int, errMsg string) *http.Response {
+	jobsCancelDoAuthRequest = func(method, url, token string, body []byte) (*http.Response, error) {
 		requestURL = url
 		deleteRequestReceived = method == http.MethodDelete
-		if expectedStatus != http.StatusNoContent {
-			t.Errorf("expected status code %d, got %d", http.StatusNoContent, expectedStatus)
-		}
 		// Return mock 204 response
 		return &http.Response{
 			StatusCode: http.StatusNoContent,
 			Body:       io.NopCloser(bytes.NewBufferString("")),
-		}
+		}, nil
 	}
 
 	// Capture stdout
@@ -449,6 +446,48 @@ func TestCmdJobsCancel_DeletesJobAndDisplaysConfirmation(t *testing.T) {
 	}
 	if !strings.Contains(string(output), "cancelled") {
 		t.Errorf("output = %q, expected to contain 'cancelled'", string(output))
+	}
+}
+
+func TestCmdJobsCancel_AcceptsHTTP200(t *testing.T) {
+	originalGetValidToken := jobsCancelGetValidToken
+	originalDoAuthRequest := jobsCancelDoAuthRequest
+	defer func() {
+		jobsCancelGetValidToken = originalGetValidToken
+		jobsCancelDoAuthRequest = originalDoAuthRequest
+	}()
+
+	jobsCancelGetValidToken = func() (string, string) {
+		return "test-token", "http://api.test"
+	}
+
+	jobsCancelDoAuthRequest = func(method, url, token string, body []byte) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body:       io.NopCloser(bytes.NewBufferString("")),
+		}, nil
+	}
+
+	cmdJobsCancel([]string{"--id", "job-123"})
+}
+
+func TestIsJobsCancelSuccessStatus(t *testing.T) {
+	tests := []struct {
+		name   string
+		status int
+		want   bool
+	}{
+		{name: "no content", status: http.StatusNoContent, want: true},
+		{name: "ok from proxy", status: http.StatusOK, want: true},
+		{name: "bad request", status: http.StatusBadRequest, want: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := isJobsCancelSuccessStatus(tt.status); got != tt.want {
+				t.Fatalf("isJobsCancelSuccessStatus(%d) = %v, want %v", tt.status, got, tt.want)
+			}
+		})
 	}
 }
 
