@@ -325,7 +325,7 @@ func TestUploadFileToStorage_PresignAndPUT(t *testing.T) {
 	// so we point both calls at the same test server.
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
-		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/files/presign-upload":
+		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/uploads/presigned":
 			var req map[string]string
 			json.NewDecoder(r.Body).Decode(&req)
 			if req["bucket"] != "test-bucket" || req["key"] != "test-key" {

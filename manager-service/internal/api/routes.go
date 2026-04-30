@@ -49,13 +49,13 @@ func RegisterRoutes(mux *http.ServeMux, h *Handlers, validator *auth.JWTValidato
 	))
 
 	// File Management
-	mux.Handle("POST /api/v1/files/presign-upload", auth.RequireAnyRole(
+	mux.Handle("POST /api/v1/uploads/presigned", auth.RequireAnyRole(
 		[]string{"USER", "ADMIN"},
 		validator,
 		http.HandlerFunc(h.HandlePresignUpload),
 	))
 
-	mux.Handle("GET /api/v1/files/presign-download", auth.RequireAnyRole(
+	mux.Handle("POST /api/v1/downloads/presigned", auth.RequireAnyRole(
 		[]string{"USER", "ADMIN"},
 		validator,
 		http.HandlerFunc(h.HandlePresignDownload),

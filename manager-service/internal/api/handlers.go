@@ -1136,6 +1136,11 @@ func validateDownloadKey(key string) (jobID string, err error) {
 //     Cross-tenant or staging/output paths are rejected.
 //   - Each issuance is audit-logged with subject, bucket, key prefix, and TTL.
 func (h *Handlers) HandlePresignUpload(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		httputil.WriteErrorJSON(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+
 	if h.minioClient == nil {
 		httputil.WriteErrorJSON(w, http.StatusServiceUnavailable, "object storage not configured")
 		return
@@ -1191,6 +1196,11 @@ func (h *Handlers) HandlePresignUpload(w http.ResponseWriter, r *http.Request) {
 //     the referenced job (admins are exempt).
 //   - Each issuance is audit-logged with subject, bucket, job id, and TTL.
 func (h *Handlers) HandlePresignDownload(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		httputil.WriteErrorJSON(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+
 	if h.minioClient == nil {
 		httputil.WriteErrorJSON(w, http.StatusServiceUnavailable, "object storage not configured")
 		return
@@ -1202,7 +1212,12 @@ func (h *Handlers) HandlePresignDownload(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	key := r.URL.Query().Get("key")
+	var req models.PresignRequest
+	if !decodeJSONBody(w, r, &req, "invalid presign request") {
+		return
+	}
+
+	key := req.Key
 	jobID, err := validateDownloadKey(key)
 	if err != nil {
 		httputil.WriteErrorJSON(w, http.StatusBadRequest, err.Error())
