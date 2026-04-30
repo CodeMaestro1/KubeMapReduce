@@ -7,6 +7,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"os"
+	"os/exec"
 	"strings"
 	"testing"
 
@@ -151,5 +153,66 @@ func TestFetchManifest_StorageError(t *testing.T) {
 	_, err := fetchManifest(context.Background(), store, uri)
 	if err == nil {
 		t.Fatal("expected error for missing object, got nil")
+	}
+}
+
+// TestDownloadCode_ChmodC verifies that downloadCode applies os.Chmod(0755)
+// to the compiled binary for a .c source file.
+func TestDownloadCode_ChmodC(t *testing.T) {
+	if _, err := exec.LookPath("gcc"); err != nil {
+		t.Skip("gcc not available; skipping C compilation test")
+	}
+	src := `#include <stdio.h>
+int main(){return 0;}
+`
+	tempDir := t.TempDir()
+	store := &staticStorage{
+		bucket:  "code",
+		key:     "mapper.c",
+		payload: []byte(src),
+	}
+
+	outPath, cleanup, err := downloadCode(context.Background(), store, "s3://code/mapper.c", tempDir)
+	if err != nil {
+		t.Fatalf("downloadCode() error = %v", err)
+	}
+	defer cleanup()
+
+	info, err := os.Stat(outPath)
+	if err != nil {
+		t.Fatalf("Stat(%s) error = %v", outPath, err)
+	}
+	if info.Mode()&0o111 == 0 {
+		t.Errorf("compiled binary %s is not executable (mode=%o)", outPath, info.Mode())
+	}
+}
+
+// TestDownloadCode_ChmodCpp verifies that downloadCode applies os.Chmod(0755)
+// to the compiled binary for a .cpp source file.
+func TestDownloadCode_ChmodCpp(t *testing.T) {
+	if _, err := exec.LookPath("g++"); err != nil {
+		t.Skip("g++ not available; skipping C++ compilation test")
+	}
+	src := `int main(){return 0;}
+`
+	tempDir := t.TempDir()
+	store := &staticStorage{
+		bucket:  "code",
+		key:     "mapper.cpp",
+		payload: []byte(src),
+	}
+
+	outPath, cleanup, err := downloadCode(context.Background(), store, "s3://code/mapper.cpp", tempDir)
+	if err != nil {
+		t.Fatalf("downloadCode() error = %v", err)
+	}
+	defer cleanup()
+
+	info, err := os.Stat(outPath)
+	if err != nil {
+		t.Fatalf("Stat(%s) error = %v", outPath, err)
+	}
+	if info.Mode()&0o111 == 0 {
+		t.Errorf("compiled binary %s is not executable (mode=%o)", outPath, info.Mode())
 	}
 }
