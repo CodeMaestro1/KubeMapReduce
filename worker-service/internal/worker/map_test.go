@@ -29,6 +29,17 @@ func TestHashPartition_InRange(t *testing.T) {
 	}
 }
 
+func TestHashPartition_NegativeHash(t *testing.T) {
+	// A key that might produce a hash with the MSB set (uint32 > 0x7FFFFFFF)
+	// Key "4321" with FNV-32a is 0xEB0286F6 (3942811382)
+	key := "4321"
+	R := 10
+	p := hashPartition(key, R)
+	if p < 0 || p >= R {
+		t.Errorf("hashPartition(%q, %d) = %d: want [0, %d)", key, R, p, R)
+	}
+}
+
 func TestHashPartition_SinglePartition(t *testing.T) {
 	for _, k := range []string{"a", "b", "c"} {
 		if p := hashPartition(k, 1); p != 0 {

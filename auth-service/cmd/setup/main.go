@@ -5,11 +5,13 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"log/slog"
 	"os"
 	"strings"
 	"time"
 
 	"kubemapreduce/auth-service/pkg/auth"
+	"kubemapreduce/manager-service/pkg/observability"
 
 	"golang.org/x/term"
 )
@@ -23,8 +25,10 @@ import (
 //  4. (Optional) If a username is provided via flags, create an initial user with the specified role and password.
 //  5. Exit upon completion or failure.
 func main() {
+	logger := observability.NewLogger("auth-setup")
+	slog.SetDefault(logger)
 	log.SetFlags(0)
-	log.SetPrefix("setup: ")
+	log.SetOutput(loggerWriter{logger: logger})
 
 	var cfg auth.BootstrapConfig
 
@@ -115,4 +119,21 @@ func getEnv(key string, fallback string) string {
 		return fallback
 	}
 	return value
+}
+
+// loggerWriter bridges log.Print* output to the structured slog pipeline so
+// every line emitted by the standard logger (including log.Fatalf at
+// shutdown) is routed through the same JSON sink as the rest of the
+// process.
+type loggerWriter struct {
+	logger *slog.Logger
+}
+
+func (w loggerWriter) Write(p []byte) (int, error) {
+	msg := string(p)
+	if n := len(msg); n > 0 && msg[n-1] == '\n' {
+		msg = msg[:n-1]
+	}
+	w.logger.Info(msg)
+	return len(p), nil
 }

@@ -41,7 +41,8 @@ As a `main` package, it does not export Go identifiers for external use. It "exp
 |---|---|---|
 | `/api/v1/jobs` | JWT (Bearer) | Submit or query MapReduce jobs |
 | `/admin/*` | JWT (ADMIN role) | User and realm management (requires Admin Client) |
-| `/health` | None | Service liveness probe |
+| `/healthz` | None | Service liveness probe |
+| `/readyz` | None | Service readiness probe (pings the DDS) |
 
 ## Error Catalogue
 | Error | When |

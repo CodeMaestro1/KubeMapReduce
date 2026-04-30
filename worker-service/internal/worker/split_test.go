@@ -112,9 +112,9 @@ func TestReadSplitRecords_ExtendsPastChunkUntilNewline(t *testing.T) {
 	store := newChunkingStorage(int(splitReadChunkSize))
 	largeValue := strings.Repeat("x", int(splitReadChunkSize)+128)
 	record := fmt.Sprintf(`{"key":"k","value":"%s"}`+"\n", largeValue)
-	store.put("inputs", "big.jsonl", []byte(record))
+	store.put("mapreduce-inputs", "big.jsonl", []byte(record))
 
-	lines, err := readSplitRecords(context.Background(), store, "s3://inputs/big.jsonl", 0, splitReadChunkSize/2, "")
+	lines, err := readSplitRecords(context.Background(), store, "s3://mapreduce-inputs/big.jsonl", 0, splitReadChunkSize/2, "")
 	if err != nil {
 		t.Fatalf("readSplitRecords: %v", err)
 	}

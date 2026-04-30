@@ -11,7 +11,8 @@ import (
 func RegisterRoutes(mux *http.ServeMux, h *Handlers, validator *auth.JWTValidator) {
 	// Public routes
 	mux.HandleFunc("/", h.HandleRoot)
-	mux.HandleFunc("/health", h.HandleHealth)
+	mux.HandleFunc("/healthz", h.HandleHealthz)
+	mux.HandleFunc("/readyz", h.HandleReadyz)
 
 	// Authenticated routes
 	mux.Handle("/api/v1/jobs", auth.RequireAnyRole(

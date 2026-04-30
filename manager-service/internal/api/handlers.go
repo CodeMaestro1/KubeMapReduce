@@ -9,7 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
@@ -37,11 +37,12 @@ type Handlers struct {
 }
 
 const (
-	defaultReducers  = 1
-	defaultListLimit = 100
-	maxListLimit     = 500
-	maxJSONBodyBytes = 1 << 20 // 1 MiB
-	inputBucketName  = "inputs"
+	defaultReducers   = 1
+	defaultListLimit  = 100
+	maxListLimit      = 500
+	maxJSONBodyBytes  = 1 << 20 // 1 MiB
+	inputBucketName   = "mapreduce-inputs"
+	stagingBucketName = "mapreduce-staging"
 )
 
 var defaultTargetSplitSizeBytes int64 = 64 * 1024 * 1024
@@ -98,18 +99,45 @@ func (h *Handlers) HandleRoot(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// HandleHealth provides an unauthenticated endpoint for monitoring tools.
+// HandleHealthz provides an unauthenticated liveness probe endpoint.
 //
-// It returns a simple 200 OK status to indicate the web server is processing
-// requests. This is distinct from deep health checks that might probe the
-// database or Keycloak.
-func (h *Handlers) HandleHealth(w http.ResponseWriter, r *http.Request) {
+// It returns a simple 200 OK status to indicate the web server process is
+// running and able to serve requests. It does NOT exercise downstream
+// dependencies (database, MinIO, Keycloak); use [Handlers.HandleReadyz] for
+// dependency-aware readiness checks.
+func (h *Handlers) HandleHealthz(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		httputil.WriteErrorJSON(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
 
 	if err := httputil.WriteJSON(w, http.StatusOK, map[string]string{"status": "ok"}); err != nil {
+		return
+	}
+}
+
+// HandleReadyz reports whether the API service is ready to serve traffic.
+//
+// It pings the underlying [JobStore] (PostgreSQL DDS in production) to
+// confirm the database connection is healthy. Returns 503 Service Unavailable
+// if the store is unreachable, 200 OK otherwise. The DB ping is bounded by a
+// short context timeout to prevent the readiness probe from blocking.
+func (h *Handlers) HandleReadyz(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		httputil.WriteErrorJSON(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+
+	if h.store != nil {
+		ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
+		defer cancel()
+		if err := h.store.Ping(ctx); err != nil {
+			httputil.WriteErrorJSON(w, http.StatusServiceUnavailable, "database not ready")
+			return
+		}
+	}
+
+	if err := httputil.WriteJSON(w, http.StatusOK, map[string]string{"status": "ready"}); err != nil {
 		return
 	}
 }
@@ -158,16 +186,17 @@ func (h *Handlers) HandleJobsSubmit(w http.ResponseWriter, r *http.Request) {
 	schedReq := buildScheduleRequest(r.Context(), newScheduleObjectClient(h.minioClient), jobID, userID, request, combinerURI)
 
 	rec := JobRecord{
-		JobID:       jobID,
-		UserID:      userID,
-		Status:      "Pending",
-		Filename:    request.Filename,
-		Reducers:    request.Reducers,
-		CreatedAt:   now,
-		MapperURI:   request.Mapper.Artifact,
-		ReducerURI:  request.Reducer.Artifact,
-		CombinerURI: combinerURI,
-		MTasks:      schedReq.MTasks,
+		JobID:         jobID,
+		UserID:        userID,
+		Status:        "Pending",
+		Filename:      request.Filename,
+		InputChecksum: request.InputChecksum,
+		Reducers:      request.Reducers,
+		CreatedAt:     now,
+		MapperURI:     request.Mapper.Artifact,
+		ReducerURI:    request.Reducer.Artifact,
+		CombinerURI:   combinerURI,
+		MTasks:        schedReq.MTasks,
 	}
 	if err := h.store.CreateJob(r.Context(), rec); err != nil {
 		httputil.WriteErrorJSON(w, http.StatusInternalServerError, "failed to persist job")
@@ -176,7 +205,10 @@ func (h *Handlers) HandleJobsSubmit(w http.ResponseWriter, r *http.Request) {
 
 	if h.managerAddr != "" {
 		if err := h.postSchedule(r.Context(), schedReq); err != nil {
-			log.Printf("[api] job %s persisted but schedule failed: %v", jobID, err)
+			slog.ErrorContext(r.Context(), "job persisted but schedule call failed",
+				slog.String("job_id", jobID),
+				slog.Any("err", err),
+			)
 		}
 	}
 
@@ -389,7 +421,10 @@ func (h *Handlers) HandleJobsDownload(w http.ResponseWriter, r *http.Request) {
 
 	outputURIs, err := h.store.GetJobOutputs(r.Context(), jobID)
 	if err != nil {
-		log.Printf("GetJobOutputs failed for job %s: %v", jobID, err)
+		slog.ErrorContext(r.Context(), "GetJobOutputs failed",
+			slog.String("job_id", jobID),
+			slog.Any("err", err),
+		)
 		httputil.WriteErrorJSON(w, http.StatusInternalServerError, "failed to retrieve job outputs")
 		return
 	}
@@ -403,13 +438,21 @@ func (h *Handlers) HandleJobsDownload(w http.ResponseWriter, r *http.Request) {
 	for _, uri := range outputURIs {
 		bucket, key, parseErr := parseOutputURI(uri)
 		if parseErr != nil {
-			log.Printf("invalid output URI for job %s: %v", jobID, parseErr)
+			slog.ErrorContext(r.Context(), "invalid output URI",
+				slog.String("job_id", jobID),
+				slog.String("uri", uri),
+				slog.Any("err", parseErr),
+			)
 			httputil.WriteErrorJSON(w, http.StatusInternalServerError, "invalid output URI")
 			return
 		}
 		u, presignErr := h.minioClient.PresignedGetObject(r.Context(), bucket, key, 15*time.Minute, nil)
 		if presignErr != nil {
-			log.Printf("presign failed for job %s uri %s: %v", jobID, uri, presignErr)
+			slog.ErrorContext(r.Context(), "presign failed for output URI",
+				slog.String("job_id", jobID),
+				slog.String("uri", uri),
+				slog.Any("err", presignErr),
+			)
 			httputil.WriteErrorJSON(w, http.StatusInternalServerError, "failed to generate download URL")
 			return
 		}
@@ -798,7 +841,10 @@ func buildInputSplits(ctx context.Context, storage scheduleObjectClient, objectN
 		}
 		checksum, checksumErr := checksumObjectRange(ctx, storage, inputBucketName, objectName, start, end)
 		if checksumErr != nil {
-			log.Printf("[api] falling back to a single split for %s after checksum error: %v", inputURI, checksumErr)
+			slog.WarnContext(ctx, "falling back to a single split after checksum error",
+				slog.String("input_uri", inputURI),
+				slog.Any("err", checksumErr),
+			)
 			return []manager.ScheduleTaskInput{{
 				InputURI: inputURI,
 			}}
@@ -1007,12 +1053,7 @@ func (h *Handlers) HandleJobsDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := httputil.WriteJSON(w, http.StatusOK, map[string]string{
-		"status": "cancelled",
-		"jobId":  jobID,
-	}); err != nil {
-		return
-	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // HandlePresignUpload generates a temporary URL for direct file upload to object storage.

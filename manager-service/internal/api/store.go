@@ -14,16 +14,17 @@ import (
 // JobRecord holds the persisted state for a single job, mapping to the JOBS
 // and JOB_CONFIGS DDS tables.
 type JobRecord struct {
-	JobID       string
-	UserID      string
-	Status      string
-	Filename    string
-	Reducers    int
-	CreatedAt   time.Time
-	MapperURI   string
-	ReducerURI  string
-	CombinerURI string
-	MTasks      int
+	JobID         string
+	UserID        string
+	Status        string
+	Filename      string
+	InputChecksum string
+	Reducers      int
+	CreatedAt     time.Time
+	MapperURI     string
+	ReducerURI    string
+	CombinerURI   string
+	MTasks        int
 }
 
 // ErrInvalidJobID is returned when a provided job ID is not a valid UUID.
@@ -55,6 +56,9 @@ type JobStore interface {
 	ListAllJobs(ctx context.Context, limit, offset int) ([]JobRecord, error)
 	// GetJobOutputs returns ordered output URIs for completed reduce tasks of a job.
 	GetJobOutputs(ctx context.Context, jobID string) ([]string, error)
+	// Ping verifies that the underlying storage is reachable. Used by the
+	// /readyz readiness probe.
+	Ping(ctx context.Context) error
 }
 
 // ── PostgreSQL implementation ───────────────────────────────
@@ -66,7 +70,7 @@ const (
 
 	queryInsertAPIJobConfig = `
 		INSERT INTO JOB_CONFIGS (job_id, input_uri, mapper_uri, reducer_uri, combiner_uri, m_tasks, r_tasks, input_checksum)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, '')`
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`
 
 	queryListAPIJobs = `
 		SELECT j.job_id, j.status, COALESCE(jc.input_uri, ''), COALESCE(jc.r_tasks, 0), j.created_at
@@ -130,6 +134,14 @@ func NewPostgresJobStore(db *sql.DB) *PostgresJobStore {
 	return &PostgresJobStore{db: db}
 }
 
+// Ping verifies that the underlying database connection is healthy.
+func (s *PostgresJobStore) Ping(ctx context.Context) error {
+	if s == nil || s.db == nil {
+		return errors.New("postgres job store: nil database handle")
+	}
+	return s.db.PingContext(ctx)
+}
+
 // CreateJob inserts a new job and its configuration into the DDS within a
 // single transaction, ensuring atomicity across the JOBS and JOB_CONFIGS tables.
 //
@@ -155,7 +167,7 @@ func (s *PostgresJobStore) CreateJob(ctx context.Context, rec JobRecord) error {
 	if _, err := tx.ExecContext(ctx, queryInsertAPIJob, jobUUID, userUUID, now, now); err != nil {
 		return err
 	}
-	if _, err := tx.ExecContext(ctx, queryInsertAPIJobConfig, jobUUID, rec.Filename, rec.MapperURI, rec.ReducerURI, rec.CombinerURI, rec.MTasks, rec.Reducers); err != nil {
+	if _, err := tx.ExecContext(ctx, queryInsertAPIJobConfig, jobUUID, rec.Filename, rec.MapperURI, rec.ReducerURI, rec.CombinerURI, rec.MTasks, rec.Reducers, rec.InputChecksum); err != nil {
 		return err
 	}
 
@@ -295,6 +307,12 @@ type MemoryJobStore struct {
 	jobStatusTTL  time.Duration
 	maxStoredJobs int
 	now           func() time.Time
+}
+
+// Ping always returns nil for the in-memory store; it is always reachable
+// in-process and is intended only for tests.
+func (m *MemoryJobStore) Ping(_ context.Context) error {
+	return nil
 }
 
 // NewMemoryJobStore creates an in-memory store with configurable TTL and

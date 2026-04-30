@@ -20,17 +20,36 @@ Basic discovery endpoint to verify the API is running and reachable.
 
 ---
 
-## GET /health
+## GET /healthz
 
 **Auth:** None  
 **Response:** 200 OK
 
-Shallow health check for monitoring systems and the CLI.
+Liveness probe for monitoring systems, the CLI, and the Kubernetes
+liveness probe. Indicates that the HTTP server is processing requests; does
+not exercise downstream dependencies.
 
 ### Response Body
 | Field | Type | Description |
 |---|---|---|
 | status | string | Service health ("ok") |
+
+---
+
+## GET /readyz
+
+**Auth:** None  
+**Response:** 200 OK or 503 Service Unavailable
+
+Readiness probe used by the Kubernetes readiness probe. Pings the underlying
+PostgreSQL DDS to confirm the API can serve authenticated traffic. Returns
+503 with `{"error": "database not ready", ...}` when the DB is unreachable
+so the pod is removed from the Service endpoints.
+
+### Response Body (200)
+| Field | Type | Description |
+|---|---|---|
+| status | string | Service readiness ("ready") |
 
 ---
 

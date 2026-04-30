@@ -7,13 +7,34 @@ Go API with Keycloak authentication, role-based authorization, and a dedicated C
 - Go 1.25+
 - Docker + Docker Compose
 
+## Local Development
+
+```bash
+cd infra/docker
+docker compose up -d
+```
+
+| Service    | URL / Port                          |
+|------------|-------------------------------------|
+| Keycloak   | http://localhost:8080               |
+| API        | http://localhost:8081               |
+| PostgreSQL | localhost:5432 (user/db: mapreduce) |
+| MinIO S3   | localhost:9000                      |
+| MinIO UI   | http://localhost:9001               |
+
+Run DB migrations after first start:
+
+```bash
+psql postgres://mapreduce:mapreduce@localhost:5432/mapreduce < migrations/0001_initial_schema.sql
+```
+
 ## Quick Start
 
-1. Start Keycloak:
+1. Start all services:
 
    ```bash
    cd infra/docker
-   docker-compose up -d
+   docker compose up -d
    ```
 
 2. Run setup (bootstraps realm + creates first admin user):
