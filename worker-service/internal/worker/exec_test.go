@@ -132,7 +132,7 @@ cat
 
 	t.Run("context cancellation", func(t *testing.T) {
 		sleepBinPath := filepath.Join(tempDir, "sleep.sh")
-		if err := os.WriteFile(sleepBinPath, []byte("#!/bin/sh\nsleep 0.2\n"), 0755); err != nil {
+		if err := os.WriteFile(sleepBinPath, []byte("#!/bin/sh\nsleep 1\n"), 0755); err != nil {
 			t.Fatalf("failed to write temp script: %v", err)
 		}
 
