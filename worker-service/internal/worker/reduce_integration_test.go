@@ -135,10 +135,10 @@ func countFilesInDir(t *testing.T, dir string) int {
 // multi-pass spill. Asserts heap stays under 30 MB and temp dir is clean.
 func TestRunReduce_LargeInputCompletesWithoutOOM(t *testing.T) {
 	const (
-		numInputs      = 50
+		numInputs       = 50
 		recordsPerInput = 200
-		valuePad       = 200
-		batchSize      = 10
+		valuePad        = 200
+		batchSize       = 10
 	)
 
 	store := newStreamingMockStorage()

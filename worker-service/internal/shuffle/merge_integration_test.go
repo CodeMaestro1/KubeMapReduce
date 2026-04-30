@@ -78,10 +78,10 @@ func countFilesInDir(t *testing.T, dir string) int {
 // the full dataset is never in RAM at once.
 func TestMergeInputs_LargeStreamingInputNoOOM(t *testing.T) {
 	const (
-		numReaders      = 200
+		numReaders       = 200
 		recordsPerReader = 500
-		valuePad        = 150
-		batchSize       = 50
+		valuePad         = 150
+		batchSize        = 50
 	)
 
 	tmpDir := t.TempDir()
