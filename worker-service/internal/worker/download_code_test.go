@@ -135,6 +135,56 @@ int main() { std::cout << "hi" << std::endl; return 0; }
 	}
 }
 
+func TestDownloadCode_CompilesCcSource(t *testing.T) {
+	if _, err := exec.LookPath("g++"); err != nil {
+		t.Skip("g++ not available on this host")
+	}
+
+	src := []byte(`#include <iostream>
+int main() { std::cout << "hi" << std::endl; return 0; }
+`)
+	store := &staticStorage{bucket: "code", key: "mapper.cc", payload: src}
+	tempDir := t.TempDir()
+
+	execPath, cleanup, err := downloadCode(context.Background(), store, "s3://code/mapper.cc", tempDir)
+	if err != nil {
+		t.Fatalf("downloadCode: %v", err)
+	}
+	defer cleanup()
+
+	if _, statErr := os.Stat(execPath); statErr != nil {
+		t.Errorf("compiled binary missing at %s: %v", execPath, statErr)
+	}
+	if filepath.Ext(execPath) == ".cc" {
+		t.Errorf("execPath should have stripped .cc extension, got %q", execPath)
+	}
+}
+
+func TestDownloadCode_CompilesCxxSource(t *testing.T) {
+	if _, err := exec.LookPath("g++"); err != nil {
+		t.Skip("g++ not available on this host")
+	}
+
+	src := []byte(`#include <iostream>
+int main() { std::cout << "hi" << std::endl; return 0; }
+`)
+	store := &staticStorage{bucket: "code", key: "mapper.cxx", payload: src}
+	tempDir := t.TempDir()
+
+	execPath, cleanup, err := downloadCode(context.Background(), store, "s3://code/mapper.cxx", tempDir)
+	if err != nil {
+		t.Fatalf("downloadCode: %v", err)
+	}
+	defer cleanup()
+
+	if _, statErr := os.Stat(execPath); statErr != nil {
+		t.Errorf("compiled binary missing at %s: %v", execPath, statErr)
+	}
+	if filepath.Ext(execPath) == ".cxx" {
+		t.Errorf("execPath should have stripped .cxx extension, got %q", execPath)
+	}
+}
+
 func TestDownloadCode_CompileFailureReturnsError(t *testing.T) {
 	if _, err := exec.LookPath("gcc"); err != nil {
 		t.Skip("gcc not available on this host")
