@@ -48,21 +48,43 @@ func parseS3URI(uri string) (bucket, key string, err error) {
 
 // fetchManifest downloads a data_locations manifest from MinIO.
 // The manifest JSON has the shape {"data_locations": ["s3://...", ...]}.
+//
+// manifestURI may include a "#sha256=<hex>" fragment.  When the fragment is
+// present the downloaded bytes are verified against the embedded digest before
+// the JSON is decoded.  If the digest does not match, an error is returned and
+// the manifest is not used.  URIs without the fragment are accepted as-is for
+// backwards compatibility.
 func fetchManifest(ctx context.Context, storage objectStorage, manifestURI string) ([]string, error) {
-	bucket, key, err := parseS3URI(manifestURI)
+	uri, expectedDigest := parseManifestURIFragment(manifestURI)
+
+	bucket, key, err := parseS3URI(uri)
 	if err != nil {
 		return nil, err
 	}
 	rc, err := storage.GetObject(ctx, bucket, key, minio.GetObjectOptions{})
 	if err != nil {
-		return nil, fmt.Errorf("GetObject manifest %s: %w", manifestURI, err)
+		return nil, fmt.Errorf("GetObject manifest %s: %w", uri, err)
 	}
 	defer rc.Close()
+
+	data, err := io.ReadAll(rc)
+	if err != nil {
+		return nil, fmt.Errorf("read manifest %s: %w", uri, err)
+	}
+
+	if expectedDigest != "" {
+		actual := sha256.Sum256(data)
+		actualHex := hex.EncodeToString(actual[:])
+		if actualHex != expectedDigest {
+			return nil, fmt.Errorf("manifest digest mismatch for %s: expected sha256=%s got sha256=%s",
+				uri, expectedDigest, actualHex)
+		}
+	}
 
 	var m struct {
 		DataLocations []string `json:"data_locations"`
 	}
-	if err := json.NewDecoder(rc).Decode(&m); err != nil {
+	if err := json.NewDecoder(bytes.NewReader(data)).Decode(&m); err != nil {
 		return nil, fmt.Errorf("decode manifest: %w", err)
 	}
 	return m.DataLocations, nil
