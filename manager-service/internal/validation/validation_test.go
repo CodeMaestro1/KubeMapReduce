@@ -32,6 +32,40 @@ func TestValidateJobSubmission(t *testing.T) {
 			wantErr: "filename is invalid",
 		},
 		{
+			name: "valid nested object key",
+			req: func() models.JobSubmissionRequest {
+				req := validJobSubmissionRequest()
+				req.Filename = "dataset/shard-0001.jsonl"
+				return req
+			}(),
+		},
+		{
+			name: "valid prefix input key",
+			req: func() models.JobSubmissionRequest {
+				req := validJobSubmissionRequest()
+				req.Filename = "dataset/"
+				return req
+			}(),
+		},
+		{
+			name: "invalid filename windows separator",
+			req: func() models.JobSubmissionRequest {
+				req := validJobSubmissionRequest()
+				req.Filename = "dataset\\input.jsonl"
+				return req
+			}(),
+			wantErr: "filename is invalid",
+		},
+		{
+			name: "invalid filename empty segment",
+			req: func() models.JobSubmissionRequest {
+				req := validJobSubmissionRequest()
+				req.Filename = "dataset//input.jsonl"
+				return req
+			}(),
+			wantErr: "filename is invalid",
+		},
+		{
 			name: "invalid mapper language",
 			req: func() models.JobSubmissionRequest {
 				req := validJobSubmissionRequest()

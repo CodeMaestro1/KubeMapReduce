@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -83,6 +84,22 @@ func (f *fakeScheduleObjectClient) GetObject(_ context.Context, bucketName, obje
 		return io.NopCloser(bytes.NewReader(nil)), nil
 	}
 	return io.NopCloser(bytes.NewReader(data[int(start) : int(end)+1])), nil
+}
+
+func (f *fakeScheduleObjectClient) ListObjects(_ context.Context, bucketName, prefix string, _ bool) ([]scheduleObjectInfo, error) {
+	entries := make([]scheduleObjectInfo, 0)
+	bucketPrefix := bucketName + "/"
+	for fullKey, data := range f.objects {
+		if !strings.HasPrefix(fullKey, bucketPrefix) {
+			continue
+		}
+		key := strings.TrimPrefix(fullKey, bucketPrefix)
+		if strings.HasPrefix(key, prefix) {
+			entries = append(entries, scheduleObjectInfo{Key: key, Size: int64(len(data))})
+		}
+	}
+	sort.Slice(entries, func(i, j int) bool { return entries[i].Key < entries[j].Key })
+	return entries, nil
 }
 
 func TestHandleHealthz(t *testing.T) {
@@ -339,6 +356,80 @@ func TestBuildScheduleRequest_SplitsLargeInputAndHashesEachSplit(t *testing.T) {
 	if req.Tasks[1].InputSplits[0].SplitChecksum != fmt.Sprintf("%x", wantSecond[:]) {
 		t.Fatalf("unexpected second split checksum: %q", req.Tasks[1].InputSplits[0].SplitChecksum)
 	}
+}
+
+func TestBuildScheduleRequest_GroupsPrefixInputsByAggregateSize(t *testing.T) {
+	origSplitSize := defaultTargetSplitSizeBytes
+	defaultTargetSplitSizeBytes = 10
+	t.Cleanup(func() { defaultTargetSplitSizeBytes = origSplitSize })
+
+	body := models.JobSubmissionRequest{
+		Filename: "dataset/",
+		Mapper: models.FunctionSpec{
+			Artifact:   "mapper.py",
+			Entrypoint: "map",
+			Interface:  "map(key,value)->[]KeyValue",
+			Language:   "python",
+		},
+		Reducer: models.FunctionSpec{
+			Artifact:   "reducer.py",
+			Entrypoint: "reduce",
+			Interface:  "reduce(key,values)->Value",
+			Language:   "python",
+		},
+		Reducers: 1,
+	}
+
+	store := &fakeScheduleObjectClient{
+		objects: map[string][]byte{
+			"mapreduce-inputs/dataset/a.jsonl": []byte("aaaaaaaa"),
+			"mapreduce-inputs/dataset/b.jsonl": []byte("bbbbbbb"),
+			"mapreduce-inputs/dataset/c.jsonl": []byte("ccccc"),
+		},
+	}
+
+	req := buildScheduleRequest(context.Background(), store, "job-1", "user-1", body, "")
+	if req.MTasks != 2 {
+		t.Fatalf("MTasks = %d, want 2", req.MTasks)
+	}
+
+	mapTasks := make([]manager.ScheduleTask, 0, req.MTasks)
+	for _, task := range req.Tasks {
+		if task.TaskType == "Map" {
+			mapTasks = append(mapTasks, task)
+		}
+	}
+	if len(mapTasks) != 2 {
+		t.Fatalf("map task count = %d, want 2", len(mapTasks))
+	}
+
+	seen := map[string]manager.ScheduleTaskInput{}
+	for _, task := range mapTasks {
+		for _, split := range task.InputSplits {
+			seen[split.InputURI] = split
+		}
+	}
+	if len(seen) != 3 {
+		t.Fatalf("expected 3 unique file splits across map buckets, got %d", len(seen))
+	}
+
+	assertSplit := func(uri string, data []byte) {
+		split, ok := seen[uri]
+		if !ok {
+			t.Fatalf("missing split for %s", uri)
+		}
+		if split.ByteStart != 0 || split.ByteEnd != int64(len(data))-1 {
+			t.Fatalf("unexpected range for %s: [%d,%d]", uri, split.ByteStart, split.ByteEnd)
+		}
+		want := sha256.Sum256(data)
+		if split.SplitChecksum != fmt.Sprintf("%x", want[:]) {
+			t.Fatalf("checksum mismatch for %s: got %s", uri, split.SplitChecksum)
+		}
+	}
+
+	assertSplit("s3://mapreduce-inputs/dataset/a.jsonl", []byte("aaaaaaaa"))
+	assertSplit("s3://mapreduce-inputs/dataset/b.jsonl", []byte("bbbbbbb"))
+	assertSplit("s3://mapreduce-inputs/dataset/c.jsonl", []byte("ccccc"))
 }
 
 func TestHandleJobsSubmit_RejectsEmptyFilename(t *testing.T) {
@@ -1623,6 +1714,10 @@ func (m *mockScheduleObjectClient) GetObject(ctx context.Context, bucketName, ob
 	return io.NopCloser(bytes.NewReader(data)), nil
 }
 
+func (m *mockScheduleObjectClient) ListObjects(context.Context, string, string, bool) ([]scheduleObjectInfo, error) {
+	return nil, errors.New("not implemented")
+}
+
 func TestBuildInputSplits_ZeroSizeObject(t *testing.T) {
 	storage := &zeroSizeObjectClient{}
 	splits := buildInputSplits(context.Background(), storage, "input.jsonl", "s3://inputs/input.jsonl")
@@ -1670,6 +1765,10 @@ func (z *zeroSizeObjectClient) GetObject(_ context.Context, _, _ string, _ minio
 	return io.NopCloser(bytes.NewReader(nil)), nil
 }
 
+func (z *zeroSizeObjectClient) ListObjects(context.Context, string, string, bool) ([]scheduleObjectInfo, error) {
+	return nil, errors.New("not implemented")
+}
+
 type errStatObjectClient struct{}
 
 func (e *errStatObjectClient) StatObject(_ context.Context, _, _ string, _ minio.StatObjectOptions) (minio.ObjectInfo, error) {
@@ -1680,6 +1779,10 @@ func (e *errStatObjectClient) GetObject(_ context.Context, _, _ string, _ minio.
 	return nil, errors.New("not called")
 }
 
+func (e *errStatObjectClient) ListObjects(context.Context, string, string, bool) ([]scheduleObjectInfo, error) {
+	return nil, errors.New("not implemented")
+}
+
 type shortReadObjectClient struct{ data []byte }
 
 func (s *shortReadObjectClient) StatObject(_ context.Context, _, _ string, _ minio.StatObjectOptions) (minio.ObjectInfo, error) {
@@ -1688,4 +1791,8 @@ func (s *shortReadObjectClient) StatObject(_ context.Context, _, _ string, _ min
 
 func (s *shortReadObjectClient) GetObject(_ context.Context, _, _ string, _ minio.GetObjectOptions) (io.ReadCloser, error) {
 	return io.NopCloser(bytes.NewReader(s.data)), nil
+}
+
+func (s *shortReadObjectClient) ListObjects(context.Context, string, string, bool) ([]scheduleObjectInfo, error) {
+	return nil, errors.New("not implemented")
 }
