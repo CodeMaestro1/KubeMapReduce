@@ -1,6 +1,10 @@
 package main
 
 import (
+	"context"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -24,11 +28,12 @@ type cliJobFuncSpec struct {
 }
 
 type cliJobPayload struct {
-	Filename string          `json:"filename"`
-	Mapper   cliJobFuncSpec  `json:"mapper"`
-	Reducer  cliJobFuncSpec  `json:"reducer"`
-	Combiner *cliJobFuncSpec `json:"combiner,omitempty"`
-	Reducers int             `json:"reducers,omitempty"`
+	Filename      string          `json:"filename"`
+	InputChecksum string          `json:"inputChecksum,omitempty"`
+	Mapper        cliJobFuncSpec  `json:"mapper"`
+	Reducer       cliJobFuncSpec  `json:"reducer"`
+	Combiner      *cliJobFuncSpec `json:"combiner,omitempty"`
+	Reducers      int             `json:"reducers,omitempty"`
 }
 
 var jobsSubmitGetValidToken = getValidToken
@@ -37,6 +42,94 @@ var jobsSubmitExit = os.Exit
 var jobsListGetValidToken = getValidToken
 var jobsListDoAuthRequestExpect = doAuthRequestExpect
 var jobsListExit = os.Exit
+
+// jobsSubmitUploadFile is the upload function used during job submission.
+// Replaced in tests to avoid real HTTP calls.
+var jobsSubmitUploadFile = uploadFileToStorage
+
+func inputStorageBucket() string { return getEnv("MINIO_INPUT_BUCKET", "mapreduce-inputs") }
+func codeStorageBucket() string  { return getEnv("MINIO_CODE_BUCKET", "mapreduce-inputs") }
+
+// codeKey returns the MinIO object key for a user's code file: temp/<userID>/<basename>.
+func codeKey(userID, localPath string) string {
+	return fmt.Sprintf("temp/%s/%s", userID, filepath.Base(localPath))
+}
+
+// userIDFromToken extracts the JWT sub claim without signature verification.
+// Returns an empty string if the token is malformed.
+func userIDFromToken(token string) string {
+	parts := strings.Split(token, ".")
+	if len(parts) != 3 {
+		return ""
+	}
+	b, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		return ""
+	}
+	var claims struct {
+		Sub string `json:"sub"`
+	}
+	if err := json.Unmarshal(b, &claims); err != nil {
+		return ""
+	}
+	return claims.Sub
+}
+
+// uploadFileToStorage requests a pre-signed PUT URL from the API, uploads the
+// local file to MinIO, and returns the MinIO URI and SHA-256 checksum.
+func uploadFileToStorage(token, serverURL, bucket, key, localPath string) (minioURI, checksum string, err error) {
+	presignBody, _ := json.Marshal(map[string]string{"bucket": bucket, "key": key})
+	resp, err := doAuthRequest(http.MethodPost, serverURL+"/api/v1/files/presign-upload", token, presignBody)
+	if err != nil {
+		return "", "", fmt.Errorf("presign %q: %w", localPath, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return "", "", fmt.Errorf("presign %q: server returned %d: %s", localPath, resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+	var presignResp struct {
+		URL string `json:"url"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&presignResp); err != nil {
+		return "", "", fmt.Errorf("parse presign response for %q: %w", localPath, err)
+	}
+	if presignResp.URL == "" {
+		return "", "", fmt.Errorf("presign %q: server returned empty URL", localPath)
+	}
+
+	f, err := os.Open(localPath)
+	if err != nil {
+		return "", "", fmt.Errorf("open %q: %w", localPath, err)
+	}
+	defer f.Close()
+
+	info, err := f.Stat()
+	if err != nil {
+		return "", "", fmt.Errorf("stat %q: %w", localPath, err)
+	}
+
+	h := sha256.New()
+	tee := io.TeeReader(f, h)
+
+	putReq, err := http.NewRequestWithContext(context.Background(), http.MethodPut, presignResp.URL, tee)
+	if err != nil {
+		return "", "", fmt.Errorf("create PUT for %q: %w", localPath, err)
+	}
+	putReq.ContentLength = info.Size()
+	putReq.Header.Set("Content-Type", "application/octet-stream")
+
+	putResp, err := cliHTTPClient.Do(putReq)
+	if err != nil {
+		return "", "", fmt.Errorf("upload %q: %w", localPath, err)
+	}
+	defer putResp.Body.Close()
+	if putResp.StatusCode != http.StatusOK && putResp.StatusCode != http.StatusNoContent && putResp.StatusCode != http.StatusCreated {
+		return "", "", fmt.Errorf("upload %q: storage returned %d", localPath, putResp.StatusCode)
+	}
+
+	return fmt.Sprintf("s3://%s/%s", bucket, key), hex.EncodeToString(h.Sum(nil)), nil
+}
 
 func validateReducersCount(reducers int) error {
 	if reducers < 1 {
@@ -64,11 +157,9 @@ func inferLanguage(path string) string {
 
 // cmdJobsSubmit handles the 'jobs submit' command.
 //
-// It parses job specification flags (mapper, reducer, input, etc.) and constructs
-// a JSON payload to send to the API server. This command is designed to be
-// metadata-only: it tells the system where to find the code and data, but does
-// not upload the files themselves, assuming a shared storage environment or
-// pre-staged artifacts.
+// It uploads mapper, reducer, optional combiner, and input files to MinIO via
+// pre-signed PUT URLs, then submits the job specification with MinIO URIs and
+// the input file's SHA-256 checksum to the API.
 func cmdJobsSubmit(args []string) {
 	fs := flag.NewFlagSet("jobs submit", flag.ExitOnError)
 	mapperPath := fs.String("mapper", "", "path to mapper file (required)")
@@ -80,6 +171,8 @@ func cmdJobsSubmit(args []string) {
 	_ = fs.Parse(args)
 
 	var data []byte
+	var token, serverURL string
+
 	if *specFile != "" {
 		var err error
 		data, err = os.ReadFile(*specFile)
@@ -98,38 +191,70 @@ func cmdJobsSubmit(args []string) {
 			jobsSubmitExit(1)
 			return
 		}
+
+		// Authenticate before uploads so we can fail fast on auth errors.
+		token, serverURL = jobsSubmitGetValidToken()
+		userID := userIDFromToken(token)
+		codeBucket := codeStorageBucket()
+		inputBucket := inputStorageBucket()
+
+		mapperURI, _, err := jobsSubmitUploadFile(token, serverURL, codeBucket, codeKey(userID, *mapperPath), *mapperPath)
+		if err != nil {
+			log.Fatalf("upload mapper: %v", err)
+		}
+
+		reducerURI, _, err := jobsSubmitUploadFile(token, serverURL, codeBucket, codeKey(userID, *reducerPath), *reducerPath)
+		if err != nil {
+			log.Fatalf("upload reducer: %v", err)
+		}
+
+		_, inputChecksum, err := jobsSubmitUploadFile(token, serverURL, inputBucket, filepath.Base(*inputFile), *inputFile)
+		if err != nil {
+			log.Fatalf("upload input: %v", err)
+		}
+
 		payload := cliJobPayload{
-			Filename: filepath.Base(*inputFile),
+			Filename:      filepath.Base(*inputFile),
+			InputChecksum: inputChecksum,
 			Mapper: cliJobFuncSpec{
 				Language:   inferLanguage(*mapperPath),
-				Artifact:   filepath.Base(*mapperPath),
+				Artifact:   mapperURI,
 				Entrypoint: "map",
 				Interface:  "map(key,value)->[]KeyValue",
 			},
 			Reducer: cliJobFuncSpec{
 				Language:   inferLanguage(*reducerPath),
-				Artifact:   filepath.Base(*reducerPath),
+				Artifact:   reducerURI,
 				Entrypoint: "reduce",
 				Interface:  "reduce(key,values)->Value",
 			},
 			Reducers: *numReducers,
 		}
+
 		if *combinerPath != "" {
+			combinerURI, _, err := jobsSubmitUploadFile(token, serverURL, codeBucket, codeKey(userID, *combinerPath), *combinerPath)
+			if err != nil {
+				log.Fatalf("upload combiner: %v", err)
+			}
 			payload.Combiner = &cliJobFuncSpec{
 				Language:   inferLanguage(*combinerPath),
-				Artifact:   filepath.Base(*combinerPath),
+				Artifact:   combinerURI,
 				Entrypoint: "combine",
 				Interface:  "reduce(key,values)->Value",
 			}
 		}
-		var err error
-		data, err = json.Marshal(payload)
-		if err != nil {
-			log.Fatalf("failed to build job request: %v", err)
+
+		var marshalErr error
+		data, marshalErr = json.Marshal(payload)
+		if marshalErr != nil {
+			log.Fatalf("failed to build job request: %v", marshalErr)
 		}
 	}
 
-	token, serverURL := jobsSubmitGetValidToken()
+	if token == "" {
+		token, serverURL = jobsSubmitGetValidToken()
+	}
+
 	resp := jobsSubmitDoAuthRequestExpect(
 		http.MethodPost,
 		serverURL+"/api/v1/jobs",
@@ -141,7 +266,6 @@ func cmdJobsSubmit(args []string) {
 	defer resp.Body.Close()
 
 	printResponse(resp)
-	fmt.Println("\nNote: this submits job metadata only. No file data is transferred to the server.")
 }
 
 // ── jobs list ──────────────────────────────────────────────

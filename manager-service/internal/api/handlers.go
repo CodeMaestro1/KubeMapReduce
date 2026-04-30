@@ -190,16 +190,17 @@ func (h *Handlers) HandleJobsSubmit(w http.ResponseWriter, r *http.Request) {
 	}
 
 	rec := JobRecord{
-		JobID:       jobID,
-		UserID:      userID,
-		Status:      "Pending",
-		Filename:    request.Filename,
-		Reducers:    request.Reducers,
-		CreatedAt:   now,
-		MapperURI:   request.Mapper.Artifact,
-		ReducerURI:  request.Reducer.Artifact,
-		CombinerURI: combinerURI,
-		MTasks:      schedReq.MTasks,
+		JobID:         jobID,
+		UserID:        userID,
+		Status:        "Pending",
+		Filename:      request.Filename,
+		InputChecksum: request.InputChecksum,
+		Reducers:      request.Reducers,
+		CreatedAt:     now,
+		MapperURI:     request.Mapper.Artifact,
+		ReducerURI:    request.Reducer.Artifact,
+		CombinerURI:   combinerURI,
+		MTasks:        schedReq.MTasks,
 	}
 	if err := h.store.CreateJob(r.Context(), rec); err != nil {
 		httputil.WriteErrorJSON(w, http.StatusInternalServerError, "failed to persist job")
