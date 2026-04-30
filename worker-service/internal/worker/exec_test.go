@@ -57,9 +57,21 @@ func TestBuildCmd(t *testing.T) {
 			wantCmd:    []string{"/path/to/binary"},
 		},
 		{
-			name:       "c/cpp defaults to binary",
+			name:       "c runtime env runs binary directly",
 			codePath:   "/path/to/binary",
 			runtimeEnv: "c",
+			wantCmd:    []string{"/path/to/binary"},
+		},
+		{
+			name:       "cpp runtime env runs binary directly",
+			codePath:   "/path/to/binary",
+			runtimeEnv: "cpp",
+			wantCmd:    []string{"/path/to/binary"},
+		},
+		{
+			name:       "unknown runtime env runs binary directly",
+			codePath:   "/path/to/binary",
+			runtimeEnv: "unknown",
 			wantCmd:    []string{"/path/to/binary"},
 		},
 	}
