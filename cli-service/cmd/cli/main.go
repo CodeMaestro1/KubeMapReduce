@@ -30,7 +30,7 @@ func main() {
 		cmdHealth()
 	case "jobs":
 		if len(os.Args) < 3 {
-			log.Fatal("usage: kubemapreduce jobs <submit|list|status|download> [flags]")
+			log.Fatal("usage: kubemapreduce jobs <submit|list|status|download|cancel|delete> [flags]")
 		}
 		switch os.Args[2] {
 		case "submit":
@@ -41,6 +41,8 @@ func main() {
 			cmdJobsStatus(os.Args[3:])
 		case "download":
 			cmdJobsDownload(os.Args[3:])
+		case "cancel", "delete":
+			cmdJobsCancel(os.Args[3:])
 		default:
 			log.Fatalf("unknown jobs subcommand: %s", os.Args[2])
 		}
@@ -93,6 +95,7 @@ Commands:
   jobs list              List all submitted jobs
   jobs status --id <id>           Show the status of a specific job
   jobs download --id <id>         Download completed job results (--output defaults to ./results/)
+  jobs cancel --id <id>           Cancel a running or submitted job (or use: jobs delete --id <id>)
   whoami                 Show the currently logged-in user
   admin create-user      Create a user in Keycloak (ADMIN)
   admin delete-user      Delete a user from Keycloak (ADMIN)
