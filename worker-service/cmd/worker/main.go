@@ -42,15 +42,9 @@ func main() {
 	}
 	defer conn.Close()
 
-	var minioClient *minio.Client
-	if cfg.MinioEndpoint != "" {
-		minioClient, err = minio.New(cfg.MinioEndpoint, &minio.Options{
-			Creds:  miniocreds.NewStaticV4(cfg.MinioAccessKey, cfg.MinioSecretKey, ""),
-			Secure: cfg.MinioUseSSL,
-		})
-		if err != nil {
-			log.Fatalf("minio: %v", err)
-		}
+	minioClient, err := buildMinioClient(cfg)
+	if err != nil {
+		log.Fatalf("minio: %v", err)
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -98,4 +92,14 @@ func (w loggerWriter) Write(p []byte) (int, error) {
 	}
 	w.logger.Info(msg)
 	return len(p), nil
+}
+
+func buildMinioClient(cfg *config.Config) (*minio.Client, error) {
+	if cfg.MinioEndpoint == "" {
+		return nil, nil
+	}
+	return minio.New(cfg.MinioEndpoint, &minio.Options{
+		Creds:  miniocreds.NewStaticV4(cfg.MinioAccessKey, cfg.MinioSecretKey, ""),
+		Secure: cfg.MinioUseSSL,
+	})
 }
