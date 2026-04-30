@@ -54,8 +54,20 @@ func (w *Worker) runMap(ctx context.Context, a *pb.TaskAssignment) (outputURIs, 
 		return nil, nil, fmt.Errorf("parse mapper output: %w", err)
 	}
 
-	// Sort records by key.
-	sort.Slice(records, func(i, j int) bool { return records[i].Key < records[j].Key })
+	// Sort records by key with an in-memory budget; spill sorted runs to disk
+	// when the budget is exceeded so very large mapper outputs cannot OOM the
+	// worker (issue #152). The returned reader yields the merged sorted JSONL
+	// stream and MUST be closed to release any spill files.
+	sortedReader, err := sortRecordsSpilling(records, w.spillThresholdBytes(), w.cfg.TempDir)
+	if err != nil {
+		return nil, nil, fmt.Errorf("sort map output: %w", err)
+	}
+	records = nil // help GC: data now lives in sortedReader / on disk
+	defer func() {
+		if sortedReader != nil {
+			sortedReader.Close()
+		}
+	}()
 
 	// Optional combiner pass (input is already sorted).
 	if a.CombinerLocation != "" {
@@ -65,26 +77,54 @@ func (w *Worker) runMap(ctx context.Context, a *pb.TaskAssignment) (outputURIs, 
 		}
 		defer cCleanup()
 
-		combinedOut, cExecErr := w.execCode(ctx, cPath, a.RuntimeEnv, jsonlReader(marshalRecords(records)))
+		combinedOut, cExecErr := w.execCode(ctx, cPath, a.RuntimeEnv, sortedReader)
+		// Combiner has fully consumed the sorted stream; release spill files now.
+		_ = sortedReader.Close()
+		sortedReader = nil
 		if cExecErr != nil {
 			return nil, nil, fmt.Errorf("combiner: %w", cExecErr)
 		}
-		records, err = parseJSONLRecords(combinedOut)
-		if err != nil {
-			return nil, nil, fmt.Errorf("parse combiner output: %w", err)
+		combinedRecords, parseErr := parseJSONLRecords(combinedOut)
+		if parseErr != nil {
+			return nil, nil, fmt.Errorf("parse combiner output: %w", parseErr)
 		}
-		sort.Slice(records, func(i, j int) bool { return records[i].Key < records[j].Key })
+		// Combiner output is not guaranteed sorted; re-sort with the same budget.
+		// (Spill-aware re-sort is wired in a follow-up commit; for now, in-memory.)
+		sort.Slice(combinedRecords, func(i, j int) bool { return combinedRecords[i].Key < combinedRecords[j].Key })
+		var encBuf bytes.Buffer
+		enc := json.NewEncoder(&encBuf)
+		for _, rec := range combinedRecords {
+			if err := enc.Encode(rec); err != nil {
+				return nil, nil, fmt.Errorf("encode combiner output: %w", err)
+			}
+		}
+		sortedReader = io.NopCloser(&encBuf)
 	}
 
-	// Hash-partition into R buckets.
+	// Hash-partition into R buckets by streaming the sorted JSONL output.
 	R := int(a.TotalReducers)
 	if R <= 0 {
 		R = 1
 	}
 	partitions := make([][]shuffle.Record, R)
-	for _, rec := range records {
+	totalRecords := 0
+	sc := bufio.NewScanner(sortedReader)
+	sc.Buffer(make([]byte, 64*1024), shuffle.DefaultMaxRecordBytes)
+	for sc.Scan() {
+		line := sc.Bytes()
+		if len(bytes.TrimSpace(line)) == 0 {
+			continue
+		}
+		var rec shuffle.Record
+		if err := json.Unmarshal(line, &rec); err != nil {
+			return nil, nil, fmt.Errorf("decode sorted record: %w", err)
+		}
 		p := hashPartition(rec.Key, R)
 		partitions[p] = append(partitions[p], rec)
+		totalRecords++
+	}
+	if err := sc.Err(); err != nil {
+		return nil, nil, fmt.Errorf("read sorted stream: %w", err)
 	}
 
 	// Upload each partition to staging.
@@ -97,8 +137,33 @@ func (w *Worker) runMap(ctx context.Context, a *pb.TaskAssignment) (outputURIs, 
 		outputChecksums = append(outputChecksums, chk)
 	}
 
-	log.Printf("[map] done task=%s records=%d partitions=%d", a.TaskId, len(records), R)
+	log.Printf("[map] done task=%s records=%d partitions=%d", a.TaskId, totalRecords, R)
 	return outputURIs, outputChecksums, nil
+}
+
+// spillThresholdBytes returns the configured map sort spill threshold in bytes,
+// falling back to the spillingSorter default when unset or invalid.
+func (w *Worker) spillThresholdBytes() int64 {
+	if w == nil || w.cfg == nil {
+		return defaultSpillThresholdBytes
+	}
+	if mb := w.cfg.MapSortSpillThresholdMB; mb > 0 {
+		return int64(mb) * 1024 * 1024
+	}
+	return defaultSpillThresholdBytes
+}
+
+// sortRecordsSpilling sorts records by key with a memory budget, spilling
+// sorted runs to tempDir when the budget is exceeded. The returned ReadCloser
+// yields the merged sorted JSONL stream; callers must Close it to release
+// spill files.
+func sortRecordsSpilling(records []shuffle.Record, thresholdBytes int64, tempDir string) (io.ReadCloser, error) {
+	s := newSpillingSorter(thresholdBytes, tempDir)
+	if err := s.AddAll(records); err != nil {
+		s.cleanup()
+		return nil, err
+	}
+	return s.Finalize()
 }
 
 type taskInputSplit struct {
