@@ -1391,6 +1391,13 @@ func TestScheduler_ScheduleJob_PersistsDDSRecords(t *testing.T) {
 		WillReturnResult(sqlmock.NewResult(1, 1))
 	mock.ExpectCommit()
 
+	// Quota check expectations (added for initial spawn support)
+	mock.ExpectBegin()
+	mock.ExpectExec(regexp.QuoteMeta(QueryAcquireSchedulingLock)).WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectQuery(regexp.QuoteMeta(QueryGetMaxConcurrentPods)).WillReturnRows(sqlmock.NewRows([]string{"max_concurrent_pods"}).AddRow(10))
+	mock.ExpectQuery(regexp.QuoteMeta(QueryCountRunningAttempts)).WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
+	mock.ExpectRollback()
+
 	if err := scheduler.ScheduleJob(context.Background(), req); err != nil {
 		t.Fatalf("expected schedule success, got %v", err)
 	}
@@ -1965,5 +1972,203 @@ func TestFinalizeJob_CleaningPhaseEnforcedOnRetry(t *testing.T) {
 
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Errorf("unfulfilled DB expectations on retry (Cleaning → Completed not applied): %v", err)
+	}
+}
+
+func TestScheduler_ScheduleJob_SpawnsWorkersForMapTasks(t *testing.T) {
+	rec := &recordingOrchestrator{}
+	db, mock, scheduler := setupMockDBWithOrchestrator(t, rec)
+	defer db.Close()
+
+	req := ScheduleJobRequest{
+		JobID:         uuid.NewString(),
+		UserID:        uuid.NewString(),
+		InputURI:      "s3://mapreduce-inputs/job-1/data.jsonl",
+		MapperURI:     "s3://code/mapper.py",
+		ReducerURI:    "s3://code/reducer.py",
+		MTasks:        2,
+		RTasks:        1,
+		InputChecksum: "sha256-input",
+		Tasks: []ScheduleTask{
+			{TaskID: uuid.NewString(), TaskType: "Map", ReplicaIndex: 0},
+			{TaskID: uuid.NewString(), TaskType: "Map", ReplicaIndex: 0},
+			{TaskID: uuid.NewString(), TaskType: "Reduce", ReplicaIndex: 0},
+		},
+	}
+
+	expectedReplicaIndex, _ := ComputeReplicaIndex(req.JobID, 1)
+
+	// Main transaction expectations
+	mock.ExpectBegin()
+	mock.ExpectExec(regexp.QuoteMeta(QueryInsertJob)).WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectExec(regexp.QuoteMeta(QueryInsertJobConfig)).WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectExec(regexp.QuoteMeta(QueryInsertTask)).WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg(), "Map", expectedReplicaIndex).WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectExec(regexp.QuoteMeta(QueryInsertTask)).WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg(), "Map", expectedReplicaIndex).WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectExec(regexp.QuoteMeta(QueryInsertTask)).WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg(), "Reduce", 0).WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectCommit()
+
+	// Quota check expectations
+	mock.ExpectBegin()
+	mock.ExpectExec(regexp.QuoteMeta(QueryAcquireSchedulingLock)).WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectQuery(regexp.QuoteMeta(QueryGetMaxConcurrentPods)).WillReturnRows(sqlmock.NewRows([]string{"max_concurrent_pods"}).AddRow(10))
+	mock.ExpectQuery(regexp.QuoteMeta(QueryCountRunningAttempts)).WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
+	mock.ExpectRollback()
+
+	// Spawning expectations for 2 Map tasks
+	for i := 0; i < 2; i++ {
+		mock.ExpectBegin()
+		mock.ExpectExec(regexp.QuoteMeta(QueryUpdateTaskInProgress)).WillReturnResult(sqlmock.NewResult(1, 1))
+		mock.ExpectExec(regexp.QuoteMeta(QueryInsertAttempt)).WillReturnResult(sqlmock.NewResult(1, 1))
+		mock.ExpectCommit()
+	}
+
+	if err := scheduler.ScheduleJob(context.Background(), req); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(rec.calls) != 2 {
+		t.Fatalf("expected 2 spawn calls, got %d", len(rec.calls))
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unfulfilled expectations: %s", err)
+	}
+}
+
+func TestScheduler_ScheduleJob_RespectsQuota(t *testing.T) {
+	rec := &recordingOrchestrator{}
+	db, mock, scheduler := setupMockDBWithOrchestrator(t, rec)
+	defer db.Close()
+
+	req := ScheduleJobRequest{
+		JobID:      uuid.NewString(),
+		UserID:     uuid.NewString(),
+		InputURI:   "s3://in",
+		MapperURI:  "s3://m",
+		ReducerURI: "s3://r",
+		MTasks:     3,
+		RTasks:     1,
+		Tasks: []ScheduleTask{
+			{TaskID: uuid.NewString(), TaskType: "Map"},
+			{TaskID: uuid.NewString(), TaskType: "Map"},
+			{TaskID: uuid.NewString(), TaskType: "Map"},
+			{TaskID: uuid.NewString(), TaskType: "Reduce"},
+		},
+	}
+
+	mock.ExpectBegin()
+	mock.ExpectExec(regexp.QuoteMeta(QueryInsertJob)).WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectExec(regexp.QuoteMeta(QueryInsertJobConfig)).WillReturnResult(sqlmock.NewResult(1, 1))
+	for i := 0; i < 4; i++ {
+		mock.ExpectExec(regexp.QuoteMeta(QueryInsertTask)).WillReturnResult(sqlmock.NewResult(1, 1))
+	}
+	mock.ExpectCommit()
+
+	// Quota check: only 1 available
+	mock.ExpectBegin()
+	mock.ExpectExec(regexp.QuoteMeta(QueryAcquireSchedulingLock)).WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectQuery(regexp.QuoteMeta(QueryGetMaxConcurrentPods)).WillReturnRows(sqlmock.NewRows([]string{"max_concurrent_pods"}).AddRow(10))
+	mock.ExpectQuery(regexp.QuoteMeta(QueryCountRunningAttempts)).WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(9))
+	mock.ExpectRollback()
+
+	// Only 1 spawn expected
+	mock.ExpectBegin()
+	mock.ExpectExec(regexp.QuoteMeta(QueryUpdateTaskInProgress)).WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectExec(regexp.QuoteMeta(QueryInsertAttempt)).WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectCommit()
+
+	if err := scheduler.ScheduleJob(context.Background(), req); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(rec.calls) != 1 {
+		t.Fatalf("expected 1 spawn call due to quota, got %d", len(rec.calls))
+	}
+}
+
+func TestScheduler_ScheduleJob_SpawnFailureDoesNotFailSchedule(t *testing.T) {
+	rec := &recordingOrchestrator{err: errors.New("k8s down")}
+	db, mock, scheduler := setupMockDBWithOrchestrator(t, rec)
+	defer db.Close()
+
+	req := ScheduleJobRequest{
+		JobID:      uuid.NewString(),
+		UserID:     uuid.NewString(),
+		InputURI:   "s3://in",
+		MapperURI:  "s3://m",
+		ReducerURI: "s3://r",
+		MTasks:     1,
+		RTasks:     1,
+		Tasks: []ScheduleTask{
+			{TaskID: uuid.NewString(), TaskType: "Map"},
+			{TaskID: uuid.NewString(), TaskType: "Reduce"},
+		},
+	}
+
+	mock.ExpectBegin()
+	mock.ExpectExec(regexp.QuoteMeta(QueryInsertJob)).WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectExec(regexp.QuoteMeta(QueryInsertJobConfig)).WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectExec(regexp.QuoteMeta(QueryInsertTask)).WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectExec(regexp.QuoteMeta(QueryInsertTask)).WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectCommit()
+
+	mock.ExpectBegin()
+	mock.ExpectExec(regexp.QuoteMeta(QueryAcquireSchedulingLock)).WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectQuery(regexp.QuoteMeta(QueryGetMaxConcurrentPods)).WillReturnRows(sqlmock.NewRows([]string{"max_concurrent_pods"}).AddRow(10))
+	mock.ExpectQuery(regexp.QuoteMeta(QueryCountRunningAttempts)).WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
+	mock.ExpectRollback()
+
+	mock.ExpectBegin()
+	mock.ExpectExec(regexp.QuoteMeta(QueryUpdateTaskInProgress)).WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectExec(regexp.QuoteMeta(QueryInsertAttempt)).WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectCommit()
+
+	if err := scheduler.ScheduleJob(context.Background(), req); err != nil {
+		t.Fatalf("ScheduleJob should not fail on spawn error, got %v", err)
+	}
+
+	if len(rec.calls) != 1 {
+		t.Fatalf("expected spawn attempt despite failure, got %d", len(rec.calls))
+	}
+}
+
+func TestScheduler_ScheduleJob_ZeroQuota_NoSpawn(t *testing.T) {
+	rec := &recordingOrchestrator{}
+	db, mock, scheduler := setupMockDBWithOrchestrator(t, rec)
+	defer db.Close()
+
+	req := ScheduleJobRequest{
+		JobID:      uuid.NewString(),
+		UserID:     uuid.NewString(),
+		InputURI:   "s3://in",
+		MapperURI:  "s3://m",
+		ReducerURI: "s3://r",
+		MTasks:     1,
+		RTasks:     1,
+		Tasks: []ScheduleTask{
+			{TaskID: uuid.NewString(), TaskType: "Map"},
+			{TaskID: uuid.NewString(), TaskType: "Reduce"},
+		},
+	}
+
+	mock.ExpectBegin()
+	mock.ExpectExec(regexp.QuoteMeta(QueryInsertJob)).WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectExec(regexp.QuoteMeta(QueryInsertJobConfig)).WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectExec(regexp.QuoteMeta(QueryInsertTask)).WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectExec(regexp.QuoteMeta(QueryInsertTask)).WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectCommit()
+
+	// Quota is zero
+	mock.ExpectBegin()
+	mock.ExpectExec(regexp.QuoteMeta(QueryAcquireSchedulingLock)).WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectQuery(regexp.QuoteMeta(QueryGetMaxConcurrentPods)).WillReturnRows(sqlmock.NewRows([]string{"max_concurrent_pods"}).AddRow(10))
+	mock.ExpectQuery(regexp.QuoteMeta(QueryCountRunningAttempts)).WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(10))
+	mock.ExpectRollback()
+
+	if err := scheduler.ScheduleJob(context.Background(), req); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(rec.calls) != 0 {
+		t.Fatalf("expected no spawn calls with zero quota, got %d", len(rec.calls))
 	}
 }

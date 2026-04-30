@@ -566,10 +566,72 @@ func (s *Scheduler) ScheduleJob(ctx context.Context, req ScheduleJobRequest) err
 		return err
 	}
 
-	slog.InfoContext(ctx, "job scheduled; worker orchestration deferred to attempt assignment",
-		slog.String("job_id", jobID.String()),
-		slog.Int("task_count", len(scheduledTasks)),
-	)
+	// After tx.Commit(), spawn initial workers for Map tasks.
+	const initialSpawnTimeout = 20 * time.Second
+
+	// Collect Map task IDs for spawning.
+	var mapTaskIDs []string
+	for _, task := range req.Tasks {
+		if task.TaskType == "Map" {
+			mapTaskIDs = append(mapTaskIDs, task.TaskID)
+		}
+	}
+
+	// Read quota to determine how many workers we can spawn.
+	quotaTx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		slog.WarnContext(ctx, "failed to begin quota check tx for initial spawn; reaper will retry",
+			slog.String("job_id", req.JobID), slog.Any("err", err))
+		return nil
+	}
+	snap, quotaErr := s.readQuotaSnapshotTx(ctx, quotaTx)
+	_ = quotaTx.Rollback() // read-only, always rollback
+	if quotaErr != nil {
+		slog.WarnContext(ctx, "failed to read quota for initial spawn; reaper will retry",
+			slog.String("job_id", req.JobID), slog.Any("err", quotaErr))
+		return nil
+	}
+
+	spawned := 0
+	for _, taskID := range mapTaskIDs {
+		if spawned >= snap.Available {
+			slog.InfoContext(ctx, "quota exhausted during initial worker spawn; remaining tasks deferred",
+				slog.String("job_id", req.JobID), slog.Int("spawned", spawned),
+				slog.Int("remaining", len(mapTaskIDs)-spawned))
+			break
+		}
+
+		spawnTx, err := s.db.BeginTx(ctx, nil)
+		if err != nil {
+			slog.WarnContext(ctx, "failed to begin spawn tx", slog.String("task_id", taskID), slog.Any("err", err))
+			continue
+		}
+		attemptID, err := s.prepareRetryAttemptTx(ctx, spawnTx, taskID)
+		if err != nil {
+			_ = spawnTx.Rollback()
+			slog.WarnContext(ctx, "failed to prepare attempt for initial spawn",
+				slog.String("task_id", taskID), slog.Any("err", err))
+			continue
+		}
+		if err := spawnTx.Commit(); err != nil {
+			slog.WarnContext(ctx, "failed to commit spawn attempt",
+				slog.String("task_id", taskID), slog.Any("err", err))
+			continue
+		}
+
+		spawnCtx, cancel := context.WithTimeout(ctx, initialSpawnTimeout)
+		if err := s.orchestrator.SpawnWorker(spawnCtx, taskID, req.JobID, attemptID, s.managerAddr); err != nil {
+			slog.WarnContext(ctx, "failed to spawn initial worker; reaper will retry",
+				slog.String("task_id", taskID), slog.String("attempt_id", attemptID),
+				slog.Any("err", err))
+		}
+		cancel()
+		spawned++
+	}
+
+	slog.InfoContext(ctx, "initial worker spawn complete",
+		slog.String("job_id", req.JobID), slog.Int("spawned", spawned),
+		slog.Int("map_tasks", len(mapTaskIDs)))
 
 	return nil
 }
