@@ -463,6 +463,43 @@ func cmdJobsStatus(args []string) {
 	printResponse(resp)
 }
 
+// ── jobs cancel ────────────────────────────────────────────
+
+// cmdJobsCancel cancels or deletes a running or submitted job.
+//
+// This command sends a DELETE request to the API for the specified job ID,
+// which updates the job status to Cancelled in the database and triggers
+// cleanup of associated Kubernetes Job pods and temporary storage.
+func cmdJobsCancel(args []string) {
+	fs := flag.NewFlagSet("jobs cancel", flag.ExitOnError)
+	jobID := fs.String("id", "", "job ID to cancel (required)")
+	_ = fs.Parse(args)
+
+	if *jobID == "" {
+		fmt.Fprintln(os.Stderr, "usage: kubemapreduce jobs cancel --id <job-id>")
+		os.Exit(1)
+	}
+
+	normalizedJobID := strings.TrimSpace(*jobID)
+	if normalizedJobID == "" {
+		fmt.Fprintln(os.Stderr, "usage: kubemapreduce jobs cancel --id <job-id>")
+		os.Exit(1)
+	}
+
+	token, serverURL := getValidToken()
+	resp := doAuthRequestExpect(
+		http.MethodDelete,
+		serverURL+jobRequestPath(normalizedJobID, ""),
+		token,
+		nil,
+		http.StatusNoContent,
+		"job cancel failed",
+	)
+	defer resp.Body.Close()
+
+	fmt.Printf("Job %s cancelled.\n", normalizedJobID)
+}
+
 // ── jobs helpers ───────────────────────────────────────────
 
 // jobRequestPath constructs a safe API path for a job request.
