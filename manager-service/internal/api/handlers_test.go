@@ -26,7 +26,19 @@ import (
 
 func newTestHandlers() *Handlers {
 	store := NewMemoryJobStore(24*time.Hour, 10000, nil)
-	return NewHandlers(nil, store, nil, "", "")
+	h := NewHandlers(nil, store, nil, "", "")
+	h.copier = &fakeObjectCopier{}
+	return h
+}
+
+type fakeObjectCopier struct {
+	err    error
+	copies []struct{ srcBucket, srcKey, dstBucket, dstKey string }
+}
+
+func (f *fakeObjectCopier) CopyObject(_ context.Context, dst minio.CopyDestOptions, src minio.CopySrcOptions) (minio.UploadInfo, error) {
+	f.copies = append(f.copies, struct{ srcBucket, srcKey, dstBucket, dstKey string }{src.Bucket, src.Object, dst.Bucket, dst.Object})
+	return minio.UploadInfo{}, f.err
 }
 
 func newAuthedRequest(method, target, body, userID string) *http.Request {
@@ -46,7 +58,9 @@ func authedReq(method, target, body string) *http.Request {
 
 func newTestHandlersWithRetention(now func() time.Time, ttl time.Duration, max int) *Handlers {
 	store := NewMemoryJobStore(ttl, max, now)
-	return newHandlersWithOptions(nil, store, nil, "", "", now)
+	h := newHandlersWithOptions(nil, store, nil, "", "", now)
+	h.copier = &fakeObjectCopier{}
+	return h
 }
 
 type fakeScheduleObjectClient struct {
@@ -280,14 +294,15 @@ func TestHandleJobsSubmit_SchedulesJobAfterPersist(t *testing.T) {
 	if capturedReq.JobID != submitResp.JobID {
 		t.Errorf("schedule request JobID %q != submitted JobID %q", capturedReq.JobID, submitResp.JobID)
 	}
-	if capturedReq.MapperURI != "mapper.py" {
-		t.Errorf("expected MapperURI mapper.py, got %q", capturedReq.MapperURI)
+	wantBase := fmt.Sprintf("s3://mapreduce-inputs/inputs/%s", submitResp.JobID)
+	if capturedReq.MapperURI != wantBase+"/mapper.py" {
+		t.Errorf("expected MapperURI %q, got %q", wantBase+"/mapper.py", capturedReq.MapperURI)
 	}
-	if capturedReq.ReducerURI != "reducer.py" {
-		t.Errorf("expected ReducerURI reducer.py, got %q", capturedReq.ReducerURI)
+	if capturedReq.ReducerURI != wantBase+"/reducer.py" {
+		t.Errorf("expected ReducerURI %q, got %q", wantBase+"/reducer.py", capturedReq.ReducerURI)
 	}
-	if capturedReq.InputURI != "s3://mapreduce-inputs/input.jsonl" {
-		t.Errorf("expected InputURI s3://mapreduce-inputs/input.jsonl, got %q", capturedReq.InputURI)
+	if capturedReq.InputURI != wantBase+"/input.jsonl" {
+		t.Errorf("expected InputURI %q, got %q", wantBase+"/input.jsonl", capturedReq.InputURI)
 	}
 	if capturedReq.MTasks != 1 {
 		t.Errorf("expected MTasks=1, got %d", capturedReq.MTasks)
@@ -297,6 +312,121 @@ func TestHandleJobsSubmit_SchedulesJobAfterPersist(t *testing.T) {
 	}
 	if len(capturedReq.Tasks) != 3 {
 		t.Errorf("expected 3 tasks (1 Map + 2 Reduce), got %d", len(capturedReq.Tasks))
+	}
+}
+
+func TestHandleJobsSubmit_Returns503WhenCopierNil(t *testing.T) {
+	h := newTestHandlers()
+	h.copier = nil
+
+	body := `{"filename":"input.jsonl","mapper":{"language":"python","artifact":"mapper.py","entrypoint":"map","interface":"map(key,value)->[]KeyValue"},"reducer":{"language":"python","artifact":"reducer.py","entrypoint":"reduce","interface":"reduce(key,values)->Value"},"reducers":1}`
+	req := authedReq(http.MethodPost, "/api/v1/jobs", body)
+	rec := httptest.NewRecorder()
+	h.HandleJobsSubmit(rec, req)
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	// No job should be persisted.
+	listReq := authedReq(http.MethodGet, "/api/v1/jobs", "")
+	listRec := httptest.NewRecorder()
+	h.HandleJobsList(listRec, listReq)
+	var jobs []map[string]any
+	if err := json.Unmarshal(listRec.Body.Bytes(), &jobs); err != nil {
+		t.Fatalf("decode jobs list: %v", err)
+	}
+	if len(jobs) != 0 {
+		t.Fatalf("expected no jobs persisted after 503, got %d", len(jobs))
+	}
+}
+
+func TestHandleJobsSubmit_Returns500WhenCopyFails(t *testing.T) {
+	h := newTestHandlers()
+	h.copier = &fakeObjectCopier{err: errors.New("minio: object not found")}
+
+	body := `{"filename":"input.jsonl","mapper":{"language":"python","artifact":"mapper.py","entrypoint":"map","interface":"map(key,value)->[]KeyValue"},"reducer":{"language":"python","artifact":"reducer.py","entrypoint":"reduce","interface":"reduce(key,values)->Value"},"reducers":1}`
+	req := authedReq(http.MethodPost, "/api/v1/jobs", body)
+	rec := httptest.NewRecorder()
+	h.HandleJobsSubmit(rec, req)
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	// No job should be persisted.
+	listReq := authedReq(http.MethodGet, "/api/v1/jobs", "")
+	listRec := httptest.NewRecorder()
+	h.HandleJobsList(listRec, listReq)
+	var jobs []map[string]any
+	if err := json.Unmarshal(listRec.Body.Bytes(), &jobs); err != nil {
+		t.Fatalf("decode jobs list: %v", err)
+	}
+	if len(jobs) != 0 {
+		t.Fatalf("expected no jobs persisted after copy failure, got %d", len(jobs))
+	}
+}
+
+func TestHandleJobsSubmit_CopyPrecedesPersist(t *testing.T) {
+	copier := &fakeObjectCopier{}
+	h := newTestHandlers()
+	h.copier = copier
+
+	body := `{"filename":"input.jsonl","mapper":{"language":"python","artifact":"mapper.py","entrypoint":"map","interface":"map(key,value)->[]KeyValue"},"reducer":{"language":"python","artifact":"reducer.py","entrypoint":"reduce","interface":"reduce(key,values)->Value"},"reducers":1}`
+	req := authedReq(http.MethodPost, "/api/v1/jobs", body)
+	rec := httptest.NewRecorder()
+	h.HandleJobsSubmit(rec, req)
+
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("expected 202, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	var submitResp struct {
+		JobID string `json:"jobId"`
+	}
+	if err := json.NewDecoder(strings.NewReader(rec.Body.String())).Decode(&submitResp); err != nil {
+		t.Fatalf("decode submit response: %v", err)
+	}
+
+	// Verify copy was called for input, mapper, reducer.
+	if len(copier.copies) != 3 {
+		t.Fatalf("expected 3 CopyObject calls (input + mapper + reducer), got %d", len(copier.copies))
+	}
+
+	wantSrcs := []string{
+		fmt.Sprintf("temp/%s/input.jsonl", testSubject),
+		fmt.Sprintf("temp/%s/mapper.py", testSubject),
+		fmt.Sprintf("temp/%s/reducer.py", testSubject),
+	}
+	wantDsts := []string{
+		fmt.Sprintf("inputs/%s/input.jsonl", submitResp.JobID),
+		fmt.Sprintf("inputs/%s/mapper.py", submitResp.JobID),
+		fmt.Sprintf("inputs/%s/reducer.py", submitResp.JobID),
+	}
+	for i, c := range copier.copies {
+		if c.srcKey != wantSrcs[i] {
+			t.Errorf("copy[%d] srcKey = %q, want %q", i, c.srcKey, wantSrcs[i])
+		}
+		if c.dstKey != wantDsts[i] {
+			t.Errorf("copy[%d] dstKey = %q, want %q", i, c.dstKey, wantDsts[i])
+		}
+	}
+
+	// Verify persisted job uses permanent URIs.
+	getReq := authedReq(http.MethodGet, "/api/v1/jobs/"+submitResp.JobID, "")
+	getReq.SetPathValue("job_id", submitResp.JobID)
+	getRec := httptest.NewRecorder()
+	h.HandleJobsGet(getRec, getReq)
+	if getRec.Code != http.StatusOK {
+		t.Fatalf("get job returned %d: %s", getRec.Code, getRec.Body.String())
+	}
+	var job map[string]any
+	if err := json.Unmarshal(getRec.Body.Bytes(), &job); err != nil {
+		t.Fatalf("decode job: %v", err)
+	}
+	wantFilename := fmt.Sprintf("s3://mapreduce-inputs/inputs/%s/input.jsonl", submitResp.JobID)
+	if job["filename"] != wantFilename {
+		t.Errorf("persisted filename = %q, want %q", job["filename"], wantFilename)
 	}
 }
 
@@ -329,7 +459,11 @@ func TestBuildScheduleRequest_SplitsLargeInputAndHashesEachSplit(t *testing.T) {
 		},
 	}
 
-	req := buildScheduleRequest(context.Background(), store, "job-1", "user-1", body, "")
+	req := buildScheduleRequest(context.Background(), store, "job-1", "user-1", body,
+		"s3://mapreduce-inputs/input.jsonl",
+		"s3://mapreduce-inputs/mapper.py",
+		"s3://mapreduce-inputs/reducer.py",
+		"")
 	if req.InputURI != "s3://mapreduce-inputs/input.jsonl" {
 		t.Fatalf("InputURI = %q, want %q", req.InputURI, "s3://mapreduce-inputs/input.jsonl")
 	}
@@ -388,7 +522,11 @@ func TestBuildScheduleRequest_GroupsPrefixInputsByAggregateSize(t *testing.T) {
 		},
 	}
 
-	req := buildScheduleRequest(context.Background(), store, "job-1", "user-1", body, "")
+	req := buildScheduleRequest(context.Background(), store, "job-1", "user-1", body,
+		"s3://mapreduce-inputs/dataset/",
+		"s3://mapreduce-inputs/mapper.py",
+		"s3://mapreduce-inputs/reducer.py",
+		"")
 	if req.MTasks != 2 {
 		t.Fatalf("MTasks = %d, want 2", req.MTasks)
 	}
@@ -947,7 +1085,7 @@ func TestHandleJobsList_ReturnsSubmittedJob(t *testing.T) {
 	if listRec.Code != http.StatusOK {
 		t.Fatalf("expected %d, got %d", http.StatusOK, listRec.Code)
 	}
-	if !strings.Contains(listRec.Body.String(), `"filename":"data.csv"`) {
+	if !strings.Contains(listRec.Body.String(), "data.csv") {
 		t.Fatalf("expected filename in list response, got %q", listRec.Body.String())
 	}
 }
@@ -1044,7 +1182,7 @@ func TestHandleJobsSubmit_EvictsOldestWhenMaxCapacityExceeded(t *testing.T) {
 	if len(jobs) != 2 {
 		t.Fatalf("expected 2 jobs after eviction, got %d", len(jobs))
 	}
-	if jobs[0].Filename != "job-3.csv" || jobs[1].Filename != "job-2.csv" {
+	if !strings.HasSuffix(jobs[0].Filename, "/job-3.csv") || !strings.HasSuffix(jobs[1].Filename, "/job-2.csv") {
 		t.Fatalf("expected newest-first order after eviction, got %+v", jobs)
 	}
 }
@@ -1084,7 +1222,7 @@ func TestHandleJobsList_ReturnsNewestFirst(t *testing.T) {
 	if len(jobs) != 3 {
 		t.Fatalf("expected 3 jobs, got %d", len(jobs))
 	}
-	if jobs[0].Filename != "third.csv" || jobs[1].Filename != "second.csv" || jobs[2].Filename != "first.csv" {
+	if !strings.HasSuffix(jobs[0].Filename, "/third.csv") || !strings.HasSuffix(jobs[1].Filename, "/second.csv") || !strings.HasSuffix(jobs[2].Filename, "/first.csv") {
 		t.Fatalf("expected newest-first ordering [third, second, first], got [%s, %s, %s]",
 			jobs[0].Filename, jobs[1].Filename, jobs[2].Filename)
 	}
@@ -1670,7 +1808,11 @@ func TestBuildScheduleRequest_ComputesChecksum(t *testing.T) {
 	jobID := uuid.NewString()
 	userID := uuid.NewString()
 
-	schedReq := buildScheduleRequest(ctx, mockStorage, jobID, userID, req, "")
+	schedReq := buildScheduleRequest(ctx, mockStorage, jobID, userID, req,
+		"s3://mapreduce-inputs/large-file.bin",
+		"s3://mapreduce-inputs/mapper.py",
+		"s3://mapreduce-inputs/reducer.py",
+		"")
 
 	if len(schedReq.Tasks) == 0 {
 		t.Fatal("expected at least one task")

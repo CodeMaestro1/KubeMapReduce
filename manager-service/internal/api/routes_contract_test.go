@@ -54,6 +54,7 @@ func TestDeleteJobContract_Returns204(t *testing.T) {
 
 	store := NewMemoryJobStore(24*time.Hour, 10000, nil)
 	h := NewHandlers(nil, store, nil, mgr.Listener.Addr().String(), "")
+	h.copier = &fakeObjectCopier{}
 
 	// Submit a job directly so a valid job_id is available.
 	submitBody := `{"filename":"f.json","mapper":{"language":"python","artifact":"m.py","entrypoint":"map","interface":"map(key,value)->[]KeyValue"},"reducer":{"language":"python","artifact":"r.py","entrypoint":"reduce","interface":"reduce(key,values)->Value"}}`

@@ -31,6 +31,7 @@ type Handlers struct {
 	adminClient    *auth.KeycloakAdminClient
 	store          JobStore
 	minioClient    *minio.Client
+	copier         objectCopier
 	managerAddr    string
 	internalAPIKey string
 	httpClient     *http.Client
@@ -54,6 +55,7 @@ func NewHandlers(adminClient *auth.KeycloakAdminClient, store JobStore, minioCli
 		adminClient:    adminClient,
 		store:          store,
 		minioClient:    minioClient,
+		copier:         newObjectCopier(minioClient),
 		managerAddr:    managerAddr,
 		internalAPIKey: internalAPIKey,
 		httpClient:     http.DefaultClient,
@@ -69,6 +71,7 @@ func newHandlersWithOptions(adminClient *auth.KeycloakAdminClient, store JobStor
 		adminClient:    adminClient,
 		store:          store,
 		minioClient:    minioClient,
+		copier:         newObjectCopier(minioClient),
 		managerAddr:    managerAddr,
 		internalAPIKey: internalAPIKey,
 		httpClient:     http.DefaultClient,
@@ -179,24 +182,39 @@ func (h *Handlers) HandleJobsSubmit(w http.ResponseWriter, r *http.Request) {
 	jobID := uuid.New().String()
 	now := h.now().UTC()
 
-	combinerURI := ""
+	combinerArtifact := ""
 	if request.Combiner != nil {
-		combinerURI = request.Combiner.Artifact
+		combinerArtifact = request.Combiner.Artifact
 	}
 
-	schedReq := buildScheduleRequest(r.Context(), newScheduleObjectClient(h.minioClient), jobID, userID, request, combinerURI)
+	if h.copier == nil {
+		httputil.WriteErrorJSON(w, http.StatusServiceUnavailable, "object storage not available")
+		return
+	}
+
+	promotedInputURI, promotedMapperURI, promotedReducerURI, promotedCombinerURI, err := promoteJobFiles(r.Context(), h.copier, userID, jobID, request, combinerArtifact)
+	if err != nil {
+		slog.ErrorContext(r.Context(), "failed to promote job files",
+			slog.String("job_id", jobID),
+			slog.Any("err", err),
+		)
+		httputil.WriteErrorJSON(w, http.StatusInternalServerError, "failed to stage job files")
+		return
+	}
+
+	schedReq := buildScheduleRequest(r.Context(), newScheduleObjectClient(h.minioClient), jobID, userID, request, promotedInputURI, promotedMapperURI, promotedReducerURI, promotedCombinerURI)
 
 	rec := JobRecord{
 		JobID:         jobID,
 		UserID:        userID,
 		Status:        "Pending",
-		Filename:      request.Filename,
+		Filename:      promotedInputURI,
 		InputChecksum: request.InputChecksum,
 		Reducers:      request.Reducers,
 		CreatedAt:     now,
-		MapperURI:     request.Mapper.Artifact,
-		ReducerURI:    request.Reducer.Artifact,
-		CombinerURI:   combinerURI,
+		MapperURI:     promotedMapperURI,
+		ReducerURI:    promotedReducerURI,
+		CombinerURI:   promotedCombinerURI,
 		MTasks:        schedReq.MTasks,
 	}
 	if err := h.store.CreateJob(r.Context(), rec); err != nil {
@@ -773,12 +791,73 @@ func (m *minioScheduleObjectClient) ListObjects(ctx context.Context, bucketName,
 	return entries, nil
 }
 
+// objectCopier abstracts minio server-side CopyObject for testability.
+type objectCopier interface {
+	CopyObject(ctx context.Context, dst minio.CopyDestOptions, src minio.CopySrcOptions) (minio.UploadInfo, error)
+}
+
+type minioCopier struct{ client *minio.Client }
+
+func (m *minioCopier) CopyObject(ctx context.Context, dst minio.CopyDestOptions, src minio.CopySrcOptions) (minio.UploadInfo, error) {
+	return m.client.CopyObject(ctx, dst, src)
+}
+
+func newObjectCopier(client *minio.Client) objectCopier {
+	if client == nil {
+		return nil
+	}
+	return &minioCopier{client: client}
+}
+
+// promoteArtifact copies an artifact from the temp staging area to a permanent job path.
+// If artifactURI is an external URI (contains "://"), it is returned unchanged — no copy.
+// Otherwise it is treated as a bare filename uploaded to temp/<userID>/<name>.
+func promoteArtifact(ctx context.Context, copier objectCopier, userID, jobID, artifactURI string) (string, error) {
+	var filename string
+	tempPrefix := fmt.Sprintf("s3://%s/temp/%s/", inputBucketName, userID)
+	switch {
+	case strings.HasPrefix(artifactURI, tempPrefix):
+		filename = artifactURI[len(tempPrefix):]
+	case !strings.Contains(artifactURI, "://"):
+		filename = artifactURI
+	default:
+		return artifactURI, nil
+	}
+	srcKey := fmt.Sprintf("temp/%s/%s", userID, filename)
+	dstKey := fmt.Sprintf("inputs/%s/%s", jobID, filename)
+	src := minio.CopySrcOptions{Bucket: inputBucketName, Object: srcKey}
+	dst := minio.CopyDestOptions{Bucket: inputBucketName, Object: dstKey}
+	if _, err := copier.CopyObject(ctx, dst, src); err != nil {
+		return "", fmt.Errorf("copy %s → %s: %w", srcKey, dstKey, err)
+	}
+	return fmt.Sprintf("s3://%s/%s", inputBucketName, dstKey), nil
+}
+
+// promoteJobFiles copies all uploaded files for a job from temp/ to inputs/<jobID>/.
+// Returns the permanent s3:// URIs for input, mapper, reducer, and combiner.
+func promoteJobFiles(ctx context.Context, copier objectCopier, userID, jobID string, req models.JobSubmissionRequest, combinerArtifact string) (inputURI, mapperURI, reducerURI, combinerURI string, err error) {
+	if inputURI, err = promoteArtifact(ctx, copier, userID, jobID, req.Filename); err != nil {
+		return
+	}
+	if mapperURI, err = promoteArtifact(ctx, copier, userID, jobID, req.Mapper.Artifact); err != nil {
+		return
+	}
+	if reducerURI, err = promoteArtifact(ctx, copier, userID, jobID, req.Reducer.Artifact); err != nil {
+		return
+	}
+	if combinerArtifact != "" {
+		combinerURI, err = promoteArtifact(ctx, copier, userID, jobID, combinerArtifact)
+	}
+	return
+}
+
 // buildScheduleRequest constructs a ScheduleJobRequest for a fresh job submission.
-// It uses buildInputSplits to create one Map task per input split and R Reduce tasks.
-// Checksum/stat errors are handled best-effort inside buildInputSplits (fallback to single split).
-func buildScheduleRequest(ctx context.Context, storage scheduleObjectClient, jobID, userID string, req models.JobSubmissionRequest, combinerURI string) manager.ScheduleJobRequest {
-	inputURI := fmt.Sprintf("s3://%s/%s", inputBucketName, req.Filename)
-	inputBuckets := buildInputBuckets(ctx, storage, req.Filename, inputURI)
+// It uses buildInputBuckets to create one Map task per input bucket and R Reduce tasks.
+// Checksum/stat errors are handled best-effort inside buildInputBuckets (fallback to single split).
+// inputURI, mapperURI, reducerURI, combinerURI must be pre-resolved permanent s3:// URIs.
+func buildScheduleRequest(ctx context.Context, storage scheduleObjectClient, jobID, userID string, req models.JobSubmissionRequest, inputURI, mapperURI, reducerURI, combinerURI string) manager.ScheduleJobRequest {
+	objectName := strings.TrimPrefix(inputURI, fmt.Sprintf("s3://%s/", inputBucketName))
+	inputBuckets := buildInputBuckets(ctx, storage, objectName, inputURI)
 
 	tasks := make([]manager.ScheduleTask, 0, len(inputBuckets)+req.Reducers)
 	for _, bucket := range inputBuckets {
@@ -800,8 +879,8 @@ func buildScheduleRequest(ctx context.Context, storage scheduleObjectClient, job
 		JobID:       jobID,
 		UserID:      userID,
 		InputURI:    inputURI,
-		MapperURI:   req.Mapper.Artifact,
-		ReducerURI:  req.Reducer.Artifact,
+		MapperURI:   mapperURI,
+		ReducerURI:  reducerURI,
 		CombinerURI: combinerURI,
 		MTasks:      len(inputBuckets),
 		RTasks:      req.Reducers,
