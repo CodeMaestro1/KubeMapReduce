@@ -155,11 +155,7 @@ func (h *Handlers) HandleJobsSubmit(w http.ResponseWriter, r *http.Request) {
 		combinerURI = request.Combiner.Artifact
 	}
 
-	schedReq, err := buildScheduleRequest(r.Context(), newScheduleObjectClient(h.minioClient), jobID, userID, request, combinerURI)
-	if err != nil {
-		httputil.WriteErrorJSON(w, http.StatusInternalServerError, fmt.Sprintf("failed to prepare job splits: %v", err))
-		return
-	}
+	schedReq := buildScheduleRequest(r.Context(), newScheduleObjectClient(h.minioClient), jobID, userID, request, combinerURI)
 
 	rec := JobRecord{
 		JobID:       jobID,
@@ -715,7 +711,8 @@ func (m *minioScheduleObjectClient) GetObject(ctx context.Context, bucketName, o
 
 // buildScheduleRequest constructs a ScheduleJobRequest for a fresh job submission.
 // It uses buildInputSplits to create one Map task per input split and R Reduce tasks.
-func buildScheduleRequest(ctx context.Context, storage scheduleObjectClient, jobID, userID string, req models.JobSubmissionRequest, combinerURI string) (manager.ScheduleJobRequest, error) {
+// Checksum/stat errors are handled best-effort inside buildInputSplits (fallback to single split).
+func buildScheduleRequest(ctx context.Context, storage scheduleObjectClient, jobID, userID string, req models.JobSubmissionRequest, combinerURI string) manager.ScheduleJobRequest {
 	inputURI := fmt.Sprintf("s3://%s/%s", inputBucketName, req.Filename)
 	inputSplits := buildInputSplits(ctx, storage, req.Filename, inputURI)
 
@@ -745,7 +742,7 @@ func buildScheduleRequest(ctx context.Context, storage scheduleObjectClient, job
 		MTasks:      len(inputSplits),
 		RTasks:      req.Reducers,
 		Tasks:       tasks,
-	}, nil
+	}
 }
 
 func checksumObjectRange(ctx context.Context, storage scheduleObjectClient, bucketName, objectName string, start, end int64) (string, error) {

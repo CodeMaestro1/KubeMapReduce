@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"kubemapreduce/auth-service/pkg/auth"
@@ -258,10 +259,7 @@ func TestBuildScheduleRequest_SplitsLargeInputAndHashesEachSplit(t *testing.T) {
 		},
 	}
 
-	req, err := buildScheduleRequest(context.Background(), store, "job-1", "user-1", body, "")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	req := buildScheduleRequest(context.Background(), store, "job-1", "user-1", body, "")
 	if req.InputURI != "s3://inputs/input.jsonl" {
 		t.Fatalf("InputURI = %q, want %q", req.InputURI, "s3://inputs/input.jsonl")
 	}
@@ -1469,7 +1467,7 @@ func TestRouting_PostToJobDetail_Returns405(t *testing.T) {
 func TestBuildScheduleRequest_ComputesChecksum(t *testing.T) {
 	mockStorage := &mockScheduleObjectClient{
 		size:     1024,
-		checksum: "c3ab8ff13720e8ad9047dd39466b3c8974e592c2fa383d4a3960714caef0c4f2", // sha256 of 1024 'a's
+		checksum: "2edc986847e209b4016e141a6dc8716d3207350f416969382d431539bf292e4a", // sha256 of 1024 'a' bytes
 	}
 
 	req := models.JobSubmissionRequest{
@@ -1487,10 +1485,7 @@ func TestBuildScheduleRequest_ComputesChecksum(t *testing.T) {
 	jobID := uuid.NewString()
 	userID := uuid.NewString()
 
-	schedReq, err := buildScheduleRequest(ctx, mockStorage, jobID, userID, req, "")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	schedReq := buildScheduleRequest(ctx, mockStorage, jobID, userID, req, "")
 
 	if len(schedReq.Tasks) == 0 {
 		t.Fatal("expected at least one task")
@@ -1512,8 +1507,8 @@ func TestBuildScheduleRequest_ComputesChecksum(t *testing.T) {
 	if split.ByteEnd != 1023 {
 		t.Errorf("expected ByteEnd 1023, got %d", split.ByteEnd)
 	}
-	if split.SplitChecksum == "" {
-		t.Error("expected non-empty SplitChecksum")
+	if split.SplitChecksum != mockStorage.checksum {
+		t.Errorf("SplitChecksum = %q, want %q", split.SplitChecksum, mockStorage.checksum)
 	}
 }
 
@@ -1532,4 +1527,71 @@ func (m *mockScheduleObjectClient) GetObject(ctx context.Context, bucketName, ob
 		data[i] = 'a'
 	}
 	return io.NopCloser(bytes.NewReader(data)), nil
+}
+
+func TestBuildInputSplits_ZeroSizeObject(t *testing.T) {
+	storage := &zeroSizeObjectClient{}
+	splits := buildInputSplits(context.Background(), storage, "input.jsonl", "s3://inputs/input.jsonl")
+	if len(splits) != 1 {
+		t.Fatalf("expected 1 fallback split, got %d", len(splits))
+	}
+	if splits[0].ByteStart != 0 || splits[0].ByteEnd != 0 {
+		t.Errorf("expected zero-value range for empty object, got [%d, %d]", splits[0].ByteStart, splits[0].ByteEnd)
+	}
+	if splits[0].SplitChecksum != "" {
+		t.Errorf("expected no checksum for empty object, got %q", splits[0].SplitChecksum)
+	}
+}
+
+func TestBuildInputSplits_StatObjectFailure(t *testing.T) {
+	storage := &errStatObjectClient{}
+	splits := buildInputSplits(context.Background(), storage, "input.jsonl", "s3://inputs/input.jsonl")
+	if len(splits) != 1 {
+		t.Fatalf("expected 1 fallback split on stat error, got %d", len(splits))
+	}
+	if splits[0].SplitChecksum != "" {
+		t.Errorf("expected no checksum on stat failure, got %q", splits[0].SplitChecksum)
+	}
+}
+
+func TestChecksumObjectRange_ShortRead(t *testing.T) {
+	storage := &shortReadObjectClient{data: []byte("hi")} // 2 bytes
+	// Request range [0,9] — 10 bytes expected, only 2 available
+	_, err := checksumObjectRange(context.Background(), storage, "bucket", "obj", 0, 9)
+	if err == nil {
+		t.Fatal("expected short-read error, got nil")
+	}
+	if !strings.Contains(err.Error(), "short read") {
+		t.Errorf("expected 'short read' in error, got %q", err.Error())
+	}
+}
+
+type zeroSizeObjectClient struct{}
+
+func (z *zeroSizeObjectClient) StatObject(_ context.Context, _, _ string, _ minio.StatObjectOptions) (minio.ObjectInfo, error) {
+	return minio.ObjectInfo{Size: 0}, nil
+}
+
+func (z *zeroSizeObjectClient) GetObject(_ context.Context, _, _ string, _ minio.GetObjectOptions) (io.ReadCloser, error) {
+	return io.NopCloser(bytes.NewReader(nil)), nil
+}
+
+type errStatObjectClient struct{}
+
+func (e *errStatObjectClient) StatObject(_ context.Context, _, _ string, _ minio.StatObjectOptions) (minio.ObjectInfo, error) {
+	return minio.ObjectInfo{}, errors.New("stat failed")
+}
+
+func (e *errStatObjectClient) GetObject(_ context.Context, _, _ string, _ minio.GetObjectOptions) (io.ReadCloser, error) {
+	return nil, errors.New("not called")
+}
+
+type shortReadObjectClient struct{ data []byte }
+
+func (s *shortReadObjectClient) StatObject(_ context.Context, _, _ string, _ minio.StatObjectOptions) (minio.ObjectInfo, error) {
+	return minio.ObjectInfo{Size: int64(len(s.data))}, nil
+}
+
+func (s *shortReadObjectClient) GetObject(_ context.Context, _, _ string, _ minio.GetObjectOptions) (io.ReadCloser, error) {
+	return io.NopCloser(bytes.NewReader(s.data)), nil
 }
