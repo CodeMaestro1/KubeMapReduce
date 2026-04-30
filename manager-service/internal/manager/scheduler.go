@@ -5,7 +5,8 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"log"
+	"kubemapreduce/manager-service/pkg/observability"
+	"log/slog"
 	"strings"
 	"sync"
 	"time"
@@ -131,12 +132,20 @@ func (s *Scheduler) Recover(ctx context.Context) error {
 		err := s.orchestrator.SpawnWorker(spawnCtx, rec.taskID, rec.jobID, rec.attemptID, s.managerAddr)
 		cancel()
 		if err != nil {
-			log.Printf("Failed to spawn worker for recovered task %s (attempt %s): %v", rec.taskID, rec.attemptID, err)
+			slog.ErrorContext(ctx, "failed to spawn worker for recovered task",
+				slog.String("task_id", rec.taskID),
+				slog.String("job_id", rec.jobID),
+				slog.String("attempt_id", rec.attemptID),
+				slog.Any("err", err),
+			)
 			spawnFailures++
 		}
 	}
 	if spawnFailures > 0 {
-		log.Printf("Recovery finished with %d/%d spawn failures; service will continue and retry via reaper", spawnFailures, len(attemptsToSpawn))
+		slog.WarnContext(ctx, "worker recovery completed with spawn failures; reaper will retry",
+			slog.Int("spawn_failures", spawnFailures),
+			slog.Int("total_attempts", len(attemptsToSpawn)),
+		)
 	}
 	return nil
 }
@@ -536,6 +545,9 @@ func (s *Scheduler) ScheduleJob(ctx context.Context, req ScheduleJobRequest) err
 			return err
 		}
 		scheduledTasks = append(scheduledTasks, taskID.String())
+		if m := observability.DefaultMetrics(); m != nil {
+			m.TasksScheduled.WithLabelValues(task.TaskType).Inc()
+		}
 
 		for _, split := range task.InputSplits {
 			if _, err := tx.ExecContext(ctx, QueryInsertTaskInput,
@@ -554,7 +566,10 @@ func (s *Scheduler) ScheduleJob(ctx context.Context, req ScheduleJobRequest) err
 		return err
 	}
 
-	log.Printf("Scheduled job %s with %d tasks; worker orchestration deferred to attempt assignment", jobID, len(scheduledTasks))
+	slog.InfoContext(ctx, "job scheduled; worker orchestration deferred to attempt assignment",
+		slog.String("job_id", jobID.String()),
+		slog.Int("task_count", len(scheduledTasks)),
+	)
 
 	return nil
 }
@@ -711,6 +726,10 @@ func (s *Scheduler) CompleteTask(ctx context.Context, taskID string, attemptID s
 
 	if err := tx.Commit(); err != nil {
 		return err
+	}
+
+	if m := observability.DefaultMetrics(); m != nil {
+		m.TasksCompleted.Inc()
 	}
 
 	if jobCompleted {
@@ -872,6 +891,10 @@ func (s *Scheduler) FailTask(ctx context.Context, taskID string, attemptID strin
 		return err
 	}
 
+	if m := observability.DefaultMetrics(); m != nil {
+		m.TasksFailed.Inc()
+	}
+
 	if newState == "Failed" {
 		go func() {
 			cancelCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Minute)
@@ -882,10 +905,19 @@ func (s *Scheduler) FailTask(ctx context.Context, taskID string, attemptID strin
 		spawnCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
 		defer cancel()
 		if err := s.orchestrator.DeleteWorkerJob(spawnCtx, taskID); err != nil {
-			log.Printf("Failed to delete stale K8s Job for task %s before retry: %v", taskID, err)
+			slog.ErrorContext(ctx, "failed to delete stale K8s job before retry",
+				slog.String("task_id", taskID),
+				slog.String("job_id", jobID),
+				slog.Any("err", err),
+			)
 		}
 		if err := s.orchestrator.SpawnWorker(spawnCtx, taskID, jobID, retryAttemptID, s.managerAddr); err != nil {
-			log.Printf("Failed to respawn worker for failed task %s (attempt %s): %v", taskID, retryAttemptID, err)
+			slog.ErrorContext(ctx, "failed to respawn worker for failed task",
+				slog.String("task_id", taskID),
+				slog.String("job_id", jobID),
+				slog.String("attempt_id", retryAttemptID),
+				slog.Any("err", err),
+			)
 		}
 	}
 
@@ -978,14 +1010,17 @@ func (s *Scheduler) FailStaleTasks(ctx context.Context) (int, error) {
 	}
 
 	if err := tx.Commit(); err != nil {
-		log.Printf("Failed to commit stale task cleanup: %v", err)
+		slog.ErrorContext(ctx, "failed to commit stale task cleanup", slog.Any("err", err))
 		return 0, err
 	}
 
 	for _, taskID := range failedTaskIDs {
 		evictCtx, evictCancel := context.WithTimeout(ctx, 30*time.Second)
 		if err := s.orchestrator.DeleteWorkerJob(evictCtx, taskID); err != nil {
-			log.Printf("Failed to delete zombie K8s Job for stale task %s: %v", taskID, err)
+			slog.ErrorContext(ctx, "failed to delete zombie K8s job for stale task",
+				slog.String("task_id", taskID),
+				slog.Any("err", err),
+			)
 		}
 		evictCancel()
 	}
@@ -999,10 +1034,19 @@ func (s *Scheduler) FailStaleTasks(ctx context.Context) (int, error) {
 	for _, rec := range respawnTasks {
 		spawnCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 		if err := s.orchestrator.DeleteWorkerJob(spawnCtx, rec.taskID); err != nil {
-			log.Printf("Failed to delete stale K8s Job for task %s before retry: %v", rec.taskID, err)
+			slog.ErrorContext(ctx, "failed to delete stale K8s job before reaper retry",
+				slog.String("task_id", rec.taskID),
+				slog.String("job_id", rec.jobID),
+				slog.Any("err", err),
+			)
 		}
 		if err := s.orchestrator.SpawnWorker(spawnCtx, rec.taskID, rec.jobID, rec.attemptID, s.managerAddr); err != nil {
-			log.Printf("Failed to respawn worker for stale task %s (attempt %s): %v", rec.taskID, rec.attemptID, err)
+			slog.ErrorContext(ctx, "failed to respawn worker for stale task",
+				slog.String("task_id", rec.taskID),
+				slog.String("job_id", rec.jobID),
+				slog.String("attempt_id", rec.attemptID),
+				slog.Any("err", err),
+			)
 		}
 		cancel()
 	}
@@ -1181,14 +1225,22 @@ func (s *Scheduler) popPendingCleanup(limit int) map[string]string {
 
 func (s *Scheduler) finalizeJob(ctx context.Context, jobID, terminalState string) {
 	if err := s.orchestrator.CancelJob(ctx, jobID); err != nil {
-		log.Printf("Failed to cleanup K8s worker jobs for job %s: %v", jobID, err)
+		slog.ErrorContext(ctx, "failed to cleanup K8s worker jobs",
+			slog.String("job_id", jobID),
+			slog.String("terminal_state", terminalState),
+			slog.Any("err", err),
+		)
 		s.enqueueCleanup(jobID, terminalState)
 		return
 	}
 
 	if s.staging != nil {
 		if err := s.staging.DeleteStagingObjects(ctx, jobID); err != nil {
-			log.Printf("Failed to delete staging objects for job %s: %v", jobID, err)
+			slog.ErrorContext(ctx, "failed to delete staging objects",
+				slog.String("job_id", jobID),
+				slog.String("terminal_state", terminalState),
+				slog.Any("err", err),
+			)
 			s.enqueueCleanup(jobID, terminalState)
 			return
 		}
@@ -1196,19 +1248,29 @@ func (s *Scheduler) finalizeJob(ctx context.Context, jobID, terminalState string
 
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		log.Printf("Failed to begin tx for terminal status update of job %s: %v", jobID, err)
+		slog.ErrorContext(ctx, "failed to begin tx for terminal status update",
+			slog.String("job_id", jobID),
+			slog.Any("err", err),
+		)
 		s.enqueueCleanup(jobID, terminalState)
 		return
 	}
 	defer tx.Rollback()
 
 	if err := s.applyJobTransitionTx(ctx, tx, jobID, terminalState); err != nil {
-		log.Printf("Failed to update terminal status of job %s: %v", jobID, err)
+		slog.ErrorContext(ctx, "failed to update terminal status",
+			slog.String("job_id", jobID),
+			slog.String("terminal_state", terminalState),
+			slog.Any("err", err),
+		)
 		s.enqueueCleanup(jobID, terminalState)
 		return
 	}
 	if err := tx.Commit(); err != nil {
-		log.Printf("Failed to commit terminal status update of job %s: %v", jobID, err)
+		slog.ErrorContext(ctx, "failed to commit terminal status update",
+			slog.String("job_id", jobID),
+			slog.Any("err", err),
+		)
 		s.enqueueCleanup(jobID, terminalState)
 		return
 	}
@@ -1230,22 +1292,25 @@ func (s *Scheduler) StartCleanupReconciler(ctx context.Context, interval time.Du
 		for rows.Next() {
 			var jobID string
 			if err := rows.Scan(&jobID); err != nil {
-				log.Printf("Warning: failed to scan Cleaning job row during recovery: %v", err)
+				slog.WarnContext(ctx, "failed to scan Cleaning job row during recovery", slog.Any("err", err))
 				continue
 			}
 			terminalState, deriveErr := s.determineCleaningTerminalState(ctx, jobID)
 			if deriveErr != nil {
-				log.Printf("Warning: failed to determine terminal state for Cleaning job %s during recovery: %v", jobID, deriveErr)
+				slog.WarnContext(ctx, "failed to determine terminal state for Cleaning job during recovery",
+					slog.String("job_id", jobID),
+					slog.Any("err", deriveErr),
+				)
 				s.enqueueCleanup(jobID, "")
 				continue
 			}
 			s.enqueueCleanup(jobID, terminalState)
 		}
 		if err := rows.Err(); err != nil {
-			log.Printf("Warning: failed iterating Cleaning jobs during recovery: %v", err)
+			slog.WarnContext(ctx, "failed iterating Cleaning jobs during recovery", slog.Any("err", err))
 		}
 	} else {
-		log.Printf("Warning: failed to recover Cleaning jobs: %v", err)
+		slog.WarnContext(ctx, "failed to recover Cleaning jobs", slog.Any("err", err))
 	}
 
 	ticker := time.NewTicker(interval)
@@ -1276,7 +1341,10 @@ func (s *Scheduler) StartCleanupReconciler(ctx context.Context, interval time.Du
 							var deriveErr error
 							terminalState, deriveErr = s.determineCleaningTerminalState(retryCtx, jobID)
 							if deriveErr != nil {
-								log.Printf("Warning: retrying cleanup for job %s after terminal-state recovery error: %v", jobID, deriveErr)
+								slog.WarnContext(retryCtx, "retrying cleanup after terminal-state recovery error",
+									slog.String("job_id", jobID),
+									slog.Any("err", deriveErr),
+								)
 								s.enqueueCleanup(jobID, "")
 								return
 							}

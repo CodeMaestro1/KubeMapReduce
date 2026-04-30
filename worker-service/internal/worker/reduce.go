@@ -105,6 +105,10 @@ func (w *Worker) runReduce(ctx context.Context, a *pb.TaskAssignment) (outputURI
 	if mergeErr != nil {
 		return nil, nil, fmt.Errorf("merge: %w", mergeErr)
 	}
+
+	if _, err := mergedFile.Seek(0, 0); err != nil {
+		return nil, nil, fmt.Errorf("seek merged output: %w", err)
+	}
 	log.Printf("[reduce] merge stats task=%s passes=%d spills=%d peak_streams=%d records=%d",
 		a.TaskId, mergeStats.TotalPasses, mergeStats.SpillCount, mergeStats.PeakOpenStreams, mergeStats.TotalRecords)
 

@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
@@ -17,6 +18,7 @@ import (
 	"kubemapreduce/auth-service/pkg/auth"
 	"kubemapreduce/manager-service/internal/api"
 	"kubemapreduce/manager-service/internal/config"
+	"kubemapreduce/manager-service/pkg/observability"
 
 	"github.com/minio/minio-go/v7"
 	"github.com/minio/minio-go/v7/pkg/credentials"
@@ -34,6 +36,14 @@ import (
 //  7. Listen for termination signals (SIGINT, SIGTERM) to initiate a graceful shutdown,
 //     allowing in-flight requests 15 seconds to complete before forcing exit.
 func main() {
+	// Bootstrap structured logging before anything else so all subsequent
+	// records (including legacy log.Printf calls bridged via slog.NewLogLogger)
+	// follow the same JSON schema and carry the service attribute.
+	logger := observability.NewLogger("api")
+	slog.SetDefault(logger)
+	log.SetFlags(0)
+	log.SetOutput(loggerWriter{logger: logger})
+
 	cfg, err := config.Load()
 	if err != nil {
 		log.Fatalf("failed to load configuration: %v", err)
@@ -85,12 +95,16 @@ func main() {
 	store := api.NewPostgresJobStore(db)
 	handlers := api.NewHandlers(adminClient, store, minioClient, cfg.ManagerAddr, cfg.InternalAPIKey)
 
+	// Register Prometheus collectors and mount the /metrics endpoint
+	// before user-facing routes so scrapes never block on auth middleware.
+	observability.SetDefaultMetrics(observability.NewMetrics())
 	mux := http.NewServeMux()
+	mux.Handle("/metrics", observability.MetricsHandler())
 	api.RegisterRoutes(mux, handlers, validator)
 
 	srv := &http.Server{
 		Addr:              cfg.ServerAddr,
-		Handler:           mux,
+		Handler:           observability.RequestIDMiddleware(logger)(mux),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,
 		WriteTimeout:      30 * time.Second,
@@ -127,4 +141,21 @@ func main() {
 	}
 
 	log.Println("API server stopped")
+}
+
+// loggerWriter is an [io.Writer] that forwards every line written by the
+// stdlib [log] package through the supplied [*slog.Logger] at INFO level,
+// stripping the trailing newline. This bridge ensures that legacy log.Printf
+// callsites still emit structured JSON without requiring a sweeping rewrite.
+type loggerWriter struct {
+	logger *slog.Logger
+}
+
+func (w loggerWriter) Write(p []byte) (int, error) {
+	msg := strings.TrimRight(string(p), "\r\n")
+	if msg == "" {
+		return len(p), nil
+	}
+	w.logger.Info(msg)
+	return len(p), nil
 }

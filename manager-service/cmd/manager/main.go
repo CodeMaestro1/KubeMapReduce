@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"log"
+	"log/slog"
 	"net"
 	"net/http"
 	"os"
@@ -30,6 +31,7 @@ import (
 	"kubemapreduce/manager-service/internal/config"
 	mgrpc "kubemapreduce/manager-service/internal/grpc"
 	"kubemapreduce/manager-service/internal/manager"
+	"kubemapreduce/manager-service/pkg/observability"
 	pb "kubemapreduce/proto"
 )
 
@@ -45,6 +47,19 @@ import (
 //  7. Start the gRPC server for Worker communication (Register, Heartbeat, etc.) with optional TLS and token auth.
 //  8. Handle graceful shutdown by stopping background loops and draining gRPC/HTTP connections.
 func main() {
+	// Bootstrap structured logging before anything else so all subsequent
+	// records (including legacy log.Printf calls bridged via the loggerWriter
+	// adapter below) follow the same JSON schema and carry the service
+	// attribute.
+	logger := observability.NewLogger("manager")
+	slog.SetDefault(logger)
+	log.SetFlags(0)
+	log.SetOutput(loggerWriter{logger: logger})
+
+	// Register Prometheus collectors so internal packages can record
+	// observations through observability.DefaultMetrics().
+	observability.SetDefaultMetrics(observability.NewMetrics())
+
 	cfg, err := config.Load()
 	if err != nil {
 		log.Fatalf("failed to load configuration: %v", err)
@@ -130,12 +145,19 @@ func main() {
 				return
 			case <-ticker.C:
 				reaperCtx, reaperCancel := context.WithTimeout(ctx, 30*time.Second)
+				cycleStart := time.Now()
 				recovered, err := scheduler.FailStaleTasks(reaperCtx)
 				reaperCancel()
+				if m := observability.DefaultMetrics(); m != nil {
+					m.SchedulerCycleSeconds.Observe(time.Since(cycleStart).Seconds())
+					if recovered > 0 {
+						m.ReaperRecovered.Add(float64(recovered))
+					}
+				}
 				if err != nil {
-					log.Printf("reaper error: %v", err)
+					slog.Error("reaper cycle failed", slog.Any("err", err))
 				} else if recovered > 0 {
-					log.Printf("reaper recovered %d stale tasks", recovered)
+					slog.Info("reaper recovered stale tasks", slog.Int("recovered", recovered))
 				}
 			}
 		}
@@ -146,7 +168,7 @@ func main() {
 
 	httpSrv := &http.Server{
 		Addr:              cfg.ServerAddr,
-		Handler:           mux,
+		Handler:           observability.RequestIDMiddleware(logger)(mux),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,
 		WriteTimeout:      30 * time.Second,
@@ -363,6 +385,7 @@ type Pingable interface {
 
 func setupInternalMux(scheduler JobScheduler, db Pingable, cfg *config.Config) *http.ServeMux {
 	mux := http.NewServeMux()
+	mux.Handle("/metrics", observability.MetricsHandler())
 	mux.HandleFunc("DELETE /internal/jobs/{job_id}", func(w http.ResponseWriter, r *http.Request) {
 		if !isAuthorizedInternalRequest(r, cfg.InternalAPIKey, cfg.AllowInsecureInternalCancelAuth) {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
@@ -418,7 +441,7 @@ func setupInternalMux(scheduler JobScheduler, db Pingable, cfg *config.Config) *
 		}
 		w.WriteHeader(http.StatusOK)
 	})
-	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte("OK"))
 	})
@@ -435,8 +458,22 @@ func setupInternalMux(scheduler JobScheduler, db Pingable, cfg *config.Config) *
 		w.Write([]byte("OK"))
 	}
 	mux.HandleFunc("/readyz", readinessHandler)
-	// /ready is kept as an alias for /readyz for backwards compatibility with
-	// existing probe configurations and documentation.
-	mux.HandleFunc("/ready", readinessHandler)
 	return mux
+}
+
+// loggerWriter is an [io.Writer] that forwards every line written by the
+// stdlib [log] package through the supplied [*slog.Logger] at INFO level,
+// stripping the trailing newline. This bridge ensures that legacy log.Printf
+// callsites still emit structured JSON without requiring a sweeping rewrite.
+type loggerWriter struct {
+	logger *slog.Logger
+}
+
+func (w loggerWriter) Write(p []byte) (int, error) {
+	msg := strings.TrimRight(string(p), "\r\n")
+	if msg == "" {
+		return len(p), nil
+	}
+	w.logger.Info(msg)
+	return len(p), nil
 }

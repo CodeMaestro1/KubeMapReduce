@@ -30,7 +30,7 @@ func TestPostgresJobStore_CreateJob_PersistsToDatabase(t *testing.T) {
 		WithArgs(sqlmock.AnyArg(), ownerUUID, now, now).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec("INSERT INTO JOB_CONFIGS").
-		WithArgs(sqlmock.AnyArg(), "data.csv", "", "", "", 0, 4).
+		WithArgs(sqlmock.AnyArg(), "data.csv", "", "", "", 0, 4, "").
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectCommit()
 
@@ -209,7 +209,7 @@ func TestPostgresJobStore_CreateThenGet_Consistent(t *testing.T) {
 		WithArgs(sqlmock.AnyArg(), ownerUUID, now, now).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec("INSERT INTO JOB_CONFIGS").
-		WithArgs(sqlmock.AnyArg(), "input.jsonl", "", "", "", 0, 3).
+		WithArgs(sqlmock.AnyArg(), "input.jsonl", "", "", "", 0, 3, "").
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectCommit()
 

@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"log"
+	"log/slog"
 	"os"
 	"os/signal"
 	"syscall"
@@ -13,12 +14,18 @@ import (
 	grpccreds "google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
 
+	"kubemapreduce/manager-service/pkg/observability"
 	pb "kubemapreduce/proto"
 	"kubemapreduce/worker-service/internal/config"
 	"kubemapreduce/worker-service/internal/worker"
 )
 
 func main() {
+	logger := observability.NewLogger("worker")
+	slog.SetDefault(logger)
+	log.SetFlags(0)
+	log.SetOutput(loggerWriter{logger: logger})
+
 	cfg, err := config.Load()
 	if err != nil {
 		log.Fatalf("config: %v", err)
@@ -35,15 +42,9 @@ func main() {
 	}
 	defer conn.Close()
 
-	var minioClient *minio.Client
-	if cfg.MinioEndpoint != "" {
-		minioClient, err = minio.New(cfg.MinioEndpoint, &minio.Options{
-			Creds:  miniocreds.NewStaticV4(cfg.MinioAccessKey, cfg.MinioSecretKey, ""),
-			Secure: cfg.MinioUseSSL,
-		})
-		if err != nil {
-			log.Fatalf("minio: %v", err)
-		}
+	minioClient, err := buildMinioClient(cfg)
+	if err != nil {
+		log.Fatalf("minio: %v", err)
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -75,3 +76,30 @@ func (r rpcToken) GetRequestMetadata(_ context.Context, _ ...string) (map[string
 }
 
 func (r rpcToken) RequireTransportSecurity() bool { return false }
+
+// loggerWriter bridges legacy log.Print* calls to the structured slog
+// pipeline so every line emitted by the standard logger is routed through
+// the same JSON sink as the rest of the worker process.
+type loggerWriter struct {
+	logger *slog.Logger
+}
+
+func (w loggerWriter) Write(p []byte) (int, error) {
+	msg := string(p)
+	// strip a trailing newline so JSON records read cleanly
+	if n := len(msg); n > 0 && msg[n-1] == '\n' {
+		msg = msg[:n-1]
+	}
+	w.logger.Info(msg)
+	return len(p), nil
+}
+
+func buildMinioClient(cfg *config.Config) (*minio.Client, error) {
+	if cfg.MinioEndpoint == "" {
+		return nil, nil
+	}
+	return minio.New(cfg.MinioEndpoint, &minio.Options{
+		Creds:  miniocreds.NewStaticV4(cfg.MinioAccessKey, cfg.MinioSecretKey, ""),
+		Secure: cfg.MinioUseSSL,
+	})
+}

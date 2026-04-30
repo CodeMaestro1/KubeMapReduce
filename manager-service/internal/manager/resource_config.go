@@ -4,7 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
-	"log"
+	"log/slog"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -80,14 +80,25 @@ func parseQuantityOrDefault(kind, raw, fallback string) (resource.Quantity, bool
 		if q, err := resource.ParseQuantity(raw); err == nil {
 			return q, true
 		} else {
-			log.Printf("orchestrator: invalid %s limit %q from SYSTEM_CONFIG, using default %q: %v", kind, raw, fallback, err)
+			slog.Warn("invalid resource limit from SYSTEM_CONFIG, using default",
+				slog.String("component", "orchestrator"),
+				slog.String("kind", kind),
+				slog.String("raw", raw),
+				slog.String("fallback", fallback),
+				slog.Any("err", err),
+			)
 		}
 	}
 	q, err := resource.ParseQuantity(fallback)
 	if err != nil {
 		// fallback is a compile-time constant; this branch should be
 		// unreachable but we surface it loudly if a future edit breaks it.
-		log.Printf("orchestrator: BUG: default %s limit %q is not a valid Quantity: %v", kind, fallback, err)
+		slog.Error("BUG: default resource limit is not a valid Quantity",
+			slog.String("component", "orchestrator"),
+			slog.String("kind", kind),
+			slog.String("fallback", fallback),
+			slog.Any("err", err),
+		)
 	}
 	return q, false
 }

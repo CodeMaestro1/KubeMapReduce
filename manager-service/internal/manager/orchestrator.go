@@ -5,7 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
-	"log"
+	"log/slog"
 	"strings"
 
 	batchv1 "k8s.io/api/batch/v1"
@@ -104,7 +104,10 @@ func (k *KubeOrchestrator) resolveContainerResources(ctx context.Context) corev1
 	if k.resourceProvider != nil {
 		cpu, mem, err := k.resourceProvider.GetWorkerResourceLimits(ctx)
 		if err != nil {
-			log.Printf("orchestrator: failed to read worker resource limits, using defaults: %v", err)
+			slog.WarnContext(ctx, "failed to read worker resource limits, using defaults",
+				slog.String("component", "orchestrator"),
+				slog.Any("err", err),
+			)
 		} else {
 			cpuLimit = cpu
 			memLimit = mem

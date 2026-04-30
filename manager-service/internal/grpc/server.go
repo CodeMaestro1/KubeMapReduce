@@ -8,7 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 	"path"
 	"strings"
 
@@ -18,6 +18,7 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	"kubemapreduce/manager-service/internal/manager"
+	"kubemapreduce/manager-service/pkg/observability"
 	pb "kubemapreduce/proto"
 )
 
@@ -84,7 +85,11 @@ func (s *WorkerServer) Register(ctx context.Context, req *pb.RegisterRequest) (*
 	}
 
 	if task.GetAttemptID() != req.AttemptId {
-		log.Printf("Register rejected for task %s due to attempt mismatch", req.TaskId)
+		slog.WarnContext(ctx, "register rejected: attempt mismatch",
+			slog.String("task_id", req.TaskId),
+			slog.String("attempt_id", req.AttemptId),
+			slog.String("current_attempt_id", task.GetAttemptID()),
+		)
 		return nil, status.Error(codes.PermissionDenied, "attempt rejected")
 	}
 
@@ -144,7 +149,11 @@ func (s *WorkerServer) Register(ctx context.Context, req *pb.RegisterRequest) (*
 			"data_locations": assignment.DataLocations,
 		})
 		if err != nil {
-			log.Printf("Failed to marshal manifest for task %s: %v", task.ID, err)
+			slog.ErrorContext(ctx, "failed to marshal task assignment manifest",
+				slog.String("task_id", task.ID),
+				slog.String("job_id", task.JobID),
+				slog.Any("err", err),
+			)
 			return nil, status.Errorf(codes.Internal, "failed to marshal manifest: %v", err)
 		}
 		if len(manifestBytes) > maxManifestPayloadSizeBytes {
@@ -154,7 +163,12 @@ func (s *WorkerServer) Register(ctx context.Context, req *pb.RegisterRequest) (*
 		objectName := fmt.Sprintf("%s/%s-manifest.json", task.JobID, task.ActiveAttemptID)
 		manifestURL, err := s.uploader.UploadManifest(ctx, manifestBucketName, objectName, manifestBytes)
 		if err != nil {
-			log.Printf("Failed to upload manifest for task %s: %v", task.ID, err)
+			slog.ErrorContext(ctx, "failed to upload task assignment manifest",
+				slog.String("task_id", task.ID),
+				slog.String("job_id", task.JobID),
+				slog.String("object", objectName),
+				slog.Any("err", err),
+			)
 			return nil, status.Errorf(codes.Unavailable, "failed to upload manifest: %v", err)
 		}
 		// Embed the SHA-256 digest of the uploaded payload as a URI fragment so the
@@ -171,7 +185,12 @@ func (s *WorkerServer) Register(ctx context.Context, req *pb.RegisterRequest) (*
 	if proto.Size(assignment) > s.manifestThresholdBytes {
 		// Defensive guard: after manifest replacement this should normally be below threshold,
 		// but keep the check for unexpectedly large metadata fields.
-		log.Printf("TaskAssignment for task %s still exceeds manifest threshold after manifest fallback", task.ID)
+		slog.ErrorContext(ctx, "task assignment exceeds manifest threshold even after manifest fallback",
+			slog.String("task_id", task.ID),
+			slog.String("job_id", task.JobID),
+			slog.Int("size_bytes", proto.Size(assignment)),
+			slog.Int("threshold_bytes", s.manifestThresholdBytes),
+		)
 		return nil, status.Errorf(codes.ResourceExhausted, "task assignment for task %s exceeds manifest threshold", task.ID)
 	}
 
@@ -191,14 +210,23 @@ func (s *WorkerServer) Heartbeat(ctx context.Context, req *pb.HeartbeatRequest) 
 	err := s.scheduler.RenewLease(ctx, req.TaskId, req.AttemptId, req.LeaseId)
 	if err != nil {
 		if errors.Is(err, manager.ErrTaskNotFound) {
+			if m := observability.DefaultMetrics(); m != nil {
+				m.HeartbeatsTotal.WithLabelValues("TERMINATE").Inc()
+			}
 			return &pb.HeartbeatResponse{Action: pb.HeartbeatResponse_TERMINATE}, nil
 		}
 		if errors.Is(err, manager.ErrStaleAttempt) || errors.Is(err, manager.ErrExpiredLease) || errors.Is(err, manager.ErrInvalidStateTransition) {
+			if m := observability.DefaultMetrics(); m != nil {
+				m.HeartbeatsTotal.WithLabelValues("TERMINATE").Inc()
+			}
 			return &pb.HeartbeatResponse{Action: pb.HeartbeatResponse_TERMINATE}, nil
 		}
 		return nil, status.Errorf(codes.Internal, "failed to renew lease: %v", err)
 	}
 
+	if m := observability.DefaultMetrics(); m != nil {
+		m.HeartbeatsTotal.WithLabelValues("CONTINUE").Inc()
+	}
 	return &pb.HeartbeatResponse{Action: pb.HeartbeatResponse_CONTINUE}, nil
 }
 

@@ -85,13 +85,13 @@ func (f *fakeScheduleObjectClient) GetObject(_ context.Context, bucketName, obje
 	return io.NopCloser(bytes.NewReader(data[int(start) : int(end)+1])), nil
 }
 
-func TestHandleHealth(t *testing.T) {
+func TestHandleHealthz(t *testing.T) {
 	h := newTestHandlers()
 
-	req := httptest.NewRequest(http.MethodGet, "/health", nil)
+	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
 	rec := httptest.NewRecorder()
 
-	h.HandleHealth(rec, req)
+	h.HandleHealthz(rec, req)
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected status %d, got %d", http.StatusOK, rec.Code)
@@ -102,17 +102,70 @@ func TestHandleHealth(t *testing.T) {
 	}
 }
 
-func TestHandleHealth_RejectsNonGet(t *testing.T) {
+func TestHandleHealthz_RejectsNonGet(t *testing.T) {
 	h := newTestHandlers()
 
-	req := httptest.NewRequest(http.MethodPost, "/health", nil)
+	req := httptest.NewRequest(http.MethodPost, "/healthz", nil)
 	rec := httptest.NewRecorder()
 
-	h.HandleHealth(rec, req)
+	h.HandleHealthz(rec, req)
 
 	if rec.Code != http.StatusMethodNotAllowed {
 		t.Fatalf("expected status %d, got %d", http.StatusMethodNotAllowed, rec.Code)
 	}
+}
+
+func TestHandleReadyz_OK(t *testing.T) {
+	h := newTestHandlers()
+
+	req := httptest.NewRequest(http.MethodGet, "/readyz", nil)
+	rec := httptest.NewRecorder()
+
+	h.HandleReadyz(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d (body=%q)", http.StatusOK, rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"status":"ready"`) {
+		t.Fatalf("expected body to contain status ready, got %q", rec.Body.String())
+	}
+}
+
+func TestHandleReadyz_DBUnreachable(t *testing.T) {
+	store := &failingPingStore{JobStore: NewMemoryJobStore(24*time.Hour, 100, nil)}
+	h := NewHandlers(nil, store, nil, "", "")
+
+	req := httptest.NewRequest(http.MethodGet, "/readyz", nil)
+	rec := httptest.NewRecorder()
+
+	h.HandleReadyz(rec, req)
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected status %d, got %d (body=%q)", http.StatusServiceUnavailable, rec.Code, rec.Body.String())
+	}
+}
+
+func TestHandleReadyz_RejectsNonGet(t *testing.T) {
+	h := newTestHandlers()
+
+	req := httptest.NewRequest(http.MethodPost, "/readyz", nil)
+	rec := httptest.NewRecorder()
+
+	h.HandleReadyz(rec, req)
+
+	if rec.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("expected status %d, got %d", http.StatusMethodNotAllowed, rec.Code)
+	}
+}
+
+// failingPingStore is a JobStore decorator whose Ping always fails, used to
+// exercise the /readyz error path.
+type failingPingStore struct {
+	JobStore
+}
+
+func (f *failingPingStore) Ping(_ context.Context) error {
+	return fmt.Errorf("simulated db outage")
 }
 
 func TestHandleJobsSubmit_RejectsInvalidPayload(t *testing.T) {
@@ -216,8 +269,8 @@ func TestHandleJobsSubmit_SchedulesJobAfterPersist(t *testing.T) {
 	if capturedReq.ReducerURI != "reducer.py" {
 		t.Errorf("expected ReducerURI reducer.py, got %q", capturedReq.ReducerURI)
 	}
-	if capturedReq.InputURI != "s3://inputs/input.jsonl" {
-		t.Errorf("expected InputURI s3://inputs/input.jsonl, got %q", capturedReq.InputURI)
+	if capturedReq.InputURI != "s3://mapreduce-inputs/input.jsonl" {
+		t.Errorf("expected InputURI s3://mapreduce-inputs/input.jsonl, got %q", capturedReq.InputURI)
 	}
 	if capturedReq.MTasks != 1 {
 		t.Errorf("expected MTasks=1, got %d", capturedReq.MTasks)
@@ -255,13 +308,13 @@ func TestBuildScheduleRequest_SplitsLargeInputAndHashesEachSplit(t *testing.T) {
 	payload := []byte("abcdefgh")
 	store := &fakeScheduleObjectClient{
 		objects: map[string][]byte{
-			"inputs/input.jsonl": payload,
+			"mapreduce-inputs/input.jsonl": payload,
 		},
 	}
 
 	req := buildScheduleRequest(context.Background(), store, "job-1", "user-1", body, "")
-	if req.InputURI != "s3://inputs/input.jsonl" {
-		t.Fatalf("InputURI = %q, want %q", req.InputURI, "s3://inputs/input.jsonl")
+	if req.InputURI != "s3://mapreduce-inputs/input.jsonl" {
+		t.Fatalf("InputURI = %q, want %q", req.InputURI, "s3://mapreduce-inputs/input.jsonl")
 	}
 	if req.MTasks != 2 {
 		t.Fatalf("MTasks = %d, want 2", req.MTasks)
@@ -1462,6 +1515,47 @@ func TestRouting_PostToJobDetail_Returns405(t *testing.T) {
 
 	if rec.Code != http.StatusMethodNotAllowed {
 		t.Fatalf("expected 405 for POST on job detail, got %d", rec.Code)
+	}
+}
+
+// ── HandleJobsDelete tests ───────────────────────────────────
+
+func TestHandleJobsDelete_Returns204NoContent(t *testing.T) {
+	// Fake manager server that accepts the cancellation request.
+	manager := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer manager.Close()
+
+	h := newTestHandlers()
+	h.managerAddr = manager.Listener.Addr().String()
+
+	// Submit a job so there is a known job_id in the store.
+	submitBody := `{"filename":"input.json","mapper":{"language":"python","artifact":"m.py","entrypoint":"map","interface":"map(key,value)->[]KeyValue"},"reducer":{"language":"python","artifact":"r.py","entrypoint":"reduce","interface":"reduce(key,values)->Value"}}`
+	submitReq := authedReq(http.MethodPost, "/api/v1/jobs", submitBody)
+	submitRec := httptest.NewRecorder()
+	h.HandleJobsSubmit(submitRec, submitReq)
+	if submitRec.Code != http.StatusAccepted {
+		t.Fatalf("setup: submit failed with %d: %s", submitRec.Code, submitRec.Body.String())
+	}
+
+	var submitResp struct {
+		JobID string `json:"jobId"`
+	}
+	if err := json.NewDecoder(strings.NewReader(submitRec.Body.String())).Decode(&submitResp); err != nil {
+		t.Fatalf("decode submit response: %v", err)
+	}
+
+	delReq := authedReq(http.MethodDelete, "/api/v1/jobs/"+submitResp.JobID, "")
+	delReq.SetPathValue("job_id", submitResp.JobID)
+	delRec := httptest.NewRecorder()
+	h.HandleJobsDelete(delRec, delReq)
+
+	if delRec.Code != http.StatusNoContent {
+		t.Fatalf("expected %d, got %d: %s", http.StatusNoContent, delRec.Code, delRec.Body.String())
+	}
+	if delRec.Body.Len() != 0 {
+		t.Fatalf("expected empty body for 204, got %q", delRec.Body.String())
 	}
 }
 func TestBuildScheduleRequest_ComputesChecksum(t *testing.T) {
