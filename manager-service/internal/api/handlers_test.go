@@ -244,7 +244,7 @@ func TestHandleJobsSubmit_SchedulesJobAfterPersist(t *testing.T) {
 	h := newTestHandlers()
 	h.managerAddr = managerSrv.Listener.Addr().String()
 
-	body := `{"filename":"input.jsonl","mapper":{"language":"python","artifact":"mapper.py","entrypoint":"map","interface":"map(key,value)->[]KeyValue"},"reducer":{"language":"python","artifact":"reducer.py","entrypoint":"reduce","interface":"reduce(key,values)->Value"},"reducers":2}`
+	body := `{"filename":"input.jsonl","inputChecksums":["deadbeef"],"mapper":{"language":"python","artifact":"mapper.py","entrypoint":"map","interface":"map(key,value)->[]KeyValue"},"reducer":{"language":"python","artifact":"reducer.py","entrypoint":"reduce","interface":"reduce(key,values)->Value"},"reducers":2}`
 	req := authedReq(http.MethodPost, "/api/v1/jobs", body)
 	rec := httptest.NewRecorder()
 	h.HandleJobsSubmit(rec, req)
@@ -278,6 +278,9 @@ func TestHandleJobsSubmit_SchedulesJobAfterPersist(t *testing.T) {
 	if capturedReq.RTasks != 2 {
 		t.Errorf("expected RTasks=2, got %d", capturedReq.RTasks)
 	}
+	if capturedReq.InputChecksum != "deadbeef" {
+		t.Errorf("expected InputChecksum deadbeef, got %q", capturedReq.InputChecksum)
+	}
 	if len(capturedReq.Tasks) != 3 {
 		t.Errorf("expected 3 tasks (1 Map + 2 Reduce), got %d", len(capturedReq.Tasks))
 	}
@@ -289,7 +292,8 @@ func TestBuildScheduleRequest_SplitsLargeInputAndHashesEachSplit(t *testing.T) {
 	t.Cleanup(func() { defaultTargetSplitSizeBytes = origSplitSize })
 
 	body := models.JobSubmissionRequest{
-		Filename: "input.jsonl",
+		Filename:       "input.jsonl",
+		InputChecksums: []string{"sha256-input-whole"},
 		Mapper: models.FunctionSpec{
 			Artifact:   "mapper.py",
 			Entrypoint: "map",
@@ -316,6 +320,9 @@ func TestBuildScheduleRequest_SplitsLargeInputAndHashesEachSplit(t *testing.T) {
 	if req.InputURI != "s3://mapreduce-inputs/input.jsonl" {
 		t.Fatalf("InputURI = %q, want %q", req.InputURI, "s3://mapreduce-inputs/input.jsonl")
 	}
+	if req.InputChecksum != "sha256-input-whole" {
+		t.Fatalf("InputChecksum = %q, want %q", req.InputChecksum, "sha256-input-whole")
+	}
 	if req.MTasks != 2 {
 		t.Fatalf("MTasks = %d, want 2", req.MTasks)
 	}
@@ -338,6 +345,45 @@ func TestBuildScheduleRequest_SplitsLargeInputAndHashesEachSplit(t *testing.T) {
 	}
 	if req.Tasks[1].InputSplits[0].SplitChecksum != fmt.Sprintf("%x", wantSecond[:]) {
 		t.Fatalf("unexpected second split checksum: %q", req.Tasks[1].InputSplits[0].SplitChecksum)
+	}
+}
+
+func TestFirstInputChecksum(t *testing.T) {
+	tests := []struct {
+		name string
+		req  models.JobSubmissionRequest
+		want string
+	}{
+		{
+			name: "prefers inputChecksums first element",
+			req: models.JobSubmissionRequest{
+				InputChecksum:  "legacy",
+				InputChecksums: []string{"preferred", "other"},
+			},
+			want: "preferred",
+		},
+		{
+			name: "falls back to legacy inputChecksum",
+			req: models.JobSubmissionRequest{
+				InputChecksum: "legacy",
+			},
+			want: "legacy",
+		},
+		{
+			name: "skips empty entries",
+			req: models.JobSubmissionRequest{
+				InputChecksums: []string{"   ", "value"},
+			},
+			want: "value",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := firstInputChecksum(tt.req); got != tt.want {
+				t.Fatalf("firstInputChecksum() = %q, want %q", got, tt.want)
+			}
+		})
 	}
 }
 
@@ -1565,7 +1611,8 @@ func TestBuildScheduleRequest_ComputesChecksum(t *testing.T) {
 	}
 
 	req := models.JobSubmissionRequest{
-		Filename: "large-file.bin",
+		Filename:       "large-file.bin",
+		InputChecksums: []string{"cli-input-sha256"},
 		Mapper: models.FunctionSpec{
 			Artifact: "mapper.py",
 		},
@@ -1583,6 +1630,9 @@ func TestBuildScheduleRequest_ComputesChecksum(t *testing.T) {
 
 	if len(schedReq.Tasks) == 0 {
 		t.Fatal("expected at least one task")
+	}
+	if schedReq.InputChecksum != "cli-input-sha256" {
+		t.Fatalf("InputChecksum = %q, want %q", schedReq.InputChecksum, "cli-input-sha256")
 	}
 
 	mapTask := schedReq.Tasks[0]

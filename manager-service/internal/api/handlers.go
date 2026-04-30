@@ -182,6 +182,7 @@ func (h *Handlers) HandleJobsSubmit(w http.ResponseWriter, r *http.Request) {
 	if request.Combiner != nil {
 		combinerURI = request.Combiner.Artifact
 	}
+	inputChecksum := firstInputChecksum(request)
 
 	schedReq := buildScheduleRequest(r.Context(), newScheduleObjectClient(h.minioClient), jobID, userID, request, combinerURI)
 
@@ -190,7 +191,7 @@ func (h *Handlers) HandleJobsSubmit(w http.ResponseWriter, r *http.Request) {
 		UserID:        userID,
 		Status:        "Pending",
 		Filename:      request.Filename,
-		InputChecksum: request.InputChecksum,
+		InputChecksum: inputChecksum,
 		Reducers:      request.Reducers,
 		CreatedAt:     now,
 		MapperURI:     request.Mapper.Artifact,
@@ -752,12 +753,28 @@ func (m *minioScheduleObjectClient) GetObject(ctx context.Context, bucketName, o
 	return m.client.GetObject(ctx, bucketName, objectName, opts)
 }
 
+// firstInputChecksum returns the primary input checksum from the request.
+//
+// Compatibility:
+//   - preferred: inputChecksums[0]
+//   - legacy: inputChecksum
+func firstInputChecksum(req models.JobSubmissionRequest) string {
+	for _, c := range req.InputChecksums {
+		trimmed := strings.TrimSpace(c)
+		if trimmed != "" {
+			return trimmed
+		}
+	}
+	return strings.TrimSpace(req.InputChecksum)
+}
+
 // buildScheduleRequest constructs a ScheduleJobRequest for a fresh job submission.
 // It uses buildInputSplits to create one Map task per input split and R Reduce tasks.
 // Checksum/stat errors are handled best-effort inside buildInputSplits (fallback to single split).
 func buildScheduleRequest(ctx context.Context, storage scheduleObjectClient, jobID, userID string, req models.JobSubmissionRequest, combinerURI string) manager.ScheduleJobRequest {
 	inputURI := fmt.Sprintf("s3://%s/%s", inputBucketName, req.Filename)
 	inputSplits := buildInputSplits(ctx, storage, req.Filename, inputURI)
+	inputChecksum := firstInputChecksum(req)
 
 	tasks := make([]manager.ScheduleTask, 0, len(inputSplits)+req.Reducers)
 	for _, split := range inputSplits {
@@ -776,15 +793,16 @@ func buildScheduleRequest(ctx context.Context, storage scheduleObjectClient, job
 		})
 	}
 	return manager.ScheduleJobRequest{
-		JobID:       jobID,
-		UserID:      userID,
-		InputURI:    inputURI,
-		MapperURI:   req.Mapper.Artifact,
-		ReducerURI:  req.Reducer.Artifact,
-		CombinerURI: combinerURI,
-		MTasks:      len(inputSplits),
-		RTasks:      req.Reducers,
-		Tasks:       tasks,
+		JobID:         jobID,
+		UserID:        userID,
+		InputURI:      inputURI,
+		MapperURI:     req.Mapper.Artifact,
+		ReducerURI:    req.Reducer.Artifact,
+		CombinerURI:   combinerURI,
+		MTasks:        len(inputSplits),
+		RTasks:        req.Reducers,
+		InputChecksum: inputChecksum,
+		Tasks:         tasks,
 	}
 }
 
