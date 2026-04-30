@@ -72,18 +72,23 @@ func (w *Worker) Run(ctx context.Context) error {
 		return err
 	}
 
-	// Resolve manifest if is_manifest=true: DataLocations[0] is an s3:// URI.
+	// Resolve manifest if is_manifest=true: DataLocations[0] is an s3:// URI
+	// that may carry a "#sha256=<hex>" fragment. fetchManifest validates the
+	// digest when present, and returns an error on mismatch.
 	if assignment.IsManifest {
 		if len(assignment.DataLocations) == 0 {
 			err := fmt.Errorf("manifest assignment missing data locations")
 			_ = w.reportFailure(context.Background(), assignment, err.Error())
 			return err
 		}
-		locs, fetchErr := fetchManifest(ctx, w.storage, assignment.DataLocations[0])
+		manifestURI := assignment.DataLocations[0]
+		log.Printf("[worker] fetching manifest task=%s uri=%s", assignment.TaskId, manifestURI)
+		locs, fetchErr := fetchManifest(ctx, w.storage, manifestURI)
 		if fetchErr != nil {
 			_ = w.reportFailure(context.Background(), assignment, fmt.Sprintf("manifest fetch: %v", fetchErr))
 			return fetchErr
 		}
+		log.Printf("[worker] manifest resolved task=%s locations=%d", assignment.TaskId, len(locs))
 		assignment.DataLocations = locs
 	}
 
