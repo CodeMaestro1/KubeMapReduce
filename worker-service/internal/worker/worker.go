@@ -16,6 +16,11 @@ import (
 	"kubemapreduce/worker-service/internal/config"
 )
 
+// finalizationRPCTimeout bounds terminal RPCs (TaskComplete / TaskFailed) so a
+// slow or unreachable Manager cannot block worker shutdown indefinitely.
+// See issue #110.
+const finalizationRPCTimeout = 5 * time.Second
+
 // Worker executes a single MapReduce task on behalf of the Manager.
 type Worker struct {
 	cfg     *config.Config
@@ -101,8 +106,11 @@ func (w *Worker) Run(ctx context.Context) error {
 		err = fmt.Errorf("unknown task type: %v", assignment.Type)
 	}
 
-	// Use a fresh context for the final RPC (taskCtx may already be cancelled).
-	reportCtx := context.Background()
+	// Use a fresh, bounded context for terminal RPCs. taskCtx may already be
+	// cancelled, and an unbounded background context would let a slow or
+	// unreachable Manager hang the worker forever (issue #110).
+	reportCtx, reportCancel := context.WithTimeout(context.Background(), finalizationRPCTimeout)
+	defer reportCancel()
 
 	if reason, ok := terminationReason(terminated, ctx, taskCtx); ok {
 		reporter.start(w, assignment, reason)
@@ -175,9 +183,17 @@ func (w *Worker) heartbeatLoop(ctx context.Context, a *pb.TaskAssignment, taskCa
 	}
 }
 
-// reportFailure calls TaskFailed and logs any resulting error.
+// reportFailure calls TaskFailed and logs any resulting error. If the supplied
+// context has no deadline (e.g. context.Background()), a fallback timeout is
+// enforced so the RPC cannot hang forever when the Manager is unreachable
+// (issue #110).
 func (w *Worker) reportFailure(ctx context.Context, a *pb.TaskAssignment, reason string) error {
 	log.Printf("[worker] reporting failure: %s", reason)
+	if _, ok := ctx.Deadline(); !ok {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, finalizationRPCTimeout)
+		defer cancel()
+	}
 	_, err := w.client.TaskFailed(ctx, &pb.TaskFailedRequest{
 		TaskId:       a.TaskId,
 		AttemptId:    a.AttemptId,
@@ -197,7 +213,7 @@ func (r *failureReporter) start(w *Worker, a *pb.TaskAssignment, reason string) 
 		r.wg.Add(1)
 		go func() {
 			defer r.wg.Done()
-			reportCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			reportCtx, cancel := context.WithTimeout(context.Background(), finalizationRPCTimeout)
 			defer cancel()
 			_ = w.reportFailure(reportCtx, a, reason)
 		}()
