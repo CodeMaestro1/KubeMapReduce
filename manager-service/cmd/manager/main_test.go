@@ -7,7 +7,9 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
+	"time"
 
 	"google.golang.org/grpc/metadata"
 
@@ -48,6 +50,54 @@ func TestResolveReplicaIndexFallsBackToHostname(t *testing.T) {
 	t.Setenv("STATEFULSET_ORDINAL", "invalid")
 	if got := resolveReplicaIndex("manager-12"); got != 12 {
 		t.Fatalf("resolveReplicaIndex should fall back to hostname, got %d", got)
+	}
+}
+
+type fakeReaperScheduler struct {
+	mu    sync.Mutex
+	calls int
+	hits  chan struct{}
+}
+
+func (f *fakeReaperScheduler) FailStaleTasks(context.Context) (int, error) {
+	f.mu.Lock()
+	f.calls++
+	f.mu.Unlock()
+	select {
+	case f.hits <- struct{}{}:
+	default:
+	}
+	return 0, nil
+}
+
+func (f *fakeReaperScheduler) callCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.calls
+}
+
+func TestDefaultReaperInterval_UsesHalfLeaseTTL(t *testing.T) {
+	if got := defaultReaperInterval(30); got != 15*time.Second {
+		t.Fatalf("defaultReaperInterval(30) = %s, want %s", got, 15*time.Second)
+	}
+}
+
+func TestStartReaper_InvokesFailStaleTasksPeriodically(t *testing.T) {
+	fake := &fakeReaperScheduler{hits: make(chan struct{}, 8)}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	startReaper(ctx, fake, 15*time.Millisecond)
+
+	deadline := time.After(400 * time.Millisecond)
+	seen := 0
+	for seen < 2 {
+		select {
+		case <-fake.hits:
+			seen++
+		case <-deadline:
+			t.Fatalf("expected at least 2 reaper invocations, got %d", fake.callCount())
+		}
 	}
 }
 
