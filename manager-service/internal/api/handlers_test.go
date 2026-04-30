@@ -442,7 +442,7 @@ func TestBuildScheduleRequest_SplitsLargeInputAndHashesEachSplit(t *testing.T) {
 	t.Cleanup(func() { defaultTargetSplitSizeBytes = origSplitSize })
 
 	body := models.JobSubmissionRequest{
-		Filename:       "input.jsonl",
+		Filename:      "input.jsonl",
 		InputChecksum: "sha256-input-whole",
 		Mapper: models.FunctionSpec{
 			Artifact:   "mapper.py",
@@ -1804,7 +1804,7 @@ func TestBuildScheduleRequest_ComputesChecksum(t *testing.T) {
 	}
 
 	req := models.JobSubmissionRequest{
-		Filename:       "large-file.bin",
+		Filename:      "large-file.bin",
 		InputChecksum: "cli-input-sha256",
 		Mapper: models.FunctionSpec{
 			Artifact: "mapper.py",
