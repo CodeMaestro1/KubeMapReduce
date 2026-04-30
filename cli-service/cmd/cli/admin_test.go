@@ -26,11 +26,11 @@ func TestRunAdminConfigureNodes_SendsPutToCorrectEndpoint(t *testing.T) {
 		if err := json.Unmarshal(body, &m); err != nil {
 			t.Fatalf("body is not valid JSON: %v", err)
 		}
-		if _, ok := m["maxConcurrentPods"]; !ok {
-			t.Fatalf("expected maxConcurrentPods in payload, got %v", m)
+		if _, ok := m["maxPods"]; !ok {
+			t.Fatalf("expected maxPods in payload, got %v", m)
 		}
 		return &http.Response{
-			StatusCode: http.StatusAccepted,
+			StatusCode: http.StatusOK,
 			Body:       io.NopCloser(strings.NewReader(`{"status":"accepted"}`)),
 		}, nil
 	}
@@ -70,6 +70,12 @@ func TestRunAdminConfigureNodes_MissingMaxPodsReturnsError(t *testing.T) {
 func TestConfigureNodesStatusError_AcceptedIsNil(t *testing.T) {
 	if err := configureNodesStatusError(http.StatusAccepted, `{"status":"accepted"}`); err != nil {
 		t.Fatalf("expected nil error for accepted response, got %v", err)
+	}
+}
+
+func TestConfigureNodesStatusError_OKIsNil(t *testing.T) {
+	if err := configureNodesStatusError(http.StatusOK, `{"status":"accepted"}`); err != nil {
+		t.Fatalf("expected nil error for ok response, got %v", err)
 	}
 }
 

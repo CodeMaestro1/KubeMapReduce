@@ -174,9 +174,9 @@ func runAdminConfigureNodes(args []string, doAuthReq func(method, url string, be
 	}
 
 	payload, err := json.Marshal(map[string]interface{}{
-		"maxConcurrentPods": *maxPods,
-		"cpuLimit":          strings.TrimSpace(*cpuLimit),
-		"memoryLimit":       strings.TrimSpace(*memoryLimit),
+		"maxPods":     *maxPods,
+		"cpuLimit":    strings.TrimSpace(*cpuLimit),
+		"memoryLimit": strings.TrimSpace(*memoryLimit),
 	})
 	if err != nil {
 		return fmt.Errorf("failed to build configure-nodes request: %v", err)
@@ -204,11 +204,11 @@ func runAdminConfigureNodes(args []string, doAuthReq func(method, url string, be
 // configureNodesStatusError evaluates the HTTP response status from a configure-nodes request
 // and returns an appropriate error, or nil if the response was successful.
 //
-// HTTP 202 (Accepted) is treated as a success and returns nil.
+// HTTP 200 (OK) and 202 (Accepted) are treated as success and return nil.
 // HTTP 501 (Not Implemented) returns a helpful error mentioning backend integration status.
 // Other HTTP statuses return an error including the status code and response body.
 func configureNodesStatusError(status int, body string) error {
-	if status == http.StatusAccepted {
+	if status == http.StatusOK || status == http.StatusAccepted {
 		return nil
 	}
 
