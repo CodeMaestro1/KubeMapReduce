@@ -20,8 +20,12 @@ func buildCmd(ctx context.Context, codePath, runtimeEnv string) (*exec.Cmd, erro
 		return exec.CommandContext(ctx, "python3", codePath), nil
 	case rt == "java" || ext == ".jar":
 		return exec.CommandContext(ctx, "java", "-jar", codePath), nil
+	case rt == "c" || rt == "cpp":
+		// Compiled binary: downloadCode already stripped the extension and set
+		// execute permissions; run the binary directly.
+		return exec.CommandContext(ctx, codePath), nil
 	default:
-		// Pre-compiled binary (C, C++, or arbitrary executable)
+		// Pre-compiled binary or arbitrary executable.
 		return exec.CommandContext(ctx, codePath), nil
 	}
 }
