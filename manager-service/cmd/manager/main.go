@@ -135,33 +135,7 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	scheduler.StartCleanupReconciler(ctx, 15*time.Second)
-
-	go func() {
-		ticker := time.NewTicker(10 * time.Second)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-ticker.C:
-				reaperCtx, reaperCancel := context.WithTimeout(ctx, 30*time.Second)
-				cycleStart := time.Now()
-				recovered, err := scheduler.FailStaleTasks(reaperCtx)
-				reaperCancel()
-				if m := observability.DefaultMetrics(); m != nil {
-					m.SchedulerCycleSeconds.Observe(time.Since(cycleStart).Seconds())
-					if recovered > 0 {
-						m.ReaperRecovered.Add(float64(recovered))
-					}
-				}
-				if err != nil {
-					slog.Error("reaper cycle failed", slog.Any("err", err))
-				} else if recovered > 0 {
-					slog.Info("reaper recovered stale tasks", slog.Int("recovered", recovered))
-				}
-			}
-		}
-	}()
+	startReaper(ctx, scheduler, defaultReaperInterval(cfg.LeaseTTL))
 
 	// 4. Start HTTP Server for Health & Readiness
 	mux := setupInternalMux(scheduler, db, cfg)
@@ -371,6 +345,11 @@ func emitWorkerRPCSecurityWarnings(cfg *config.Config) {
 	}
 }
 
+// ReaperScheduler defines the scheduler method used by the active reaper loop.
+type ReaperScheduler interface {
+	FailStaleTasks(ctx context.Context) (int, error)
+}
+
 // JobScheduler defines the interface for scheduler operations used by HTTP handlers.
 type JobScheduler interface {
 	CancelJob(ctx context.Context, jobID string) error
@@ -381,6 +360,53 @@ type JobScheduler interface {
 // Pingable abstracts the database ping method.
 type Pingable interface {
 	PingContext(ctx context.Context) error
+}
+
+func defaultReaperInterval(leaseTTLSeconds int) time.Duration {
+	if leaseTTLSeconds <= 0 {
+		return 15 * time.Second
+	}
+	interval := (time.Duration(leaseTTLSeconds) * time.Second) / 2
+	if interval < time.Second {
+		return time.Second
+	}
+	return interval
+}
+
+func startReaper(ctx context.Context, scheduler ReaperScheduler, interval time.Duration) {
+	if scheduler == nil {
+		return
+	}
+	if interval <= 0 {
+		interval = 15 * time.Second
+	}
+
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				reaperCtx, reaperCancel := context.WithTimeout(ctx, 30*time.Second)
+				cycleStart := time.Now()
+				recovered, err := scheduler.FailStaleTasks(reaperCtx)
+				reaperCancel()
+				if m := observability.DefaultMetrics(); m != nil {
+					m.SchedulerCycleSeconds.Observe(time.Since(cycleStart).Seconds())
+					if recovered > 0 {
+						m.ReaperRecovered.Add(float64(recovered))
+					}
+				}
+				if err != nil {
+					slog.Error("reaper cycle failed", slog.Any("err", err))
+				} else if recovered > 0 {
+					slog.Info("reaper recovered stale tasks", slog.Int("recovered", recovered))
+				}
+			}
+		}
+	}()
 }
 
 func setupInternalMux(scheduler JobScheduler, db Pingable, cfg *config.Config) *http.ServeMux {
