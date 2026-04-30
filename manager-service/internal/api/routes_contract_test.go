@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -82,5 +83,50 @@ func TestDeleteJobContract_Returns204(t *testing.T) {
 	if delRec.Body.Len() != 0 {
 		t.Fatalf("contract violation: DELETE /api/v1/jobs/{job_id} must return empty body, got %q",
 			delRec.Body.String())
+	}
+}
+
+// TestPresignRoutes_Contract verifies route paths and method contracts for
+// pre-signed URL endpoints per the UI Service API design.
+func TestPresignRoutes_Contract(t *testing.T) {
+	mux := http.NewServeMux()
+	store := NewMemoryJobStore(24*time.Hour, 10000, nil)
+	h := NewHandlers(nil, store, nil, "", "")
+	v := new(auth.JWTValidator)
+	RegisterRoutes(mux, h, v)
+
+	newRoutes := []struct {
+		method string
+		path   string
+		body   string
+	}{
+		{http.MethodPost, "/api/v1/uploads/presigned", `{"key":"temp/user/input.jsonl"}`},
+		{http.MethodPost, "/api/v1/downloads/presigned", `{"key":"outputs/11111111-1111-1111-1111-111111111111/part-0.json"}`},
+	}
+
+	for _, tc := range newRoutes {
+		req := httptest.NewRequest(tc.method, tc.path, strings.NewReader(tc.body))
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, req)
+		if rec.Code == http.StatusNotFound {
+			t.Fatalf("route contract violated: %s %s returned 404", tc.method, tc.path)
+		}
+	}
+
+	oldRoutes := []struct {
+		method string
+		path   string
+	}{
+		{http.MethodPost, "/api/v1/files/presign-upload"},
+		{http.MethodGet, "/api/v1/files/presign-download"},
+	}
+
+	for _, tc := range oldRoutes {
+		req := httptest.NewRequest(tc.method, tc.path, nil)
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, req)
+		if rec.Code != http.StatusNotFound {
+			t.Fatalf("legacy route should not be registered: %s %s returned %d", tc.method, tc.path, rec.Code)
+		}
 	}
 }

@@ -79,7 +79,7 @@ func userIDFromToken(token string) string {
 // local file to MinIO, and returns the MinIO URI and SHA-256 checksum.
 func uploadFileToStorage(token, serverURL, bucket, key, localPath string) (minioURI, checksum string, err error) {
 	presignBody, _ := json.Marshal(map[string]string{"bucket": bucket, "key": key})
-	resp, err := doAuthRequest(http.MethodPost, serverURL+"/api/v1/files/presign-upload", token, presignBody)
+	resp, err := doAuthRequest(http.MethodPost, serverURL+"/api/v1/uploads/presigned", token, presignBody)
 	if err != nil {
 		return "", "", fmt.Errorf("presign %q: %w", localPath, err)
 	}
