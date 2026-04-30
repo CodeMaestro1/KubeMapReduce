@@ -123,12 +123,22 @@ func downloadCode(ctx context.Context, storage objectStorage, codeURI, tempDir s
 			os.Remove(codePath)
 			return "", func() {}, compileErr
 		}
+		if chmodErr := os.Chmod(outPath, 0o755); chmodErr != nil {
+			os.Remove(codePath)
+			os.Remove(outPath)
+			return "", func() {}, fmt.Errorf("chmod compiled binary: %w", chmodErr)
+		}
 		return outPath, func() { os.Remove(codePath); os.Remove(outPath) }, nil
 	case ".cpp":
 		outPath := strings.TrimSuffix(codePath, ext)
 		if compileErr := compileCpp(codePath, outPath); compileErr != nil {
 			os.Remove(codePath)
 			return "", func() {}, compileErr
+		}
+		if chmodErr := os.Chmod(outPath, 0o755); chmodErr != nil {
+			os.Remove(codePath)
+			os.Remove(outPath)
+			return "", func() {}, fmt.Errorf("chmod compiled binary: %w", chmodErr)
 		}
 		return outPath, func() { os.Remove(codePath); os.Remove(outPath) }, nil
 	default:
