@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -175,6 +176,9 @@ func TestCmdJobsSubmit_ValidReducersCallsSubmit(t *testing.T) {
 		if !strings.Contains(string(body), `"inputChecksum"`) {
 			t.Fatalf("expected inputChecksum field in payload, got %s", string(body))
 		}
+		if !strings.Contains(string(body), `"inputChecksums":["deadbeef"]`) {
+			t.Fatalf("expected inputChecksums field in payload, got %s", string(body))
+		}
 
 		return &http.Response{StatusCode: http.StatusAccepted, Body: io.NopCloser(bytes.NewBufferString(`{"jobId":"abc"}`))}
 	}
@@ -239,6 +243,12 @@ func TestCmdJobsSubmit_UploadFlow(t *testing.T) {
 		}
 		if payload.InputChecksum == "" {
 			t.Error("inputChecksum must be set in payload")
+		}
+		if len(payload.InputChecksums) != 1 || payload.InputChecksums[0] == "" {
+			t.Fatalf("inputChecksums must contain one checksum, got %#v", payload.InputChecksums)
+		}
+		if payload.InputChecksums[0] != payload.InputChecksum {
+			t.Fatalf("inputChecksums[0]=%q must equal inputChecksum=%q", payload.InputChecksums[0], payload.InputChecksum)
 		}
 		// Mapper artifact must embed user ID from token sub claim.
 		if !strings.Contains(payload.Mapper.Artifact, "user-42") {
@@ -362,6 +372,10 @@ func TestUploadFileToStorage_PresignAndPUT(t *testing.T) {
 	}
 	if checksum == "" {
 		t.Error("checksum must not be empty")
+	}
+	wantChecksum := fmt.Sprintf("%x", sha256.Sum256(content))
+	if checksum != wantChecksum {
+		t.Errorf("checksum = %q, want %q", checksum, wantChecksum)
 	}
 	if !putReceived {
 		t.Error("PUT request not received by storage server")

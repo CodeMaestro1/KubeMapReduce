@@ -275,7 +275,7 @@ func TestHandleJobsSubmit_SchedulesJobAfterPersist(t *testing.T) {
 	h := newTestHandlers()
 	h.managerAddr = managerSrv.Listener.Addr().String()
 
-	body := `{"filename":"input.jsonl","mapper":{"language":"python","artifact":"mapper.py","entrypoint":"map","interface":"map(key,value)->[]KeyValue"},"reducer":{"language":"python","artifact":"reducer.py","entrypoint":"reduce","interface":"reduce(key,values)->Value"},"reducers":2}`
+	body := `{"filename":"input.jsonl","inputChecksum":"deadbeef","mapper":{"language":"python","artifact":"mapper.py","entrypoint":"map","interface":"map(key,value)->[]KeyValue"},"reducer":{"language":"python","artifact":"reducer.py","entrypoint":"reduce","interface":"reduce(key,values)->Value"},"reducers":2}`
 	req := authedReq(http.MethodPost, "/api/v1/jobs", body)
 	rec := httptest.NewRecorder()
 	h.HandleJobsSubmit(rec, req)
@@ -312,6 +312,9 @@ func TestHandleJobsSubmit_SchedulesJobAfterPersist(t *testing.T) {
 	}
 	if len(capturedReq.Tasks) != 3 {
 		t.Errorf("expected 3 tasks (1 Map + 2 Reduce), got %d", len(capturedReq.Tasks))
+	}
+	if capturedReq.InputChecksum != "deadbeef" {
+		t.Errorf("expected InputChecksum deadbeef, got %q", capturedReq.InputChecksum)
 	}
 }
 
@@ -1858,6 +1861,34 @@ func (m *mockScheduleObjectClient) GetObject(ctx context.Context, bucketName, ob
 
 func (m *mockScheduleObjectClient) ListObjects(context.Context, string, string, bool) ([]scheduleObjectInfo, error) {
 	return nil, errors.New("not implemented")
+}
+
+func TestBuildScheduleRequest_ForwardsInputChecksum(t *testing.T) {
+	req := models.JobSubmissionRequest{
+		Filename:      "input.jsonl",
+		InputChecksum: "sha256-abc123",
+		Mapper: models.FunctionSpec{
+			Artifact:   "m.py",
+			Entrypoint: "map",
+			Interface:  "map(key,value)->[]KeyValue",
+			Language:   "python",
+		},
+		Reducer: models.FunctionSpec{
+			Artifact:   "r.py",
+			Entrypoint: "reduce",
+			Interface:  "reduce(key,values)->Value",
+			Language:   "python",
+		},
+		Reducers: 1,
+	}
+	schedReq := buildScheduleRequest(context.Background(), nil, "job-1", "user-1", req,
+		"s3://mapreduce-inputs/inputs/job-1/input.jsonl",
+		"s3://mapreduce-inputs/inputs/job-1/m.py",
+		"s3://mapreduce-inputs/inputs/job-1/r.py",
+		"")
+	if schedReq.InputChecksum != "sha256-abc123" {
+		t.Fatalf("InputChecksum = %q, want %q", schedReq.InputChecksum, "sha256-abc123")
+	}
 }
 
 func TestBuildInputSplits_ZeroSizeObject(t *testing.T) {

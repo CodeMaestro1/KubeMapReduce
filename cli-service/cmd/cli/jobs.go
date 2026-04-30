@@ -28,12 +28,13 @@ type cliJobFuncSpec struct {
 }
 
 type cliJobPayload struct {
-	Filename      string          `json:"filename"`
-	InputChecksum string          `json:"inputChecksum,omitempty"`
-	Mapper        cliJobFuncSpec  `json:"mapper"`
-	Reducer       cliJobFuncSpec  `json:"reducer"`
-	Combiner      *cliJobFuncSpec `json:"combiner,omitempty"`
-	Reducers      int             `json:"reducers,omitempty"`
+	Filename       string          `json:"filename"`
+	InputChecksum  string          `json:"inputChecksum,omitempty"`
+	InputChecksums []string        `json:"inputChecksums,omitempty"`
+	Mapper         cliJobFuncSpec  `json:"mapper"`
+	Reducer        cliJobFuncSpec  `json:"reducer"`
+	Combiner       *cliJobFuncSpec `json:"combiner,omitempty"`
+	Reducers       int             `json:"reducers,omitempty"`
 }
 
 var jobsSubmitGetValidToken = getValidToken
@@ -217,8 +218,9 @@ func cmdJobsSubmit(args []string) {
 		}
 
 		payload := cliJobPayload{
-			Filename:      filepath.Base(*inputFile),
-			InputChecksum: inputChecksum,
+			Filename:       filepath.Base(*inputFile),
+			InputChecksum:  inputChecksum,
+			InputChecksums: []string{inputChecksum},
 			Mapper: cliJobFuncSpec{
 				Language:   inferLanguage(*mapperPath),
 				Artifact:   mapperURI,
