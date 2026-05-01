@@ -167,12 +167,12 @@ int main(){return 0;}
 `
 	tempDir := t.TempDir()
 	store := &staticStorage{
-		bucket:  "code",
+		bucket:  "mapreduce-inputs",
 		key:     "mapper.c",
 		payload: []byte(src),
 	}
 
-	outPath, cleanup, err := downloadCode(context.Background(), store, "s3://code/mapper.c", tempDir)
+	outPath, cleanup, err := downloadCode(context.Background(), store, "s3://mapreduce-inputs/mapper.c", tempDir)
 	if err != nil {
 		t.Fatalf("downloadCode() error = %v", err)
 	}
@@ -197,12 +197,12 @@ func TestDownloadCode_ChmodCpp(t *testing.T) {
 `
 	tempDir := t.TempDir()
 	store := &staticStorage{
-		bucket:  "code",
+		bucket:  "mapreduce-inputs",
 		key:     "mapper.cpp",
 		payload: []byte(src),
 	}
 
-	outPath, cleanup, err := downloadCode(context.Background(), store, "s3://code/mapper.cpp", tempDir)
+	outPath, cleanup, err := downloadCode(context.Background(), store, "s3://mapreduce-inputs/mapper.cpp", tempDir)
 	if err != nil {
 		t.Fatalf("downloadCode() error = %v", err)
 	}
