@@ -1,17 +1,38 @@
 # KubeMapReduce
 
-Go API with Keycloak authentication, role-based authorization, and a dedicated CLI for authentication, job submission, and user management.
+A distributed MapReduce platform built on Kubernetes. Workers run as K8s Jobs spawned dynamically by the Manager. Includes Keycloak authentication, role-based authorization, MinIO object storage, and a CLI for job submission and user management.
 
 ## Prerequisites
 
-- Go 1.25+
+- Go 1.26+
 - Docker + Docker Compose
+- `kubectl` (for Kubernetes deployment)
 
-## Local Development
+## Local Development (infrastructure only)
+
+The `docker-compose.yml` starts Keycloak, Postgres, MinIO, the API server, and the Manager. It does **not** run real worker jobs — the Manager spawns workers as Kubernetes Jobs and requires an in-cluster environment for actual job execution. Use this setup to develop and test the API, auth, and job submission flows.
+
+Add these lines to `infra/docker/.env` before starting (the security hardening commit requires them):
+
+```env
+KEYCLOAK_ADMIN_USERNAME=admin
+KEYCLOAK_ADMIN_PASSWORD=admin
+MANAGER_INTERNAL_API_KEY=local-dev-key
+MANAGER_WORKER_RPC_TOKEN=local-dev-token
+ALLOW_INSECURE_WORKER_RPC=true
+```
+
+Then start the stack:
 
 ```bash
 cd infra/docker
 docker compose up -d
+```
+
+Run DB migrations after the first start:
+
+```bash
+psql postgres://mapreduce:mapreduce@localhost:5432/mapreduce < migrations/0001_initial_schema.sql
 ```
 
 | Service    | URL / Port                          |
@@ -22,22 +43,18 @@ docker compose up -d
 | MinIO S3   | localhost:9000                      |
 | MinIO UI   | http://localhost:9001               |
 
-Run DB migrations after first start:
+## Quick Start (local smoke test)
 
-```bash
-psql postgres://mapreduce:mapreduce@localhost:5432/mapreduce < migrations/0001_initial_schema.sql
-```
+1. Add the missing env vars to `infra/docker/.env` (see Local Development section above).
 
-## Quick Start
-
-1. Start all services:
+2. Start all services:
 
    ```bash
    cd infra/docker
    docker compose up -d
    ```
 
-2. Run setup (bootstraps realm + creates first admin user):
+3. Bootstrap the Keycloak realm and create the first admin user:
 
    ```bash
    go run ./auth-service/cmd/setup \
@@ -49,20 +66,112 @@ psql postgres://mapreduce:mapreduce@localhost:5432/mapreduce < migrations/0001_i
      --role ADMIN
    ```
 
-   Omit `--username` to only bootstrap the realm without creating a user.
+   Omit `--username` to bootstrap the realm only.
 
-3. Run Manager API:
-
-   ```bash
-   go run ./manager-service/cmd/api
-   ```
-
-4. Use the CLI to authenticate and interact with the API:
+4. Verify the stack is healthy and submit a job:
 
    ```bash
-   go run ./cli-service/cmd/cli login
-   go run ./cli-service/cmd/cli jobs submit job.json
+   go run ./cli-service/cmd/cli login --username platform-admin
+   go run ./cli-service/cmd/cli health
+   go run ./cli-service/cmd/cli jobs list
    ```
+
+   A response of `[]` from `jobs list` confirms auth, API, database, and MinIO are all wired up correctly.
+
+## Kubernetes Deployment (full job execution)
+
+Workers run as `batch/v1` Jobs spawned by the Manager at runtime. A real Kubernetes cluster is required to run actual MapReduce jobs.
+
+### Cluster options
+
+- **Lightweight VM + k3s** — a 4 vCPU / 8 GB VM is sufficient. k3s includes containerd, CoreDNS, and a local-path provisioner.
+  ```bash
+  curl -sfL https://get.k3s.io | sh -
+  ```
+- **kind or minikube** — for local machine testing (no cloud required).
+- **Managed K8s** (GKE / EKS / AKS) — zero ops, higher cost.
+
+### Build and push images
+
+The Manager looks for the worker image as `kubemapreduce-worker:latest` (hardcoded in `manager-service/cmd/manager/main.go`). Tag your builds accordingly.
+
+```bash
+docker build -f infra/docker/Dockerfile.manager -t kubemapreduce/manager:latest .
+docker build -f infra/docker/Dockerfile.worker  -t kubemapreduce-worker:latest  .
+docker push kubemapreduce/manager:latest
+docker push kubemapreduce-worker:latest
+```
+
+For k3s without a registry, import images directly:
+
+```bash
+docker save kubemapreduce/manager:latest | sudo k3s ctr images import -
+docker save kubemapreduce-worker:latest  | sudo k3s ctr images import -
+```
+
+### Create secrets
+
+```bash
+kubectl apply -f k8s/00-namespace.yaml
+
+kubectl -n mapreduce create secret generic postgres-creds \
+  --from-literal=POSTGRES_USER=mapreduce \
+  --from-literal=POSTGRES_PASSWORD="$(openssl rand -hex 16)" \
+  --from-literal=POSTGRES_DB=mapreduce
+
+kubectl -n mapreduce create secret generic minio-creds \
+  --from-literal=MINIO_ROOT_USER=mapreduce \
+  --from-literal=MINIO_ROOT_PASSWORD="$(openssl rand -hex 32)" \
+  --from-literal=S3_ACCESS_KEY=mapreduce \
+  --from-literal=S3_SECRET_KEY="$(openssl rand -hex 32)" \
+  --from-literal=S3_ENDPOINT=minio.mapreduce.svc.cluster.local:9000
+
+kubectl -n mapreduce create secret generic manager-secrets \
+  --from-literal=MANAGER_INTERNAL_API_KEY="$(openssl rand -hex 16)" \
+  --from-literal=MANAGER_WORKER_RPC_TOKEN="$(openssl rand -hex 16)"
+
+# TLS cert for gRPC (self-signed for testing)
+openssl req -x509 -newkey rsa:2048 -nodes -days 365 \
+  -keyout tls.key -out tls.crt \
+  -subj "/CN=manager" \
+  -addext "subjectAltName=DNS:*.manager-headless.mapreduce.svc.cluster.local"
+kubectl -n mapreduce create secret tls grpc-tls --cert=tls.crt --key=tls.key
+```
+
+### Deploy
+
+```bash
+# Bake migrations into a ConfigMap
+kubectl -n mapreduce create configmap postgres-init \
+  --from-file=migrations/ --dry-run=client -o yaml | kubectl apply -f -
+
+# Apply all manifests
+kubectl apply -k k8s/
+
+# Wait for rollouts
+kubectl -n mapreduce rollout status statefulset/postgres
+kubectl -n mapreduce rollout status statefulset/minio
+kubectl -n mapreduce rollout status deployment/keycloak
+kubectl -n mapreduce rollout status statefulset/manager
+```
+
+### Submit a job
+
+```bash
+# Point the CLI at the cluster API
+export API_URL=http://<cluster-ip-or-loadbalancer>:8081
+
+go run ./cli-service/cmd/cli login --username platform-admin
+go run ./cli-service/cmd/cli jobs submit \
+  --mapper  mapper.py \
+  --reducer reducer.py \
+  --input   input.jsonl \
+  --reducers 1
+
+go run ./cli-service/cmd/cli jobs list
+go run ./cli-service/cmd/cli jobs status   --id <job-id>
+go run ./cli-service/cmd/cli jobs download --id <job-id>
+```
 
 ## Repository Layout
 
@@ -113,16 +222,21 @@ only needs a valid JWT with the `ADMIN` role.
 kubemapreduce <command> [flags]
 
 Commands:
-  login                  Authenticate with Keycloak and store tokens
-  logout                 Clear stored authentication tokens
-  whoami                 Show the currently logged-in user
-  health                 Check API server health
-  jobs submit <file>     Submit a MapReduce job specification (use "-" for stdin)
-  admin create-user      Create a user in Keycloak (ADMIN)
-  admin delete-user      Delete a user from Keycloak (ADMIN)
-  admin worker-config    Update worker configuration (ADMIN)
-  token inspect          Show raw JWT claims for the stored access token
-  help                   Show this help message
+  login                         Authenticate with Keycloak and store tokens
+  logout                        Clear stored authentication tokens
+  whoami                        Show the currently logged-in user
+  health                        Check API server health
+  jobs submit                   Upload code/input files and submit a MapReduce job
+  jobs list                     List all submitted jobs
+  jobs status --id <id>         Show the status of a specific job
+  jobs download --id <id>       Download completed job results
+  jobs cancel --id <id>         Cancel a running or submitted job
+  admin create-user             Create a user in Keycloak (ADMIN)
+  admin delete-user             Delete a user from Keycloak (ADMIN)
+  admin worker-config           Update worker configuration (ADMIN)
+  admin configure-nodes         Set per-node resource limits (ADMIN)
+  token inspect                 Show raw JWT claims for the stored access token
+  help                          Show this help message
 ```
 
 ### Login
@@ -139,13 +253,24 @@ You can also pass `--username alice` to skip the username prompt.
 
 ### Submit a Job
 
-> **Note:** Job submission currently validates and stores the job _specification_
-> (metadata) only. No input data or code artifacts are transferred to the server.
-> File transfer will be added in a future release.
+The CLI uploads mapper, reducer, and input files to MinIO via pre-signed PUT URLs, then submits the job to the API. A Kubernetes cluster is required for the workers to actually execute.
 
 ```bash
-go run ./cli-service/cmd/cli jobs submit job.json
+go run ./cli-service/cmd/cli jobs submit \
+  --mapper  mapper.py \
+  --reducer reducer.py \
+  --input   input.jsonl \
+  --reducers 1
+
+# Check status
+go run ./cli-service/cmd/cli jobs list
+go run ./cli-service/cmd/cli jobs status --id <job-id>
+
+# Download results when completed
+go run ./cli-service/cmd/cli jobs download --id <job-id> --output ./results/
 ```
+
+Supported code languages: `.py` (Python), `.java`/`.jar` (Java), `.c` (C), `.cpp`/`.cc`/`.cxx` (C++).
 
 ### Admin Commands
 
@@ -209,26 +334,37 @@ Notes:
 
 ## Configuration
 
-Environment variables used by the API server (defaults shown):
+**Manager / API server** (defaults shown):
 
-- `KEYCLOAK_BASE_URL` (`http://localhost:8080`)
-- `KEYCLOAK_REALM` (`mapreduce`)
-- `KEYCLOAK_JWKS_URL` (`http://localhost:8080/realms/mapreduce/protocol/openid-connect/certs`)
-- `KEYCLOAK_ISSUER` (`http://localhost:8080/realms/mapreduce`)
-- `KEYCLOAK_AUDIENCE` (`mapreduce-api`)
-- `KEYCLOAK_ADMIN_USERNAME` (**required**) — Keycloak admin user for proxied user management
-- `KEYCLOAK_ADMIN_PASSWORD` (**required**) — Keycloak admin password
-- `SERVER_ADDR` (`:8081`)
+| Variable | Default | Notes |
+|---|---|---|
+| `KEYCLOAK_BASE_URL` | `http://localhost:8080` | |
+| `KEYCLOAK_REALM` | `mapreduce` | |
+| `KEYCLOAK_AUDIENCE` | `mapreduce-api` | |
+| `KEYCLOAK_ADMIN_USERNAME` | — | **Required** — used for proxied user management |
+| `KEYCLOAK_ADMIN_PASSWORD` | — | **Required** |
+| `SERVER_ADDR` | `:8081` | |
+| `GRPC_ADDR` | `:50051` | |
+| `DATABASE_DSN` | — | Postgres connection string |
+| `MINIO_ENDPOINT` | — | e.g. `minio:9000` |
+| `MINIO_ACCESS_KEY` | — | |
+| `MINIO_SECRET_KEY` | — | |
+| `MANAGER_INTERNAL_API_KEY` | — | Internal API auth token |
+| `MANAGER_WORKER_RPC_TOKEN` | — | Shared secret for worker→manager gRPC |
+| `GRPC_TLS_CERT_FILE` | — | Path to TLS cert; if set, `GRPC_TLS_KEY_FILE` also required |
+| `GRPC_TLS_KEY_FILE` | — | Path to TLS key |
+| `ALLOW_INSECURE_WORKER_RPC` | `false` | Set `true` for local dev without TLS or a token |
 
-The API fails fast during startup if either `KEYCLOAK_ADMIN_USERNAME` or
-`KEYCLOAK_ADMIN_PASSWORD` is missing or blank.
+The manager refuses to start without either a `MANAGER_WORKER_RPC_TOKEN`, a TLS cert pair, or `ALLOW_INSECURE_WORKER_RPC=true`.
 
-Environment variables used by the CLI:
+**CLI**:
 
-- `API_URL` (`http://localhost:8081`)
-- `KEYCLOAK_BASE_URL` (`http://localhost:8080`)
-- `KEYCLOAK_REALM` (`mapreduce`)
-- `KEYCLOAK_AUDIENCE` (`mapreduce-api`)
+| Variable | Default |
+|---|---|
+| `API_URL` | `http://localhost:8081` |
+| `KEYCLOAK_BASE_URL` | `http://localhost:8080` |
+| `KEYCLOAK_REALM` | `mapreduce` |
+| `KEYCLOAK_AUDIENCE` | `mapreduce-api` |
 
 ## Token Storage
 
@@ -263,21 +399,24 @@ the credentials file for future runs.
 
 ## API Endpoints
 
-| Method   | Path                      | Auth              | Description                                  |
-| -------- | ------------------------- | ----------------- | -------------------------------------------- |
-| `GET`    | `/`                       | None              | API info (JSON)                              |
-| `GET`    | `/health`                 | None              | Liveness check                               |
-| `POST`   | `/jobs`                   | `USER` or `ADMIN` | Submit a MapReduce job spec (metadata only)  |
-| `PUT`    | `/admin/workers/config`   | `ADMIN`           | Update worker configuration                  |
-| `POST`   | `/admin/users`            | `ADMIN`           | Create a user in Keycloak                    |
-| `DELETE` | `/admin/users/{username}` | `ADMIN`           | Delete a user from Keycloak (204 No Content) |
+All protected endpoints require a `Authorization: Bearer <token>` header.
 
-The `DELETE /admin/users/{username}` endpoint returns **204 No Content** with no
-response body. It does not require a request body either.
+| Method   | Path                           | Auth              | Description                            |
+| -------- | ------------------------------ | ----------------- | -------------------------------------- |
+| `GET`    | `/healthz`                     | None              | Liveness check                         |
+| `GET`    | `/readyz`                      | None              | Readiness check                        |
+| `POST`   | `/api/v1/jobs`                 | `USER` or `ADMIN` | Submit a MapReduce job                 |
+| `GET`    | `/api/v1/jobs`                 | `USER` or `ADMIN` | List all jobs                          |
+| `GET`    | `/api/v1/jobs/{id}`            | `USER` or `ADMIN` | Get job status                         |
+| `DELETE` | `/api/v1/jobs/{id}`            | `USER` or `ADMIN` | Cancel a job (204 No Content)          |
+| `POST`   | `/api/v1/uploads/presigned`    | `USER` or `ADMIN` | Get pre-signed PUT URL for file upload |
+| `POST`   | `/api/v1/downloads/presigned`  | `USER` or `ADMIN` | Get pre-signed GET URLs for results    |
+| `POST`   | `/admin/users`                 | `ADMIN`           | Create a user in Keycloak              |
+| `DELETE` | `/admin/users/{username}`      | `ADMIN`           | Delete a user from Keycloak            |
+| `PUT`    | `/admin/workers/config`        | `ADMIN`           | Update worker configuration            |
+| `PUT`    | `/admin/nodes/config`          | `ADMIN`           | Set per-node resource limits           |
 
-Some HTTP clients and proxies do not fully support bodies on `DELETE` requests, so the username is supplied in the path instead.
-
-All protected endpoints require a Bearer token from Keycloak.
+`DELETE /admin/users/{username}` returns **204 No Content** with no body. The username is in the path because some HTTP clients and proxies do not support bodies on `DELETE` requests.
 
 ## E2E Failure Validation (INF-419)
 
