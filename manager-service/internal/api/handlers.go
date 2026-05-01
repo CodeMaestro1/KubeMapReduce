@@ -385,29 +385,18 @@ func (h *Handlers) HandleJobsGet(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// HandleJobsDownload provides access to the final results of a completed job.
-//
-// Note: This endpoint is currently a placeholder and returns 501 Not Implemented,
-// as the result aggregation and streaming logic from shared storage is
-// pending backend integration.
-func (h *Handlers) HandleJobsDownload(w http.ResponseWriter, r *http.Request) {
-	jobID := r.PathValue("job_id")
-	if jobID == "" {
-		httputil.WriteErrorJSON(w, http.StatusBadRequest, "job id required")
-		return
-	}
+// handleJobBatchPresign generates presigned download URLs for all output files
+// of a completed job and writes {jobId, urls:[...]} to w.
+func (h *Handlers) handleJobBatchPresign(w http.ResponseWriter, r *http.Request, jobID, userID string) {
 	if _, err := uuid.Parse(jobID); err != nil {
 		httputil.WriteErrorJSON(w, http.StatusBadRequest, "invalid job id")
 		return
 	}
 
-	userID, err := currentRequestUserID(r)
-	if err != nil {
-		httputil.WriteErrorJSON(w, http.StatusForbidden, "forbidden: authenticated subject required")
-		return
-	}
-
-	var rec *JobRecord
+	var (
+		rec *JobRecord
+		err error
+	)
 	if auth.HasRole(r, "ADMIN") {
 		rec, err = h.store.GetAnyJob(r.Context(), jobID)
 	} else {
@@ -1262,11 +1251,6 @@ func (h *Handlers) HandlePresignDownload(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	if h.minioClient == nil {
-		httputil.WriteErrorJSON(w, http.StatusServiceUnavailable, "object storage not configured")
-		return
-	}
-
 	userID, err := currentRequestUserID(r)
 	if err != nil || userID == "" {
 		httputil.WriteErrorJSON(w, http.StatusForbidden, "forbidden: authenticated subject required")
@@ -1275,6 +1259,21 @@ func (h *Handlers) HandlePresignDownload(w http.ResponseWriter, r *http.Request)
 
 	var req models.PresignRequest
 	if !decodeJSONBody(w, r, &req, "invalid presign request") {
+		return
+	}
+
+	if req.JobID != "" {
+		h.handleJobBatchPresign(w, r, req.JobID, userID)
+		return
+	}
+
+	if req.Key == "" {
+		httputil.WriteErrorJSON(w, http.StatusBadRequest, "key or job_id required")
+		return
+	}
+
+	if h.minioClient == nil {
+		httputil.WriteErrorJSON(w, http.StatusServiceUnavailable, "object storage not configured")
 		return
 	}
 

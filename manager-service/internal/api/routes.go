@@ -36,12 +36,6 @@ func RegisterRoutes(mux *http.ServeMux, h *Handlers, validator *auth.JWTValidato
 		http.HandlerFunc(h.HandleJobsDelete),
 	))
 
-	mux.Handle("GET /api/v1/jobs/{job_id}/results", auth.RequireAnyRole(
-		[]string{"USER", "ADMIN"},
-		validator,
-		http.HandlerFunc(h.HandleJobsDownload),
-	))
-
 	mux.Handle("GET /api/v1/jobs/{job_id}", auth.RequireAnyRole(
 		[]string{"USER", "ADMIN"},
 		validator,

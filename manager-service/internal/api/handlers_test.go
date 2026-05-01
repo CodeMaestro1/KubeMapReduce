@@ -1372,36 +1372,36 @@ func TestHandleJobsGet_InvalidUUID_ReturnsBadRequest(t *testing.T) {
 	}
 }
 
-// ── HandleJobsDownload tests ────────────────────────────────
+// ── HandlePresignDownload batch-job tests ───────────────────
+// POST /api/v1/downloads/presigned with {"job_id":"..."} returns
+// all presigned download URLs for a completed job.
 
-func TestHandleJobsDownload_NotFoundForUnknownJob(t *testing.T) {
+func TestHandlePresignDownload_BatchJob_NotFoundForUnknownJob(t *testing.T) {
 	h := newTestHandlers()
 	unknownJobID := "36f77f7a-cb6d-4d89-b9d6-643f8222f7de"
 
-	req := authedReq(http.MethodGet, "/api/v1/jobs/"+unknownJobID+"/results", "")
-	req.SetPathValue("job_id", unknownJobID)
+	req := authedReq(http.MethodPost, "/api/v1/downloads/presigned", `{"job_id":"`+unknownJobID+`"}`)
 	rec := httptest.NewRecorder()
-	h.HandleJobsDownload(rec, req)
+	h.HandlePresignDownload(rec, req)
 
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("expected %d, got %d", http.StatusNotFound, rec.Code)
 	}
 }
 
-func TestHandleJobsDownload_InvalidUUID_ReturnsBadRequest(t *testing.T) {
+func TestHandlePresignDownload_BatchJob_InvalidUUID_ReturnsBadRequest(t *testing.T) {
 	h := newTestHandlers()
 
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/jobs/not-a-uuid/results", nil)
-	req.SetPathValue("job_id", "not-a-uuid")
+	req := authedReq(http.MethodPost, "/api/v1/downloads/presigned", `{"job_id":"not-a-uuid"}`)
 	rec := httptest.NewRecorder()
-	h.HandleJobsDownload(rec, req)
+	h.HandlePresignDownload(rec, req)
 
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("expected %d, got %d", http.StatusBadRequest, rec.Code)
 	}
 }
 
-func TestHandleJobsDownload_Returns409WhenJobNotCompleted(t *testing.T) {
+func TestHandlePresignDownload_BatchJob_Returns409WhenJobNotCompleted(t *testing.T) {
 	h := newTestHandlers()
 	jobID := uuid.New().String()
 	_ = h.store.CreateJob(context.Background(), JobRecord{
@@ -1411,10 +1411,9 @@ func TestHandleJobsDownload_Returns409WhenJobNotCompleted(t *testing.T) {
 		CreatedAt: time.Now(),
 	})
 
-	req := authedReq(http.MethodGet, "/api/v1/jobs/"+jobID+"/results", "")
-	req.SetPathValue("job_id", jobID)
+	req := authedReq(http.MethodPost, "/api/v1/downloads/presigned", `{"job_id":"`+jobID+`"}`)
 	rec := httptest.NewRecorder()
-	h.HandleJobsDownload(rec, req)
+	h.HandlePresignDownload(rec, req)
 
 	if rec.Code != http.StatusConflict {
 		t.Fatalf("expected %d, got %d: %s", http.StatusConflict, rec.Code, rec.Body.String())
@@ -1424,7 +1423,7 @@ func TestHandleJobsDownload_Returns409WhenJobNotCompleted(t *testing.T) {
 	}
 }
 
-func TestHandleJobsDownload_Returns503WhenMinioNotConfigured(t *testing.T) {
+func TestHandlePresignDownload_BatchJob_Returns503WhenMinioNotConfigured(t *testing.T) {
 	h := newTestHandlers() // minioClient is nil
 	jobID := uuid.New().String()
 	_ = h.store.CreateJob(context.Background(), JobRecord{
@@ -1434,22 +1433,18 @@ func TestHandleJobsDownload_Returns503WhenMinioNotConfigured(t *testing.T) {
 		CreatedAt: time.Now(),
 	})
 
-	req := authedReq(http.MethodGet, "/api/v1/jobs/"+jobID+"/results", "")
-	req.SetPathValue("job_id", jobID)
+	req := authedReq(http.MethodPost, "/api/v1/downloads/presigned", `{"job_id":"`+jobID+`"}`)
 	rec := httptest.NewRecorder()
-	h.HandleJobsDownload(rec, req)
+	h.HandlePresignDownload(rec, req)
 
 	if rec.Code != http.StatusServiceUnavailable {
 		t.Fatalf("expected %d, got %d: %s", http.StatusServiceUnavailable, rec.Code, rec.Body.String())
 	}
 }
 
-func TestHandleJobsDownload_Returns200WithEmptyURLsWhenNoOutputs(t *testing.T) {
-	// MemoryJobStore.GetJobOutputs returns nil (no task outputs in memory store).
-	// With a nil minioClient the handler returns 503 before reaching presign, so
-	// we inject a fake minio-less handler that bypasses presign when urls is empty.
-	// Since we cannot instantiate a real minio.Client without a server, we test
-	// the 503 path here and rely on store_test.go for the output-URI query logic.
+func TestHandlePresignDownload_BatchJob_Returns503WhenNoOutputsAndNoMinio(t *testing.T) {
+	// MemoryJobStore.GetJobOutputs returns nil. With nil minioClient the handler
+	// returns 503 before reaching presign. Relies on store_test.go for DB query logic.
 	h := newTestHandlers()
 	jobID := uuid.New().String()
 	_ = h.store.CreateJob(context.Background(), JobRecord{
@@ -1459,12 +1454,11 @@ func TestHandleJobsDownload_Returns200WithEmptyURLsWhenNoOutputs(t *testing.T) {
 		CreatedAt: time.Now(),
 	})
 
-	req := authedReq(http.MethodGet, "/api/v1/jobs/"+jobID+"/results", "")
-	req.SetPathValue("job_id", jobID)
+	req := authedReq(http.MethodPost, "/api/v1/downloads/presigned", `{"job_id":"`+jobID+`"}`)
 	rec := httptest.NewRecorder()
-	h.HandleJobsDownload(rec, req)
+	h.HandlePresignDownload(rec, req)
 
-	// minioClient is nil → 503; this confirms handler reaches the presign check.
+	// minioClient is nil → 503; confirms handler reaches the presign check.
 	if rec.Code != http.StatusServiceUnavailable {
 		t.Fatalf("expected 503 (no minio configured), got %d: %s", rec.Code, rec.Body.String())
 	}
@@ -1567,14 +1561,14 @@ func TestHandleJobsGet_EmptyPathValue_Returns400(t *testing.T) {
 	}
 }
 
-func TestHandleJobsDownload_EmptyPathValue_Returns400(t *testing.T) {
+func TestHandlePresignDownload_BatchJob_EmptyJobID_Returns400(t *testing.T) {
 	h := newTestHandlers()
 
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/jobs//results", nil)
-	req.SetPathValue("job_id", "")
+	req := authedReq(http.MethodPost, "/api/v1/downloads/presigned", `{"job_id":""}`)
 	rec := httptest.NewRecorder()
-	h.HandleJobsDownload(rec, req)
+	h.HandlePresignDownload(rec, req)
 
+	// Empty job_id falls through to key check; empty key also → 400.
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("expected %d, got %d", http.StatusBadRequest, rec.Code)
 	}
@@ -1583,7 +1577,6 @@ func TestHandleJobsDownload_EmptyPathValue_Returns400(t *testing.T) {
 func TestRouting_TrailingSlashOnJobDetail_Returns404(t *testing.T) {
 	h := newTestHandlers()
 	mux := http.NewServeMux()
-	mux.Handle("GET /jobs/{job_id}/results", http.HandlerFunc(h.HandleJobsDownload))
 	mux.Handle("GET /jobs/{job_id}", http.HandlerFunc(h.HandleJobsGet))
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/jobs/some-id/", nil)
@@ -1598,7 +1591,6 @@ func TestRouting_TrailingSlashOnJobDetail_Returns404(t *testing.T) {
 func TestRouting_UnexpectedSegment_Returns404(t *testing.T) {
 	h := newTestHandlers()
 	mux := http.NewServeMux()
-	mux.Handle("GET /jobs/{job_id}/results", http.HandlerFunc(h.HandleJobsDownload))
 	mux.Handle("GET /jobs/{job_id}", http.HandlerFunc(h.HandleJobsGet))
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/jobs/some-id/unknown", nil)
@@ -1610,25 +1602,9 @@ func TestRouting_UnexpectedSegment_Returns404(t *testing.T) {
 	}
 }
 
-func TestRouting_ResultsTrailingSlash_Returns404(t *testing.T) {
-	h := newTestHandlers()
-	mux := http.NewServeMux()
-	mux.Handle("GET /jobs/{job_id}/results", http.HandlerFunc(h.HandleJobsDownload))
-	mux.Handle("GET /jobs/{job_id}", http.HandlerFunc(h.HandleJobsGet))
-
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/jobs/some-id/results/", nil)
-	rec := httptest.NewRecorder()
-	mux.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusNotFound {
-		t.Fatalf("expected 404 for results trailing slash, got %d", rec.Code)
-	}
-}
-
 func TestRouting_PostToJobDetail_Returns405(t *testing.T) {
 	h := newTestHandlers()
 	mux := http.NewServeMux()
-	mux.Handle("GET /api/v1/jobs/{job_id}/results", http.HandlerFunc(h.HandleJobsDownload))
 	mux.Handle("GET /api/v1/jobs/{job_id}", http.HandlerFunc(h.HandleJobsGet))
 
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/jobs/some-id", nil)

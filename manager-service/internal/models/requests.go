@@ -102,7 +102,10 @@ type DeleteUserRequest struct {
 type PresignRequest struct {
 	// Deprecated: Bucket is ignored. The server selects the bucket.
 	Bucket string `json:"bucket,omitempty"`
-	Key    string `json:"key"`
+	Key    string `json:"key,omitempty"`
+	// JobID, when set, triggers batch presign for all outputs of the completed job.
+	// Mutually exclusive with Key.
+	JobID string `json:"job_id,omitempty"`
 }
 
 // PresignResponse contains the generated presigned URL.

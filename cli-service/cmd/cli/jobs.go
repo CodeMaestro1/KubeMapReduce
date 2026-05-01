@@ -354,7 +354,8 @@ func cmdJobsDownload(args []string) {
 	}
 
 	token, serverURL := getValidToken()
-	resp, err := doAuthRequest(http.MethodGet, serverURL+jobRequestPath(normalizedJobID, "/results"), token, nil)
+	dlBody, _ := json.Marshal(map[string]string{"job_id": normalizedJobID})
+	resp, err := doAuthRequest(http.MethodPost, serverURL+"/api/v1/downloads/presigned", token, dlBody)
 	if err != nil {
 		log.Fatalf("job download failed: %v", err)
 	}
