@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -103,6 +104,9 @@ func TestBuildCmd(t *testing.T) {
 }
 
 func TestRunUserCode(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell scripts not natively executable on Windows")
+	}
 	// Create a temporary executable that echoes stdin to stdout
 	tempDir := t.TempDir()
 	binPath := filepath.Join(tempDir, "echo.sh")
