@@ -38,8 +38,8 @@ func main() {
 	flag.StringVar(&cfg.ClientID, "client-id", getEnv("KEYCLOAK_AUDIENCE", "mapreduce-api"), "OIDC client id")
 	flag.StringVar(&cfg.UIOrigin, "ui-origin", "http://localhost:8081", "UI origin used for redirect URIs and web origins")
 	flag.StringVar(&cfg.AdminUsername, "admin-username", getEnv("KEYCLOAK_ADMIN_USERNAME", "admin"), "Keycloak admin username (master realm)")
-	flag.StringVar(&cfg.AdminPassword, "admin-password", getEnv("KEYCLOAK_ADMIN_PASSWORD", "admin"), "Keycloak admin password (master realm)")
-	flag.BoolVar(&cfg.EnableRegistration, "enable-registration", true, "Enable self-registration in realm")
+	flag.StringVar(&cfg.AdminPassword, "admin-password", getEnv("KEYCLOAK_ADMIN_PASSWORD", ""), "Keycloak admin password (master realm)")
+	flag.BoolVar(&cfg.EnableRegistration, "enable-registration", false, "Enable self-registration in realm")
 
 	// Optional: create initial user
 	username := flag.String("username", "", "Username to create after bootstrap (optional)")
@@ -49,6 +49,10 @@ func main() {
 	role := flag.String("role", "ADMIN", "Role to assign: ADMIN or USER")
 
 	flag.Parse()
+
+	if strings.TrimSpace(cfg.AdminPassword) == "" {
+		log.Fatal("KEYCLOAK_ADMIN_PASSWORD must be set; refusing to bootstrap with an empty admin password")
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()

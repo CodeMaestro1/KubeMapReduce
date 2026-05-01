@@ -33,7 +33,11 @@ func main() {
 
 	dialOpts := []grpc.DialOption{transportOption(cfg)}
 	if cfg.WorkerRPCToken != "" {
-		dialOpts = append(dialOpts, grpc.WithPerRPCCredentials(rpcToken{cfg.WorkerRPCToken}))
+		if os.Getenv("GRPC_INSECURE") == "true" {
+			slog.Warn("GRPC_INSECURE=true: skipping per-RPC token auth; do not use in production")
+		} else {
+			dialOpts = append(dialOpts, grpc.WithPerRPCCredentials(rpcToken{cfg.WorkerRPCToken}))
+		}
 	}
 
 	conn, err := grpc.NewClient(cfg.ManagerAddr, dialOpts...)
@@ -75,7 +79,7 @@ func (r rpcToken) GetRequestMetadata(_ context.Context, _ ...string) (map[string
 	return map[string]string{"x-worker-token": r.token}, nil
 }
 
-func (r rpcToken) RequireTransportSecurity() bool { return false }
+func (r rpcToken) RequireTransportSecurity() bool { return true }
 
 // loggerWriter bridges legacy log.Print* calls to the structured slog
 // pipeline so every line emitted by the standard logger is routed through

@@ -58,7 +58,7 @@ func NewHandlers(adminClient *auth.KeycloakAdminClient, store JobStore, minioCli
 		copier:         newObjectCopier(minioClient),
 		managerAddr:    managerAddr,
 		internalAPIKey: internalAPIKey,
-		httpClient:     http.DefaultClient,
+		httpClient:     &http.Client{Timeout: 10 * time.Second},
 		now:            time.Now,
 	}
 }
@@ -74,7 +74,7 @@ func newHandlersWithOptions(adminClient *auth.KeycloakAdminClient, store JobStor
 		copier:         newObjectCopier(minioClient),
 		managerAddr:    managerAddr,
 		internalAPIKey: internalAPIKey,
-		httpClient:     http.DefaultClient,
+		httpClient:     &http.Client{Timeout: 10 * time.Second},
 		now:            now,
 	}
 }

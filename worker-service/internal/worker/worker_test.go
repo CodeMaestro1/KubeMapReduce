@@ -669,7 +669,7 @@ func TestWorker_MissingStorageReportsTaskFailed(t *testing.T) {
 				JobId:         "job-1",
 				Type:          pb.TaskType_MAP,
 				LeaseId:       "lease-1",
-				CodeLocation:  "s3://code/mapper.py",
+				CodeLocation:  "s3://mapreduce-inputs/mapper.py",
 				DataLocations: []string{"s3://mapreduce-inputs/data.jsonl"},
 				TotalReducers: 1,
 			}, nil

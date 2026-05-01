@@ -221,6 +221,9 @@ func TestE2E_CancellationDuringExecution(t *testing.T) {
 	jobID := uuid.New().String()
 
 	mock.ExpectBegin()
+	mock.ExpectQuery(regexp.QuoteMeta(QueryGetJobStatusForUpdate)).
+		WithArgs(jobID).
+		WillReturnRows(sqlmock.NewRows([]string{"status"}).AddRow("Running"))
 	mock.ExpectExec(regexp.QuoteMeta(QueryUpdateJobStatus)).WithArgs(jobID, "Cleaning").WillReturnResult(sqlmock.NewResult(1, 1))
 	mock.ExpectExec(regexp.QuoteMeta("UPDATE TASKS SET status = 'Failed' WHERE job_id = $1 AND status != 'Completed'")).WithArgs(jobID).WillReturnResult(sqlmock.NewResult(1, 1))
 	mock.ExpectExec(regexp.QuoteMeta(QueryFailRunningAttemptsByJob)).WithArgs(jobID).WillReturnResult(sqlmock.NewResult(1, 1))

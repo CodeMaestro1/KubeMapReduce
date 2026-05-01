@@ -38,6 +38,23 @@ spec:
         namespaces:
           from: Same
 ---
+# Redirect all plain HTTP traffic to HTTPS. Applies to all hostnames on port 80.
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: http-to-https-redirect
+  namespace: mapreduce
+spec:
+  parentRefs:
+    - name: mapreduce
+      sectionName: http
+  rules:
+    - filters:
+        - type: RequestRedirect
+          requestRedirect:
+            scheme: https
+            statusCode: 301
+---
 apiVersion: gateway.networking.k8s.io/v1
 kind: HTTPRoute
 metadata:
@@ -46,6 +63,7 @@ metadata:
 spec:
   parentRefs:
     - name: mapreduce
+      sectionName: https
   hostnames:
     - api.mapreduce.local
   rules:
@@ -65,6 +83,7 @@ metadata:
 spec:
   parentRefs:
     - name: mapreduce
+      sectionName: https
   hostnames:
     - storage.mapreduce.local
   rules:
@@ -84,6 +103,7 @@ metadata:
 spec:
   parentRefs:
     - name: mapreduce
+      sectionName: https
   hostnames:
     - auth.mapreduce.local
   rules:

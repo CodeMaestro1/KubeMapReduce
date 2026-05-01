@@ -120,12 +120,16 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: metadata.name
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
             # Each replica advertises its own stable DNS name so the UI
             # service can hash-route directly to it.
             - name: MANAGER_ADDR
               value: "$(POD_NAME).manager-headless.mapreduce.svc.cluster.local:8081"
             - name: DATABASE_DSN
-              value: "postgres://$(POSTGRES_USER):$(POSTGRES_PASSWORD)@postgres.mapreduce.svc.cluster.local:5432/$(POSTGRES_DB)?sslmode=disable"
+              value: "postgres://$(POSTGRES_USER):$(POSTGRES_PASSWORD)@postgres.mapreduce.svc.cluster.local:5432/$(POSTGRES_DB)?sslmode=prefer"
             - name: POSTGRES_USER
               valueFrom:
                 secretKeyRef:
@@ -166,6 +170,8 @@ spec:
                 secretKeyRef:
                   name: manager-secrets
                   key: MANAGER_WORKER_RPC_TOKEN
+            - name: GRPC_TLS_CERT_FILE
+              value: /tls/tls.crt
           readinessProbe:
             httpGet:
               path: /readyz
@@ -187,8 +193,16 @@ spec:
             limits:
               cpu: "1"
               memory: "1Gi"
+          volumeMounts:
+            - name: grpc-tls
+              mountPath: /tls
+              readOnly: true
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true
             capabilities:
               drop: ["ALL"]
+      volumes:
+        - name: grpc-tls
+          secret:
+            secretName: grpc-tls

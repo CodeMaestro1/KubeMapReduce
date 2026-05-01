@@ -176,6 +176,8 @@ func main() {
 
 	grpcOpts := []grpc.ServerOption{
 		grpc.UnaryInterceptor(workerAuthUnaryInterceptor(cfg.WorkerRPCToken)),
+		grpc.MaxRecvMsgSize(4 << 20),
+		grpc.MaxSendMsgSize(16 << 20),
 	}
 	if err := validateWorkerRPCSecurityConfig(cfg); err != nil {
 		log.Fatalf("insecure worker RPC configuration: %v", err)
@@ -198,7 +200,11 @@ func main() {
 	workerServer := mgrpc.NewWorkerServer(scheduler, minioClient, cfg.ManifestThresholdBytes)
 	pb.RegisterWorkerServiceServer(grpcServer, workerServer)
 	if cfg.EnableGRPCReflection {
-		reflection.Register(grpcServer)
+		if os.Getenv("DEBUG_MODE") != "true" {
+			slog.Warn("gRPC reflection requested but DEBUG_MODE is not set; skipping")
+		} else {
+			reflection.Register(grpcServer)
+		}
 	}
 
 	go func() {

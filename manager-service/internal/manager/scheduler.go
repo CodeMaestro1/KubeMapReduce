@@ -853,7 +853,11 @@ func (s *Scheduler) CancelJob(ctx context.Context, jobID string) error {
 	}
 	defer tx.Rollback()
 
-	if err := s.updateJobStatusTx(ctx, tx, jobID, "Cleaning"); err != nil {
+	if err := s.applyJobTransitionTx(ctx, tx, jobID, "Cleaning"); err != nil {
+		if errors.Is(err, ErrForbiddenTransition) {
+			// Job already in a terminal state — idempotent cancel is a no-op.
+			return nil
+		}
 		return err
 	}
 

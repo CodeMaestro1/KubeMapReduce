@@ -1448,6 +1448,9 @@ func TestScheduler_CancelJob_Success(t *testing.T) {
 	jobID := uuid.New().String()
 
 	mock.ExpectBegin()
+	mock.ExpectQuery(regexp.QuoteMeta(QueryGetJobStatusForUpdate)).
+		WithArgs(jobID).
+		WillReturnRows(sqlmock.NewRows([]string{"status"}).AddRow("Running"))
 	mock.ExpectExec(regexp.QuoteMeta(QueryUpdateJobStatus)).
 		WithArgs(jobID, "Cleaning").
 		WillReturnResult(sqlmock.NewResult(1, 1))

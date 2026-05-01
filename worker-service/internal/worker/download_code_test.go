@@ -29,10 +29,10 @@ func (s *erroringStorage) PutObject(_ context.Context, _, _ string, _ io.Reader,
 
 func TestDownloadCode_PythonReturnsPathAndCleanup(t *testing.T) {
 	payload := []byte("#!/usr/bin/env python3\nprint('hi')\n")
-	store := &staticStorage{bucket: "code", key: "mapper.py", payload: payload}
+	store := &staticStorage{bucket: "mapreduce-inputs", key: "mapper.py", payload: payload}
 	tempDir := t.TempDir()
 
-	execPath, cleanup, err := downloadCode(context.Background(), store, "s3://code/mapper.py", tempDir)
+	execPath, cleanup, err := downloadCode(context.Background(), store, "s3://mapreduce-inputs/mapper.py", tempDir)
 	if err != nil {
 		t.Fatalf("downloadCode: %v", err)
 	}
@@ -62,11 +62,11 @@ func TestDownloadCode_PythonReturnsPathAndCleanup(t *testing.T) {
 
 func TestDownloadCode_GetObjectError(t *testing.T) {
 	store := &erroringStorage{err: fmt.Errorf("simulated minio failure")}
-	_, _, err := downloadCode(context.Background(), store, "s3://code/missing.py", t.TempDir())
+	_, _, err := downloadCode(context.Background(), store, "s3://mapreduce-inputs/missing.py", t.TempDir())
 	if err == nil {
 		t.Fatal("expected error from GetObject")
 	}
-	if !strings.Contains(err.Error(), "GetObject code") {
+	if !strings.Contains(err.Error(), "GetObject") {
 		t.Errorf("error should wrap GetObject, got: %v", err)
 	}
 }
@@ -87,10 +87,10 @@ func TestDownloadCode_CompilesCSource(t *testing.T) {
 	src := []byte(`#include <stdio.h>
 int main(void) { printf("hello\n"); return 0; }
 `)
-	store := &staticStorage{bucket: "code", key: "mapper.c", payload: src}
+	store := &staticStorage{bucket: "mapreduce-inputs", key: "mapper.c", payload: src}
 	tempDir := t.TempDir()
 
-	execPath, cleanup, err := downloadCode(context.Background(), store, "s3://code/mapper.c", tempDir)
+	execPath, cleanup, err := downloadCode(context.Background(), store, "s3://mapreduce-inputs/mapper.c", tempDir)
 	if err != nil {
 		t.Fatalf("downloadCode: %v", err)
 	}
@@ -118,10 +118,10 @@ func TestDownloadCode_CompilesCppSource(t *testing.T) {
 	src := []byte(`#include <iostream>
 int main() { std::cout << "hi" << std::endl; return 0; }
 `)
-	store := &staticStorage{bucket: "code", key: "mapper.cpp", payload: src}
+	store := &staticStorage{bucket: "mapreduce-inputs", key: "mapper.cpp", payload: src}
 	tempDir := t.TempDir()
 
-	execPath, cleanup, err := downloadCode(context.Background(), store, "s3://code/mapper.cpp", tempDir)
+	execPath, cleanup, err := downloadCode(context.Background(), store, "s3://mapreduce-inputs/mapper.cpp", tempDir)
 	if err != nil {
 		t.Fatalf("downloadCode: %v", err)
 	}
@@ -143,10 +143,10 @@ func TestDownloadCode_CompilesCcSource(t *testing.T) {
 	src := []byte(`#include <iostream>
 int main() { std::cout << "hi" << std::endl; return 0; }
 `)
-	store := &staticStorage{bucket: "code", key: "mapper.cc", payload: src}
+	store := &staticStorage{bucket: "mapreduce-inputs", key: "mapper.cc", payload: src}
 	tempDir := t.TempDir()
 
-	execPath, cleanup, err := downloadCode(context.Background(), store, "s3://code/mapper.cc", tempDir)
+	execPath, cleanup, err := downloadCode(context.Background(), store, "s3://mapreduce-inputs/mapper.cc", tempDir)
 	if err != nil {
 		t.Fatalf("downloadCode: %v", err)
 	}
@@ -168,10 +168,10 @@ func TestDownloadCode_CompilesCxxSource(t *testing.T) {
 	src := []byte(`#include <iostream>
 int main() { std::cout << "hi" << std::endl; return 0; }
 `)
-	store := &staticStorage{bucket: "code", key: "mapper.cxx", payload: src}
+	store := &staticStorage{bucket: "mapreduce-inputs", key: "mapper.cxx", payload: src}
 	tempDir := t.TempDir()
 
-	execPath, cleanup, err := downloadCode(context.Background(), store, "s3://code/mapper.cxx", tempDir)
+	execPath, cleanup, err := downloadCode(context.Background(), store, "s3://mapreduce-inputs/mapper.cxx", tempDir)
 	if err != nil {
 		t.Fatalf("downloadCode: %v", err)
 	}
@@ -192,9 +192,9 @@ func TestDownloadCode_CompileFailureReturnsError(t *testing.T) {
 
 	// Source that will not compile.
 	src := []byte("this is not C\n")
-	store := &staticStorage{bucket: "code", key: "broken.c", payload: src}
+	store := &staticStorage{bucket: "mapreduce-inputs", key: "broken.c", payload: src}
 
-	_, _, err := downloadCode(context.Background(), store, "s3://code/broken.c", t.TempDir())
+	_, _, err := downloadCode(context.Background(), store, "s3://mapreduce-inputs/broken.c", t.TempDir())
 	if err == nil {
 		t.Fatal("expected compile failure for invalid C source")
 	}

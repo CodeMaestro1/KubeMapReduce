@@ -11,6 +11,7 @@ import (
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 )
@@ -160,6 +161,7 @@ func (k *KubeOrchestrator) SpawnWorker(ctx context.Context, taskID string, jobID
 				},
 				Spec: corev1.PodSpec{
 					RestartPolicy:                corev1.RestartPolicyNever,
+					ServiceAccountName:           "worker",
 					AutomountServiceAccountToken: &falseVal,
 					SecurityContext: &corev1.PodSecurityContext{
 						RunAsNonRoot: &trueVal,
@@ -171,7 +173,20 @@ func (k *KubeOrchestrator) SpawnWorker(ctx context.Context, taskID string, jobID
 						{
 							Name: "tmp",
 							VolumeSource: corev1.VolumeSource{
-								EmptyDir: &corev1.EmptyDirVolumeSource{},
+								EmptyDir: &corev1.EmptyDirVolumeSource{
+									SizeLimit: func() *resource.Quantity {
+										q := resource.MustParse(DefaultWorkerEphemeralStorageLimit)
+										return &q
+									}(),
+								},
+							},
+						},
+						{
+							Name: "grpc-tls",
+							VolumeSource: corev1.VolumeSource{
+								Secret: &corev1.SecretVolumeSource{
+									SecretName: "grpc-tls",
+								},
 							},
 						},
 					},
@@ -184,6 +199,7 @@ func (k *KubeOrchestrator) SpawnWorker(ctx context.Context, taskID string, jobID
 								{Name: "JOB_ID", Value: jobID},
 								{Name: "MANAGER_ADDR", Value: managerAddr},
 								{Name: "ATTEMPT_ID", Value: attemptID},
+								{Name: "GRPC_TLS_CERT_FILE", Value: "/tls/tls.crt"},
 								secretEnvVar("S3_ENDPOINT", k.workerSecretName, "MINIO_ENDPOINT"),
 								secretEnvVar("S3_ACCESS_KEY", k.workerSecretName, "MINIO_ACCESS_KEY"),
 								secretEnvVar("S3_SECRET_KEY", k.workerSecretName, "MINIO_SECRET_KEY"),
@@ -193,7 +209,7 @@ func (k *KubeOrchestrator) SpawnWorker(ctx context.Context, taskID string, jobID
 							Resources: resources,
 							SecurityContext: &corev1.SecurityContext{
 								AllowPrivilegeEscalation: &falseVal,
-								ReadOnlyRootFilesystem:   &falseVal,
+								ReadOnlyRootFilesystem:   &trueVal,
 								RunAsNonRoot:             &trueVal,
 								Capabilities: &corev1.Capabilities{
 									Drop: []corev1.Capability{"ALL"},
@@ -203,6 +219,11 @@ func (k *KubeOrchestrator) SpawnWorker(ctx context.Context, taskID string, jobID
 								{
 									Name:      "tmp",
 									MountPath: "/tmp",
+								},
+								{
+									Name:      "grpc-tls",
+									MountPath: "/tls",
+									ReadOnly:  true,
 								},
 							},
 						},

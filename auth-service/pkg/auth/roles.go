@@ -77,10 +77,6 @@ func RequireAnyRole(requiredRoles []string, validator *JWTValidator, next http.H
 func requireRoles(w http.ResponseWriter, r *http.Request, requiredRoles []string, anyMatch bool, next http.Handler) {
 	roles, err := GetRoles(r)
 	if err != nil {
-		if errors.Is(err, ErrMalformedRoles) {
-			http.Error(w, "service unavailable", http.StatusServiceUnavailable)
-			return
-		}
 		slog.Warn("role extraction failed", "error", err)
 		http.Error(w, "forbidden: insufficient permissions", http.StatusForbidden)
 		return

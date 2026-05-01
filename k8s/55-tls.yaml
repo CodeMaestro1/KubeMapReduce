@@ -1,0 +1,92 @@
+# TLS provisioning via cert-manager.
+#
+# Prerequisites:
+#   kubectl apply -f https://github.com/cert-manager/cert-manager/releases/latest/download/cert-manager.yaml
+#
+# This file creates:
+#   - A self-signed ClusterIssuer (no external CA needed)
+#   - A CA Certificate issued by that issuer (stored as mapreduce-ca)
+#   - A CA-backed Issuer that signs workload certs
+#   - mapreduce-tls     — TLS cert for the Gateway (api/storage/auth hostnames)
+#   - grpc-tls          — TLS cert for the gRPC channel (manager ↔ worker)
+#
+# For production replace the SelfSigned issuer with an ACME (Let's Encrypt)
+# or Vault issuer. No other file needs to change.
+---
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: mapreduce-selfsigned
+spec:
+  selfSigned: {}
+---
+# Root CA certificate — used only to sign the workload certs below.
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: mapreduce-ca
+  namespace: mapreduce
+spec:
+  isCA: true
+  commonName: mapreduce-ca
+  secretName: mapreduce-ca
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+  issuerRef:
+    name: mapreduce-selfsigned
+    kind: ClusterIssuer
+    group: cert-manager.io
+---
+# CA-backed issuer — signs all workload certificates in this namespace.
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: mapreduce-ca-issuer
+  namespace: mapreduce
+spec:
+  ca:
+    secretName: mapreduce-ca
+---
+# Gateway TLS certificate.
+# Covers all three public hostnames. Stored as Secret "mapreduce-tls"
+# which is already referenced by the https listener in 60-gateway.yaml.
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: mapreduce-tls
+  namespace: mapreduce
+spec:
+  secretName: mapreduce-tls
+  duration: 2160h   # 90 days
+  renewBefore: 360h # renew 15 days before expiry
+  dnsNames:
+    - api.mapreduce.local
+    - storage.mapreduce.local
+    - auth.mapreduce.local
+  issuerRef:
+    name: mapreduce-ca-issuer
+    kind: Issuer
+    group: cert-manager.io
+---
+# gRPC TLS certificate.
+# Stored as Secret "grpc-tls". Mount the cert into the manager and worker
+# pods and set GRPC_TLS_CERT_FILE to /tls/tls.crt.
+# The worker already reads GRPC_TLS_CERT_FILE in transportOption().
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: grpc-tls
+  namespace: mapreduce
+spec:
+  secretName: grpc-tls
+  duration: 2160h
+  renewBefore: 360h
+  dnsNames:
+    - manager.mapreduce.svc.cluster.local
+    - manager.mapreduce
+    - manager
+  issuerRef:
+    name: mapreduce-ca-issuer
+    kind: Issuer
+    group: cert-manager.io

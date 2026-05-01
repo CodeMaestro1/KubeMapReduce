@@ -178,7 +178,7 @@ int main() {
 		t.Fatalf("failed to write C file: %v", err)
 	}
 
-	if err := compileC(srcPath, outPath); err != nil {
+	if err := compileC(context.Background(), srcPath, outPath); err != nil {
 		t.Fatalf("compileC() error = %v", err)
 	}
 
@@ -216,7 +216,7 @@ int main() {
 		t.Fatalf("failed to write C++ file: %v", err)
 	}
 
-	if err := compileCpp(srcPath, outPath); err != nil {
+	if err := compileCpp(context.Background(), srcPath, outPath); err != nil {
 		t.Fatalf("compileCpp() error = %v", err)
 	}
 

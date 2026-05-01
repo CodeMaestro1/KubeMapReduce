@@ -90,12 +90,20 @@ func fetchManifest(ctx context.Context, storage objectStorage, manifestURI strin
 	return m.DataLocations, nil
 }
 
+// allowedCodeBucket is the only MinIO bucket from which user code may be fetched.
+// Rejecting other buckets prevents a crafted task assignment from executing code
+// staged in output or staging buckets.
+const allowedCodeBucket = "mapreduce-inputs"
+
 // downloadCode fetches user code from MinIO and prepares it for execution.
 // For C/C++ it compiles the source. Returns the path to run and a cleanup func.
 func downloadCode(ctx context.Context, storage objectStorage, codeURI, tempDir string) (execPath string, cleanup func(), err error) {
 	bucket, key, parseErr := parseS3URI(codeURI)
 	if parseErr != nil {
 		return "", func() {}, parseErr
+	}
+	if bucket != allowedCodeBucket {
+		return "", func() {}, fmt.Errorf("disallowed code bucket: %q", bucket)
 	}
 
 	rc, err := storage.GetObject(ctx, bucket, key, minio.GetObjectOptions{})
@@ -119,7 +127,7 @@ func downloadCode(ctx context.Context, storage objectStorage, codeURI, tempDir s
 	switch ext {
 	case ".c":
 		outPath := strings.TrimSuffix(codePath, ext)
-		if compileErr := compileC(codePath, outPath); compileErr != nil {
+		if compileErr := compileC(ctx, codePath, outPath); compileErr != nil {
 			os.Remove(codePath)
 			return "", func() {}, compileErr
 		}
@@ -131,7 +139,7 @@ func downloadCode(ctx context.Context, storage objectStorage, codeURI, tempDir s
 		return outPath, func() { os.Remove(codePath); os.Remove(outPath) }, nil
 	case ".cpp", ".cc", ".cxx":
 		outPath := strings.TrimSuffix(codePath, ext)
-		if compileErr := compileCpp(codePath, outPath); compileErr != nil {
+		if compileErr := compileCpp(ctx, codePath, outPath); compileErr != nil {
 			os.Remove(codePath)
 			return "", func() {}, compileErr
 		}
@@ -175,6 +183,10 @@ func splitChecksumURI(raw string) (uri, checksum string) {
 	return raw, ""
 }
 
+// maxRawRangeBytes caps the total bytes getRawRange will read before giving up.
+// Guards against OOM when a malicious or corrupt input file contains no newlines.
+const maxRawRangeBytes int64 = 256 << 20 // 256 MiB
+
 // getRawRange downloads bytes starting at byteStart and keeps extending the
 // read in fixed chunks until it reaches the newline that terminates the record
 // crossing byteEnd.
@@ -184,6 +196,7 @@ func getRawRange(ctx context.Context, storage objectStorage, bucket, key string,
 	}
 
 	var raw bytes.Buffer
+	var totalRead int64
 	nextStart := start
 	for {
 		nextEnd := nextStart + splitReadChunkSize - 1
@@ -211,6 +224,11 @@ func getRawRange(ctx context.Context, storage objectStorage, bucket, key string,
 		}
 
 		raw.Write(chunk)
+		totalRead += int64(len(chunk))
+		if totalRead > maxRawRangeBytes {
+			return nil, fmt.Errorf("getRawRange %s/%s exceeded %d bytes without newline", bucket, key, maxRawRangeBytes)
+		}
+
 		if bytes.IndexByte(chunk, '\n') >= 0 {
 			return raw.Bytes(), nil
 		}

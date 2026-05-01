@@ -77,6 +77,7 @@ func (v *JWTValidator) Middleware(next http.Handler) http.Handler {
 			v.jwks.Keyfunc,
 			jwt.WithIssuer(v.issuer),
 			jwt.WithAudience(v.audience),
+			jwt.WithValidMethods([]string{"RS256"}),
 		)
 		if err != nil {
 			slog.Warn("JWT validation failed", "error", err)

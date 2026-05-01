@@ -94,7 +94,7 @@ func TestGetRoles_MalformedRoleEntry(t *testing.T) {
 	}
 }
 
-func TestRequireRoles_MalformedRoleEntryReturnsServiceUnavailable(t *testing.T) {
+func TestRequireRoles_MalformedRoleEntryReturnsForbidden(t *testing.T) {
 	claims := jwt.MapClaims{
 		"realm_access": map[string]interface{}{
 			"roles": []interface{}{"ADMIN", 123},
@@ -114,8 +114,8 @@ func TestRequireRoles_MalformedRoleEntryReturnsServiceUnavailable(t *testing.T) 
 
 	requireRoles(rr, req, []string{"ADMIN"}, false, next)
 
-	if rr.Code != http.StatusServiceUnavailable {
-		t.Fatalf("expected status %d, got %d", http.StatusServiceUnavailable, rr.Code)
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("expected status %d, got %d", http.StatusForbidden, rr.Code)
 	}
 	if nextCalled {
 		t.Fatal("expected next handler not to be called on malformed roles")

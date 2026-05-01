@@ -22,6 +22,11 @@ const DefaultWorkerCPULimit = "500m"
 // default in migrations/0001_initial_schema.sql.
 const DefaultWorkerMemoryLimit = "512Mi"
 
+// DefaultWorkerEphemeralStorageLimit caps how much node ephemeral storage a
+// worker pod may consume for spill files. Prevents a single job from evicting
+// unrelated pods via node-level storage exhaustion.
+const DefaultWorkerEphemeralStorageLimit = "2Gi"
+
 // ResourceConfigProvider supplies per-worker resource limits to the orchestrator
 // at pod-spawn time.
 //
@@ -58,10 +63,12 @@ func resolveWorkerResources(cpuLimit, memoryLimit string) corev1.ResourceRequire
 	if !ok {
 		memQty, _ = parseQuantityOrDefault("memory", DefaultWorkerMemoryLimit, DefaultWorkerMemoryLimit)
 	}
+	ephemeralQty, _ := parseQuantityOrDefault("ephemeral-storage", DefaultWorkerEphemeralStorageLimit, DefaultWorkerEphemeralStorageLimit)
 	return corev1.ResourceRequirements{
 		Limits: corev1.ResourceList{
-			corev1.ResourceCPU:    cpuQty,
-			corev1.ResourceMemory: memQty,
+			corev1.ResourceCPU:              cpuQty,
+			corev1.ResourceMemory:           memQty,
+			corev1.ResourceEphemeralStorage: ephemeralQty,
 		},
 		Requests: corev1.ResourceList{
 			corev1.ResourceCPU:    cpuQty,

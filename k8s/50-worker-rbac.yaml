@@ -41,11 +41,12 @@ rules:
   - apiGroups: [""]
     resources: ["configmaps"]
     verbs: ["get", "list", "watch"]
-  # Required so the Manager can locate the worker image and inject env vars
-  # from Secrets when constructing Job manifests.
+  # Read access is scoped to the specific secret the Manager injects into
+  # worker Job manifests, preventing escalation to other namespace secrets.
   - apiGroups: [""]
     resources: ["secrets"]
     verbs: ["get"]
+    resourceNames: ["manager-secrets"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
