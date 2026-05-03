@@ -794,7 +794,7 @@ func TestScheduler_FailStaleTasks_NoStaleTasks(t *testing.T) {
 
 	mock.ExpectBegin()
 	mock.ExpectQuery(regexp.QuoteMeta(QuerySelectStaleTasks)).
-		WillReturnRows(sqlmock.NewRows([]string{"task_id", "attempt_id"}))
+		WillReturnRows(sqlmock.NewRows([]string{"task_id", "attempt_id", "job_id", "attempt_count"}))
 	mock.ExpectCommit()
 
 	recovered, err := scheduler.FailStaleTasks(context.Background())
@@ -815,15 +815,7 @@ func TestScheduler_FailStaleTasks_Success(t *testing.T) {
 
 	mock.ExpectBegin()
 	mock.ExpectQuery(regexp.QuoteMeta(QuerySelectStaleTasks)).
-		WillReturnRows(sqlmock.NewRows([]string{"task_id", "attempt_id"}).AddRow(taskID, attemptID))
-
-	mock.ExpectQuery(regexp.QuoteMeta(QueryGetTaskJobID)).
-		WithArgs(taskID).
-		WillReturnRows(sqlmock.NewRows([]string{"job_id"}).AddRow("job123"))
-
-	mock.ExpectQuery(regexp.QuoteMeta(QueryCountAttemptsByTask)).
-		WithArgs(taskID).
-		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(1))
+		WillReturnRows(sqlmock.NewRows([]string{"task_id", "attempt_id", "job_id", "attempt_count"}).AddRow(taskID, attemptID, "job123", 1))
 
 	mock.ExpectExec(regexp.QuoteMeta(QueryUpdateTaskStatus)).
 		WithArgs("Idle", taskID).
@@ -862,15 +854,7 @@ func TestScheduler_FailStaleTasks_MarksJobFailedAtMaxAttempts(t *testing.T) {
 
 	mock.ExpectBegin()
 	mock.ExpectQuery(regexp.QuoteMeta(QuerySelectStaleTasks)).
-		WillReturnRows(sqlmock.NewRows([]string{"task_id", "attempt_id"}).AddRow(taskID, attemptID))
-
-	mock.ExpectQuery(regexp.QuoteMeta(QueryGetTaskJobID)).
-		WithArgs(taskID).
-		WillReturnRows(sqlmock.NewRows([]string{"job_id"}).AddRow(jobID))
-
-	mock.ExpectQuery(regexp.QuoteMeta(QueryCountAttemptsByTask)).
-		WithArgs(taskID).
-		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(3))
+		WillReturnRows(sqlmock.NewRows([]string{"task_id", "attempt_id", "job_id", "attempt_count"}).AddRow(taskID, attemptID, jobID, 3))
 
 	mock.ExpectExec(regexp.QuoteMeta(QueryUpdateTaskStatus)).
 		WithArgs("Failed", taskID).
@@ -908,16 +892,10 @@ func TestScheduler_FailStaleTasks_DeduplicatesJobCancellation(t *testing.T) {
 
 	mock.ExpectBegin()
 	mock.ExpectQuery(regexp.QuoteMeta(QuerySelectStaleTasks)).
-		WillReturnRows(sqlmock.NewRows([]string{"task_id", "attempt_id"}).
-			AddRow(task1, attempt1).
-			AddRow(task2, attempt2))
+		WillReturnRows(sqlmock.NewRows([]string{"task_id", "attempt_id", "job_id", "attempt_count"}).
+			AddRow(task1, attempt1, jobID, 3).
+			AddRow(task2, attempt2, jobID, 3))
 
-	mock.ExpectQuery(regexp.QuoteMeta(QueryGetTaskJobID)).
-		WithArgs(task1).
-		WillReturnRows(sqlmock.NewRows([]string{"job_id"}).AddRow(jobID))
-	mock.ExpectQuery(regexp.QuoteMeta(QueryCountAttemptsByTask)).
-		WithArgs(task1).
-		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(3))
 	mock.ExpectExec(regexp.QuoteMeta(QueryUpdateTaskStatus)).
 		WithArgs("Failed", task1).
 		WillReturnResult(sqlmock.NewResult(1, 1))
@@ -928,12 +906,6 @@ func TestScheduler_FailStaleTasks_DeduplicatesJobCancellation(t *testing.T) {
 		WithArgs(jobID, "Cleaning").
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
-	mock.ExpectQuery(regexp.QuoteMeta(QueryGetTaskJobID)).
-		WithArgs(task2).
-		WillReturnRows(sqlmock.NewRows([]string{"job_id"}).AddRow(jobID))
-	mock.ExpectQuery(regexp.QuoteMeta(QueryCountAttemptsByTask)).
-		WithArgs(task2).
-		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(3))
 	mock.ExpectExec(regexp.QuoteMeta(QueryUpdateTaskStatus)).
 		WithArgs("Failed", task2).
 		WillReturnResult(sqlmock.NewResult(1, 1))
@@ -969,14 +941,8 @@ func TestScheduler_FailStaleTasks_CallsDeleteWorkerJobForFailedTask(t *testing.T
 
 	mock.ExpectBegin()
 	mock.ExpectQuery(regexp.QuoteMeta(QuerySelectStaleTasks)).
-		WillReturnRows(sqlmock.NewRows([]string{"task_id", "attempt_id"}).AddRow(taskID, attemptID))
+		WillReturnRows(sqlmock.NewRows([]string{"task_id", "attempt_id", "job_id", "attempt_count"}).AddRow(taskID, attemptID, jobID, MaxTaskAttempts))
 
-	mock.ExpectQuery(regexp.QuoteMeta(QueryGetTaskJobID)).
-		WithArgs(taskID).
-		WillReturnRows(sqlmock.NewRows([]string{"job_id"}).AddRow(jobID))
-	mock.ExpectQuery(regexp.QuoteMeta(QueryCountAttemptsByTask)).
-		WithArgs(taskID).
-		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(MaxTaskAttempts))
 	mock.ExpectExec(regexp.QuoteMeta(QueryUpdateTaskStatus)).
 		WithArgs("Failed", taskID).
 		WillReturnResult(sqlmock.NewResult(1, 1))
@@ -1018,16 +984,10 @@ func TestScheduler_FailStaleTasks_UsesPerJobFinalizeDeadlines(t *testing.T) {
 
 	mock.ExpectBegin()
 	mock.ExpectQuery(regexp.QuoteMeta(QuerySelectStaleTasks)).
-		WillReturnRows(sqlmock.NewRows([]string{"task_id", "attempt_id"}).
-			AddRow(task1, attempt1).
-			AddRow(task2, attempt2))
+		WillReturnRows(sqlmock.NewRows([]string{"task_id", "attempt_id", "job_id", "attempt_count"}).
+			AddRow(task1, attempt1, job1, 3).
+			AddRow(task2, attempt2, job2, 3))
 
-	mock.ExpectQuery(regexp.QuoteMeta(QueryGetTaskJobID)).
-		WithArgs(task1).
-		WillReturnRows(sqlmock.NewRows([]string{"job_id"}).AddRow(job1))
-	mock.ExpectQuery(regexp.QuoteMeta(QueryCountAttemptsByTask)).
-		WithArgs(task1).
-		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(3))
 	mock.ExpectExec(regexp.QuoteMeta(QueryUpdateTaskStatus)).
 		WithArgs("Failed", task1).
 		WillReturnResult(sqlmock.NewResult(1, 1))
@@ -1038,12 +998,6 @@ func TestScheduler_FailStaleTasks_UsesPerJobFinalizeDeadlines(t *testing.T) {
 		WithArgs(job1, "Cleaning").
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
-	mock.ExpectQuery(regexp.QuoteMeta(QueryGetTaskJobID)).
-		WithArgs(task2).
-		WillReturnRows(sqlmock.NewRows([]string{"job_id"}).AddRow(job2))
-	mock.ExpectQuery(regexp.QuoteMeta(QueryCountAttemptsByTask)).
-		WithArgs(task2).
-		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(3))
 	mock.ExpectExec(regexp.QuoteMeta(QueryUpdateTaskStatus)).
 		WithArgs("Failed", task2).
 		WillReturnResult(sqlmock.NewResult(1, 1))

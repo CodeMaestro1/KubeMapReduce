@@ -126,9 +126,7 @@ func TestE2E_WorkerKillDuringMapTask(t *testing.T) {
 
 	// 2. FailStaleTasks -> detects expired lease, marks attempt-1 Failed, resets to Idle
 	mock.ExpectBegin()
-	mock.ExpectQuery(regexp.QuoteMeta(QuerySelectStaleTasks)).WillReturnRows(sqlmock.NewRows([]string{"task_id", "attempt_id"}).AddRow(taskID, attemptID1))
-	mock.ExpectQuery(regexp.QuoteMeta(QueryGetTaskJobID)).WithArgs(taskID).WillReturnRows(sqlmock.NewRows([]string{"job_id"}).AddRow(jobID))
-	mock.ExpectQuery(regexp.QuoteMeta(QueryCountAttemptsByTask)).WithArgs(taskID).WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(1))
+	mock.ExpectQuery(regexp.QuoteMeta(QuerySelectStaleTasks)).WillReturnRows(sqlmock.NewRows([]string{"task_id", "attempt_id", "job_id", "attempt_count"}).AddRow(taskID, attemptID1, jobID, 1))
 	mock.ExpectExec(regexp.QuoteMeta(QueryUpdateTaskStatus)).WithArgs("Idle", taskID).WillReturnResult(sqlmock.NewResult(1, 1))
 	mock.ExpectExec(regexp.QuoteMeta(QueryFailAttempt)).WithArgs(attemptID1).WillReturnResult(sqlmock.NewResult(1, 1))
 	// prepareRetryAttemptTx
@@ -188,9 +186,7 @@ func TestE2E_TripleFailure_MaxAttemptsExhaustion(t *testing.T) {
 
 	// Simulating 3rd failure
 	mock.ExpectBegin()
-	mock.ExpectQuery(regexp.QuoteMeta(QuerySelectStaleTasks)).WillReturnRows(sqlmock.NewRows([]string{"task_id", "attempt_id"}).AddRow(taskID, attemptID3))
-	mock.ExpectQuery(regexp.QuoteMeta(QueryGetTaskJobID)).WithArgs(taskID).WillReturnRows(sqlmock.NewRows([]string{"job_id"}).AddRow(jobID))
-	mock.ExpectQuery(regexp.QuoteMeta(QueryCountAttemptsByTask)).WithArgs(taskID).WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(3)) // Max reached
+	mock.ExpectQuery(regexp.QuoteMeta(QuerySelectStaleTasks)).WillReturnRows(sqlmock.NewRows([]string{"task_id", "attempt_id", "job_id", "attempt_count"}).AddRow(taskID, attemptID3, jobID, 3))
 	mock.ExpectExec(regexp.QuoteMeta(QueryUpdateTaskStatus)).WithArgs("Failed", taskID).WillReturnResult(sqlmock.NewResult(1, 1))
 	mock.ExpectExec(regexp.QuoteMeta(QueryFailAttempt)).WithArgs(attemptID3).WillReturnResult(sqlmock.NewResult(1, 1))
 	// updateJobStatusTx to Cleaning
