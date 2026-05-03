@@ -1,6 +1,10 @@
 .git/
+.github/
+.claude/
 graphify-out/
 docs/
+corpus/
+benchmarks/data/
 *.pdf
 *.md
 mkdocs.yml

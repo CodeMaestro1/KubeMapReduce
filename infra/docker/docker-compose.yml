@@ -92,6 +92,14 @@ services:
         condition: service_healthy
       minio-init:
         condition: service_completed_successfully
+      auth-setup:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD-SHELL", "timeout 5 bash -c ':> /dev/tcp/127.0.0.1/8081' || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
 
   manager:
     build:
@@ -103,7 +111,8 @@ services:
     ports:
       - "50051:50051"
     depends_on:
-      - api
+      api:
+        condition: service_healthy
 
   worker:
     build:
@@ -115,7 +124,8 @@ services:
     ports:
       - "50052:50052"
     depends_on:
-      - manager
+      manager:
+        condition: service_started
 
 volumes:
   postgres-data:
