@@ -13,6 +13,22 @@ import (
 
 // ── PostgresJobStore persistence tests ──────────────────────
 
+func TestNewPostgresJobStore(t *testing.T) {
+	db, _, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("failed to create sqlmock: %v", err)
+	}
+	defer db.Close()
+
+	store := NewPostgresJobStore(db)
+	if store == nil {
+		t.Fatalf("NewPostgresJobStore returned nil")
+	}
+	if store.db != db {
+		t.Fatalf("NewPostgresJobStore did not set the db field correctly")
+	}
+}
+
 func TestPostgresJobStore_CreateJob_PersistsToDatabase(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	if err != nil {
