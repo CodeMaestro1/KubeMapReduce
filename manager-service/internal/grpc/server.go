@@ -93,105 +93,10 @@ func (s *WorkerServer) Register(ctx context.Context, req *pb.RegisterRequest) (*
 		return nil, status.Error(codes.PermissionDenied, "attempt rejected")
 	}
 
-	assignment := &pb.TaskAssignment{
-		TaskId:           task.ID,
-		AttemptId:        task.ActiveAttemptID,
-		JobId:            task.JobID,
-		CodeLocation:     task.CodeURI,
-		CombinerLocation: task.CombinerURI,
-		RuntimeEnv:       runtimeEnvFromCodeURI(task.CodeURI),
-		ByteStart:        task.ByteStart,
-		ByteEnd:          task.ByteEnd,
-		PartitionId:      0,
-		TotalReducers:    int32(task.TotalReducers),
-		SplitChecksum:    "",
-		LeaseId:          task.LeaseID,
-	}
-
-	switch task.Type {
-	case manager.MapTask:
-		assignment.Type = pb.TaskType_MAP
-		if len(task.InputSplits) > 0 {
-			assignment.InputSplits = make([]*pb.InputSplit, 0, len(task.InputSplits))
-			for i := range task.InputSplits {
-				selectedSplit := task.InputSplits[i]
-				assignment.InputSplits = append(assignment.InputSplits, &pb.InputSplit{
-					InputUri:      selectedSplit.InputURI,
-					ByteStart:     selectedSplit.ByteStart,
-					ByteEnd:       selectedSplit.ByteEnd,
-					SplitChecksum: selectedSplit.SplitChecksum,
-				})
-				assignment.DataLocations = append(assignment.DataLocations, selectedSplit.InputURI)
-				if i == 0 {
-					assignment.ByteStart = selectedSplit.ByteStart
-					assignment.ByteEnd = selectedSplit.ByteEnd
-					assignment.SplitChecksum = selectedSplit.SplitChecksum
-				}
-			}
-		}
-	case manager.ReduceTask:
-		assignment.Type = pb.TaskType_REDUCE
-		assignment.PartitionId = int32(task.ReducePartition)
-		for _, input := range task.ShuffleInputs {
-			uri := input.OutputURI
-			if input.Checksum != "" {
-				uri = fmt.Sprintf("%s#sha256=%s", uri, input.Checksum)
-			}
-			assignment.DataLocations = append(assignment.DataLocations, uri)
-		}
-	}
-
-	if proto.Size(assignment) > s.manifestThresholdBytes {
-		if s.uploader == nil {
-			return nil, status.Errorf(codes.ResourceExhausted, "task assignment for task %s exceeds manifest threshold", task.ID)
-		}
-		manifestBytes, err := json.Marshal(map[string][]string{
-			"data_locations": assignment.DataLocations,
-		})
-		if err != nil {
-			slog.ErrorContext(ctx, "failed to marshal task assignment manifest",
-				slog.String("task_id", task.ID),
-				slog.String("job_id", task.JobID),
-				slog.Any("err", err),
-			)
-			return nil, status.Errorf(codes.Internal, "failed to marshal manifest: %v", err)
-		}
-		if len(manifestBytes) > maxManifestPayloadSizeBytes {
-			return nil, status.Errorf(codes.ResourceExhausted, "manifest for task %s exceeds manifest threshold", task.ID)
-		}
-
-		objectName := fmt.Sprintf("%s/%s-manifest.json", task.JobID, task.ActiveAttemptID)
-		manifestURL, err := s.uploader.UploadManifest(ctx, manifestBucketName, objectName, manifestBytes)
-		if err != nil {
-			slog.ErrorContext(ctx, "failed to upload task assignment manifest",
-				slog.String("task_id", task.ID),
-				slog.String("job_id", task.JobID),
-				slog.String("object", objectName),
-				slog.Any("err", err),
-			)
-			return nil, status.Errorf(codes.Unavailable, "failed to upload manifest: %v", err)
-		}
-		// Embed the SHA-256 digest of the uploaded payload as a URI fragment so the
-		// worker can validate manifest integrity without an additional gRPC field.
-		// Format: <uri>#sha256=<hex>
-		digest := sha256.Sum256(manifestBytes)
-		assignment.IsManifest = true
-		assignment.DataLocations = []string{fmt.Sprintf("%s#sha256=%s", manifestURL, hex.EncodeToString(digest[:]))}
-		assignment.InputSplits = nil
-	} else {
-		assignment.IsManifest = false
-	}
-
-	if proto.Size(assignment) > s.manifestThresholdBytes {
-		// Defensive guard: after manifest replacement this should normally be below threshold,
-		// but keep the check for unexpectedly large metadata fields.
-		slog.ErrorContext(ctx, "task assignment exceeds manifest threshold even after manifest fallback",
-			slog.String("task_id", task.ID),
-			slog.String("job_id", task.JobID),
-			slog.Int("size_bytes", proto.Size(assignment)),
-			slog.Int("threshold_bytes", s.manifestThresholdBytes),
-		)
-		return nil, status.Errorf(codes.ResourceExhausted, "task assignment for task %s exceeds manifest threshold", task.ID)
+	assignment := buildBaseAssignment(task)
+	populateTaskTypeSpecifics(task, assignment)
+	if err := s.applyManifestFallback(ctx, task, assignment); err != nil {
+		return nil, err
 	}
 
 	return assignment, nil
@@ -354,4 +259,113 @@ func findMapSplitForTask(task *manager.Task) (*splitInfo, bool) {
 		ByteEnd:       split.ByteEnd,
 		SplitChecksum: split.SplitChecksum,
 	}, true
+}
+
+func buildBaseAssignment(task *manager.Task) *pb.TaskAssignment {
+	return &pb.TaskAssignment{
+		TaskId:           task.ID,
+		AttemptId:        task.ActiveAttemptID,
+		JobId:            task.JobID,
+		CodeLocation:     task.CodeURI,
+		CombinerLocation: task.CombinerURI,
+		RuntimeEnv:       runtimeEnvFromCodeURI(task.CodeURI),
+		ByteStart:        task.ByteStart,
+		ByteEnd:          task.ByteEnd,
+		PartitionId:      0,
+		TotalReducers:    int32(task.TotalReducers),
+		SplitChecksum:    "",
+		LeaseId:          task.LeaseID,
+	}
+}
+
+func populateTaskTypeSpecifics(task *manager.Task, assignment *pb.TaskAssignment) {
+	switch task.Type {
+	case manager.MapTask:
+		assignment.Type = pb.TaskType_MAP
+		if len(task.InputSplits) > 0 {
+			assignment.InputSplits = make([]*pb.InputSplit, 0, len(task.InputSplits))
+			for i := range task.InputSplits {
+				selectedSplit := task.InputSplits[i]
+				assignment.InputSplits = append(assignment.InputSplits, &pb.InputSplit{
+					InputUri:      selectedSplit.InputURI,
+					ByteStart:     selectedSplit.ByteStart,
+					ByteEnd:       selectedSplit.ByteEnd,
+					SplitChecksum: selectedSplit.SplitChecksum,
+				})
+				assignment.DataLocations = append(assignment.DataLocations, selectedSplit.InputURI)
+				if i == 0 {
+					assignment.ByteStart = selectedSplit.ByteStart
+					assignment.ByteEnd = selectedSplit.ByteEnd
+					assignment.SplitChecksum = selectedSplit.SplitChecksum
+				}
+			}
+		}
+	case manager.ReduceTask:
+		assignment.Type = pb.TaskType_REDUCE
+		assignment.PartitionId = int32(task.ReducePartition)
+		for _, input := range task.ShuffleInputs {
+			uri := input.OutputURI
+			if input.Checksum != "" {
+				uri = fmt.Sprintf("%s#sha256=%s", uri, input.Checksum)
+			}
+			assignment.DataLocations = append(assignment.DataLocations, uri)
+		}
+	}
+}
+
+func (s *WorkerServer) applyManifestFallback(ctx context.Context, task *manager.Task, assignment *pb.TaskAssignment) error {
+	if proto.Size(assignment) > s.manifestThresholdBytes {
+		if s.uploader == nil {
+			return status.Errorf(codes.ResourceExhausted, "task assignment for task %s exceeds manifest threshold", task.ID)
+		}
+		manifestBytes, err := json.Marshal(map[string][]string{
+			"data_locations": assignment.DataLocations,
+		})
+		if err != nil {
+			slog.ErrorContext(ctx, "failed to marshal task assignment manifest",
+				slog.String("task_id", task.ID),
+				slog.String("job_id", task.JobID),
+				slog.Any("err", err),
+			)
+			return status.Errorf(codes.Internal, "failed to marshal manifest: %v", err)
+		}
+		if len(manifestBytes) > maxManifestPayloadSizeBytes {
+			return status.Errorf(codes.ResourceExhausted, "manifest for task %s exceeds manifest threshold", task.ID)
+		}
+
+		objectName := fmt.Sprintf("%s/%s-manifest.json", task.JobID, task.ActiveAttemptID)
+		manifestURL, err := s.uploader.UploadManifest(ctx, manifestBucketName, objectName, manifestBytes)
+		if err != nil {
+			slog.ErrorContext(ctx, "failed to upload task assignment manifest",
+				slog.String("task_id", task.ID),
+				slog.String("job_id", task.JobID),
+				slog.String("object", objectName),
+				slog.Any("err", err),
+			)
+			return status.Errorf(codes.Unavailable, "failed to upload manifest: %v", err)
+		}
+		// Embed the SHA-256 digest of the uploaded payload as a URI fragment so the
+		// worker can validate manifest integrity without an additional gRPC field.
+		// Format: <uri>#sha256=<hex>
+		digest := sha256.Sum256(manifestBytes)
+		assignment.IsManifest = true
+		assignment.DataLocations = []string{fmt.Sprintf("%s#sha256=%s", manifestURL, hex.EncodeToString(digest[:]))}
+		assignment.InputSplits = nil
+	} else {
+		assignment.IsManifest = false
+	}
+
+	if proto.Size(assignment) > s.manifestThresholdBytes {
+		// Defensive guard: after manifest replacement this should normally be below threshold,
+		// but keep the check for unexpectedly large metadata fields.
+		slog.ErrorContext(ctx, "task assignment exceeds manifest threshold even after manifest fallback",
+			slog.String("task_id", task.ID),
+			slog.String("job_id", task.JobID),
+			slog.Int("size_bytes", proto.Size(assignment)),
+			slog.Int("threshold_bytes", s.manifestThresholdBytes),
+		)
+		return status.Errorf(codes.ResourceExhausted, "task assignment for task %s exceeds manifest threshold", task.ID)
+	}
+
+	return nil
 }
