@@ -431,7 +431,7 @@ func TestScheduler_CompleteTask_Success(t *testing.T) {
 		WithArgs(attemptID).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
-	mock.ExpectExec(regexp.QuoteMeta(QueryInsertOutput)).
+	mock.ExpectExec(regexp.QuoteMeta(QueryInsertOutputBulkBase)).
 		WithArgs(taskID, 0, "s3://output1", "hash1").
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
@@ -1295,7 +1295,7 @@ func TestScheduler_CompleteTask_NoMutation(t *testing.T) {
 	mock.ExpectExec(regexp.QuoteMeta(QuerySucceedAttempt)).
 		WithArgs(attemptID).
 		WillReturnResult(sqlmock.NewResult(1, 1))
-	mock.ExpectExec(regexp.QuoteMeta(QueryInsertOutput)).
+	mock.ExpectExec(regexp.QuoteMeta(QueryInsertOutputBulkBase)).
 		WithArgs(taskID, 0, "uri1", "hash1").
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
@@ -1492,7 +1492,7 @@ func TestScheduler_CompleteTask_JobCompleted_TriggersCleanup(t *testing.T) {
 	mock.ExpectExec(regexp.QuoteMeta(QuerySucceedAttempt)).
 		WithArgs(attemptID).
 		WillReturnResult(sqlmock.NewResult(1, 1))
-	mock.ExpectExec(regexp.QuoteMeta(QueryInsertOutput)).
+	mock.ExpectExec(regexp.QuoteMeta(QueryInsertOutputBulkBase)).
 		WithArgs(taskID, 0, "s3://output/file.txt", "sha256-output").
 		WillReturnResult(sqlmock.NewResult(1, 1))
 	mock.ExpectQuery(regexp.QuoteMeta(QueryGetTaskJobID)).

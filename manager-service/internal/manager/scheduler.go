@@ -763,8 +763,16 @@ func (s *Scheduler) CompleteTask(ctx context.Context, taskID string, attemptID s
 		return err
 	}
 
-	for i, uri := range safeURIs {
-		_, err = tx.ExecContext(ctx, QueryInsertOutput, taskID, i, uri, safeChecksums[i])
+	if len(safeURIs) > 0 {
+		placeholders := make([]string, 0, len(safeURIs))
+		args := make([]any, 0, len(safeURIs)*4)
+		for i, uri := range safeURIs {
+			base := i * 4
+			placeholders = append(placeholders, fmt.Sprintf("($%d, $%d, $%d, $%d)", base+1, base+2, base+3, base+4))
+			args = append(args, taskID, i, uri, safeChecksums[i])
+		}
+		query := QueryInsertOutputBulkBase + strings.Join(placeholders, ", ")
+		_, err = tx.ExecContext(ctx, query, args...)
 		if err != nil {
 			return err
 		}
