@@ -1935,6 +1935,74 @@ func TestNewHandlers(t *testing.T) {
 	}
 }
 
+func TestMinioScheduleObjectClient_StatObject(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodHead && r.URL.Path == "/mybucket/myobject" {
+			w.Header().Set("Content-Length", "1024")
+			w.Header().Set("ETag", "\"some-etag\"")
+			w.Header().Set("Last-Modified", "Wed, 21 Oct 2015 07:28:00 GMT")
+			w.Header().Set("Content-Type", "application/octet-stream")
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer ts.Close()
+
+	endpoint := ts.URL[7:] // remove http://
+	client, err := minio.New(endpoint, &minio.Options{
+		Creds:  credentials.NewStaticV4("test", "testtest", ""),
+		Secure: false,
+		Region: "us-east-1",
+	})
+	if err != nil {
+		t.Fatalf("failed to create minio client: %v", err)
+	}
+
+	scheduleClient := newScheduleObjectClient(client)
+
+	info, err := scheduleClient.StatObject(context.Background(), "mybucket", "myobject", minio.StatObjectOptions{})
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+
+	if info.Size != 1024 {
+		t.Errorf("expected size 1024, got %d", info.Size)
+	}
+	if info.Key != "myobject" {
+		t.Errorf("expected key myobject, got %s", info.Key)
+	}
+}
+
+func TestMinioScheduleObjectClient_StatObject_NotFound(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer ts.Close()
+
+	endpoint := ts.URL[7:] // remove http://
+	client, err := minio.New(endpoint, &minio.Options{
+		Creds:  credentials.NewStaticV4("test", "testtest", ""),
+		Secure: false,
+		Region: "us-east-1",
+	})
+	if err != nil {
+		t.Fatalf("failed to create minio client: %v", err)
+	}
+
+	scheduleClient := newScheduleObjectClient(client)
+
+	_, err = scheduleClient.StatObject(context.Background(), "mybucket", "myobject", minio.StatObjectOptions{})
+	if err == nil {
+		t.Fatalf("expected error, got nil")
+	}
+
+	errResp := minio.ToErrorResponse(err)
+	if errResp.StatusCode != http.StatusNotFound {
+		t.Errorf("expected status code 404, got %d", errResp.StatusCode)
+	}
+}
+
 func TestHandleRoot_OK(t *testing.T) {
 	h := newTestHandlers()
 
