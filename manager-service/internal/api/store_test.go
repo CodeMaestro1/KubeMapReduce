@@ -22,10 +22,10 @@ func TestNewPostgresJobStore(t *testing.T) {
 
 	store := NewPostgresJobStore(db)
 	if store == nil {
-		t.Fatal("expected non-nil store")
+		t.Fatalf("NewPostgresJobStore returned nil")
 	}
 	if store.db != db {
-		t.Fatalf("expected store.db to be %p, got %p", db, store.db)
+		t.Fatalf("NewPostgresJobStore did not set the db field correctly")
 	}
 }
 
