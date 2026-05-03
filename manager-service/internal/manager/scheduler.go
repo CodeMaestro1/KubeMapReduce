@@ -448,13 +448,8 @@ func (s *Scheduler) hydrateTaskMetadata(ctx context.Context, q taskMetadataQueri
 // It validates the job request, persists the job configuration, and creates the
 // set of "Idle" tasks ready for assignment. This method ensures that all tasks for
 // a specific job are assigned to a consistent Manager replica based on the jobID hash.
-func (s *Scheduler) ScheduleJob(ctx context.Context, req ScheduleJobRequest) error {
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-
+// ValidateScheduleJobRequest performs pre-flight validation on the incoming scheduling request.
+func ValidateScheduleJobRequest(req ScheduleJobRequest) error {
 	if _, err := uuid.Parse(req.JobID); err != nil {
 		return fmt.Errorf("invalid job id: %w", err)
 	}
@@ -476,6 +471,7 @@ func (s *Scheduler) ScheduleJob(ctx context.Context, req ScheduleJobRequest) err
 	if len(req.Tasks) != req.MTasks+req.RTasks {
 		return errors.New("tasks must contain exactly mTasks + rTasks entries")
 	}
+
 	var mapCount, reduceCount int
 	for _, task := range req.Tasks {
 		switch task.TaskType {
@@ -492,14 +488,33 @@ func (s *Scheduler) ScheduleJob(ctx context.Context, req ScheduleJobRequest) err
 		return fmt.Errorf("expected %d Reduce tasks but got %d", req.RTasks, reduceCount)
 	}
 
-	jobID, err := uuid.Parse(req.JobID)
+	return nil
+}
+
+// ExtractMapTaskIDs filters a list of ScheduleTasks and returns the task IDs for those typed as "Map".
+func ExtractMapTaskIDs(tasks []ScheduleTask) []string {
+	var mapTaskIDs []string
+	for _, task := range tasks {
+		if task.TaskType == "Map" {
+			mapTaskIDs = append(mapTaskIDs, task.TaskID)
+		}
+	}
+	return mapTaskIDs
+}
+
+func (s *Scheduler) ScheduleJob(ctx context.Context, req ScheduleJobRequest) error {
+	if err := ValidateScheduleJobRequest(req); err != nil {
+		return err
+	}
+
+	jobID, _ := uuid.Parse(req.JobID)
+	userID, _ := uuid.Parse(req.UserID)
+
+	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
-	userID, err := uuid.Parse(req.UserID)
-	if err != nil {
-		return err
-	}
+	defer tx.Rollback()
 
 	if _, err := tx.ExecContext(ctx, QueryInsertJob, jobID, userID); err != nil {
 		return err
@@ -570,12 +585,7 @@ func (s *Scheduler) ScheduleJob(ctx context.Context, req ScheduleJobRequest) err
 	const initialSpawnTimeout = 20 * time.Second
 
 	// Collect Map task IDs for spawning.
-	var mapTaskIDs []string
-	for _, task := range req.Tasks {
-		if task.TaskType == "Map" {
-			mapTaskIDs = append(mapTaskIDs, task.TaskID)
-		}
-	}
+	mapTaskIDs := ExtractMapTaskIDs(req.Tasks)
 
 	// Read quota to determine how many workers we can spawn.
 	quotaTx, err := s.db.BeginTx(ctx, nil)

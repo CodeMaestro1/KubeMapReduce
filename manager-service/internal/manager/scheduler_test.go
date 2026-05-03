@@ -2175,3 +2175,100 @@ func TestScheduler_ScheduleJob_ZeroQuota_NoSpawn(t *testing.T) {
 		t.Fatalf("expected no spawn calls with zero quota, got %d", len(rec.calls))
 	}
 }
+
+func TestValidateScheduleJobRequest(t *testing.T) {
+	validUUID := uuid.NewString()
+
+	tests := []struct {
+		name    string
+		req     ScheduleJobRequest
+		wantErr bool
+	}{
+		{
+			name: "Valid request",
+			req: ScheduleJobRequest{
+				JobID:      validUUID,
+				UserID:     validUUID,
+				InputURI:   "s3://bucket/input",
+				MapperURI:  "s3://bucket/mapper",
+				ReducerURI: "s3://bucket/reducer",
+				MTasks:     1,
+				RTasks:     1,
+				Tasks: []ScheduleTask{
+					{TaskID: uuid.NewString(), TaskType: "Map"},
+					{TaskID: uuid.NewString(), TaskType: "Reduce"},
+				},
+			},
+			wantErr: false,
+		},
+		{
+			name: "Invalid JobID",
+			req: ScheduleJobRequest{
+				JobID: "invalid",
+			},
+			wantErr: true,
+		},
+		{
+			name: "Invalid UserID",
+			req: ScheduleJobRequest{
+				JobID:  validUUID,
+				UserID: "invalid",
+			},
+			wantErr: true,
+		},
+		{
+			name: "Empty Input URI",
+			req: ScheduleJobRequest{
+				JobID:  validUUID,
+				UserID: validUUID,
+			},
+			wantErr: true,
+		},
+		{
+			name: "Task count mismatch",
+			req: ScheduleJobRequest{
+				JobID:      validUUID,
+				UserID:     validUUID,
+				InputURI:   "s3://bucket/input",
+				MapperURI:  "s3://bucket/mapper",
+				ReducerURI: "s3://bucket/reducer",
+				MTasks:     1,
+				RTasks:     1,
+				Tasks: []ScheduleTask{
+					{TaskID: uuid.NewString(), TaskType: "Map"},
+				},
+			},
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := ValidateScheduleJobRequest(tt.req)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("ValidateScheduleJobRequest() error = %v, wantErr %v", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestExtractMapTaskIDs(t *testing.T) {
+	map1 := uuid.NewString()
+	map2 := uuid.NewString()
+	reduce1 := uuid.NewString()
+
+	tasks := []ScheduleTask{
+		{TaskID: map1, TaskType: "Map"},
+		{TaskID: reduce1, TaskType: "Reduce"},
+		{TaskID: map2, TaskType: "Map"},
+	}
+
+	result := ExtractMapTaskIDs(tasks)
+
+	if len(result) != 2 {
+		t.Fatalf("expected 2 map tasks, got %d", len(result))
+	}
+	if result[0] != map1 || result[1] != map2 {
+		t.Errorf("expected map tasks [%s, %s], got %v", map1, map2, result)
+	}
+}
