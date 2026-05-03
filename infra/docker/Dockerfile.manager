@@ -5,7 +5,7 @@ RUN go mod download
 COPY . .
 RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /manager ./manager-service/cmd/manager
 
-FROM gcr.io/distroless/static-debian12:nonroot
+FROM busybox:1.37
 COPY --from=builder /manager /manager
 EXPOSE 50051
 ENTRYPOINT ["/manager"]

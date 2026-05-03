@@ -5,7 +5,7 @@ RUN go mod download
 COPY . .
 RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /api ./manager-service/cmd/api
 
-FROM gcr.io/distroless/static-debian12:nonroot
+FROM busybox:1.37
 COPY --from=builder /api /api
 EXPOSE 8081
 ENTRYPOINT ["/api"]
