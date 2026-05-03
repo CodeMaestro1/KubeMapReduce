@@ -57,18 +57,19 @@ func sandboxedEnv() []string {
 func buildCmd(ctx context.Context, codePath, runtimeEnv string) (*exec.Cmd, error) {
 	rt := strings.ToLower(strings.TrimSpace(runtimeEnv))
 	ext := strings.ToLower(filepath.Ext(codePath))
+	safePath := ensureSafePath(codePath)
 	switch {
 	case rt == "python" || rt == "python3" || ext == ".py":
-		return exec.CommandContext(ctx, "python3", codePath), nil
+		return exec.CommandContext(ctx, "python3", safePath), nil
 	case rt == "java" || ext == ".jar":
-		return exec.CommandContext(ctx, "java", "-jar", codePath), nil
+		return exec.CommandContext(ctx, "java", "-jar", safePath), nil
 	case rt == "c" || rt == "cpp":
 		// Compiled binary: downloadCode already stripped the extension and set
 		// execute permissions; run the binary directly.
-		return exec.CommandContext(ctx, codePath), nil
+		return exec.CommandContext(ctx, safePath), nil
 	default:
 		// Pre-compiled binary or arbitrary executable.
-		return exec.CommandContext(ctx, codePath), nil
+		return exec.CommandContext(ctx, safePath), nil
 	}
 }
 
@@ -78,7 +79,7 @@ func buildCmd(ctx context.Context, codePath, runtimeEnv string) (*exec.Cmd, erro
 func compileC(ctx context.Context, srcPath, outPath string) error {
 	compileCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(compileCtx, "gcc", "-O3", srcPath, "-o", outPath)
+	cmd := exec.CommandContext(compileCtx, "gcc", "-O3", ensureSafePath(srcPath), "-o", ensureSafePath(outPath))
 	cmd.Env = sandboxedEnv()
 	out, err := cmd.CombinedOutput()
 	if err != nil {
@@ -93,13 +94,26 @@ func compileC(ctx context.Context, srcPath, outPath string) error {
 func compileCpp(ctx context.Context, srcPath, outPath string) error {
 	compileCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(compileCtx, "g++", "-O3", srcPath, "-o", outPath)
+	cmd := exec.CommandContext(compileCtx, "g++", "-O3", ensureSafePath(srcPath), "-o", ensureSafePath(outPath))
 	cmd.Env = sandboxedEnv()
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("g++: %w\n%s", err, out)
 	}
 	return nil
+}
+
+// ensureSafePath ensures that a path passed as an argument to a command is
+// either absolute or explicitly relative (starting with ./ or ../) to prevent
+// it from being interpreted as a command-line flag or a response file (@file).
+func ensureSafePath(p string) string {
+	if filepath.IsAbs(p) {
+		return p
+	}
+	if strings.HasPrefix(p, "./") || strings.HasPrefix(p, "../") {
+		return p
+	}
+	return "./" + p
 }
 
 // runUserCode executes the user code with JSONL piped on stdin and captures stdout.
