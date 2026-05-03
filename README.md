@@ -12,14 +12,10 @@ A distributed MapReduce platform built on Kubernetes. Workers run as K8s Jobs sp
 
 The `docker-compose.yml` starts Keycloak, Postgres, MinIO, the API server, and the Manager. It does **not** run real worker jobs — the Manager spawns workers as Kubernetes Jobs and requires an in-cluster environment for actual job execution. Use this setup to develop and test the API, auth, and job submission flows.
 
-Add these lines to `infra/docker/.env` before starting (the security hardening commit requires them):
+Add this line to `infra/docker/.env` before starting (required for admin user management endpoints):
 
 ```env
 KEYCLOAK_ADMIN_USERNAME=admin
-KEYCLOAK_ADMIN_PASSWORD=admin
-MANAGER_INTERNAL_API_KEY=local-dev-key
-MANAGER_WORKER_RPC_TOKEN=local-dev-token
-ALLOW_INSECURE_WORKER_RPC=true
 ```
 
 Then start the stack:
@@ -29,10 +25,18 @@ cd infra/docker
 docker compose up -d
 ```
 
+The Keycloak realm, client, and roles are bootstrapped automatically by the `auth-setup` container on first start. Keycloak data is persisted in a named volume — realm config and users survive restarts. To wipe all state: `docker compose down -v`.
+
 Run DB migrations after the first start:
 
 ```bash
-psql postgres://mapreduce:mapreduce@localhost:5432/mapreduce < migrations/0001_initial_schema.sql
+docker exec -i mapreduce-postgres psql -U mapreduce -d mapreduce < migrations/0001_initial_schema.sql
+```
+
+On Windows (PowerShell), use `Get-Content` to pipe the file:
+
+```powershell
+Get-Content migrations\0001_initial_schema.sql | docker exec -i mapreduce-postgres psql -U mapreduce -d mapreduce
 ```
 
 | Service    | URL / Port                          |
@@ -45,7 +49,7 @@ psql postgres://mapreduce:mapreduce@localhost:5432/mapreduce < migrations/0001_i
 
 ## Quick Start (local smoke test)
 
-1. Add the missing env vars to `infra/docker/.env` (see Local Development section above).
+1. Add `KEYCLOAK_ADMIN_USERNAME=admin` to `infra/docker/.env` (see Local Development section above).
 
 2. Start all services:
 
@@ -54,11 +58,22 @@ psql postgres://mapreduce:mapreduce@localhost:5432/mapreduce < migrations/0001_i
    docker compose up -d
    ```
 
-3. Bootstrap the Keycloak realm and create the first admin user:
+   The `auth-setup` container bootstraps the Keycloak realm automatically. Wait for all containers to be healthy before proceeding.
+
+3. Run DB migrations (first start only):
+
+   ```bash
+   # Linux/macOS
+   docker exec -i mapreduce-postgres psql -U mapreduce -d mapreduce < migrations/0001_initial_schema.sql
+
+   # Windows (PowerShell)
+   Get-Content migrations\0001_initial_schema.sql | docker exec -i mapreduce-postgres psql -U mapreduce -d mapreduce
+   ```
+
+4. Create the first admin user:
 
    ```bash
    go run ./auth-service/cmd/setup \
-     --admin-username admin \
      --admin-password admin \
      --username platform-admin \
      --email platform-admin@example.com \
@@ -66,9 +81,7 @@ psql postgres://mapreduce:mapreduce@localhost:5432/mapreduce < migrations/0001_i
      --role ADMIN
    ```
 
-   Omit `--username` to bootstrap the realm only.
-
-4. Verify the stack is healthy and submit a job:
+5. Verify the stack is healthy and submit a job:
 
    ```bash
    go run ./cli-service/cmd/cli login --username platform-admin
@@ -312,12 +325,10 @@ go run ./cli-service/cmd/cli token inspect
 
 ## Initial Setup
 
-The `setup` command bootstraps the Keycloak realm (client, roles, audience mapper)
-and optionally creates the first user — all in one step:
+When running via `docker compose`, the `auth-setup` container bootstraps the Keycloak realm automatically on startup. To create the first admin user, run from the repo root:
 
 ```bash
 go run ./auth-service/cmd/setup \
-  --admin-username admin \
   --admin-password admin \
   --username platform-admin \
   --email platform-admin@example.com \
@@ -327,10 +338,11 @@ go run ./auth-service/cmd/setup \
 
 Notes:
 
-- Use `--prompt-password` (recommended) so the new user password is hidden.
+- `--admin-password` is the Keycloak master realm admin password (set in `.env`).
+- Use `--prompt-password` (recommended) so the new user's password is hidden.
 - Use `--role USER` to create a normal user instead of an admin.
-- Omit `--username` entirely to only bootstrap the realm without creating any users.
-- After setup, use `kubemapreduce admin create-user` via the CLI for additional users.
+- Omit `--username` to re-run realm bootstrap only (idempotent).
+- After the first user exists, use `kubemapreduce admin create-user` via the CLI for additional users.
 
 ## Configuration
 

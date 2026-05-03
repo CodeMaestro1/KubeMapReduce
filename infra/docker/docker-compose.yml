@@ -7,6 +7,8 @@ services:
     ports:
       - "8080:8080"
     command: start-dev
+    volumes:
+      - keycloak-data:/opt/keycloak/data
     healthcheck:
       test: ["CMD-SHELL", "timeout 5 bash -c ':> /dev/tcp/127.0.0.1/8080' || exit 1"]
       interval: 10s
@@ -29,7 +31,7 @@ services:
     restart: on-failure
 
   postgres:
-    image: postgres:15
+    image: postgres:17
     container_name: mapreduce-postgres
     env_file:
       - .env
@@ -130,3 +132,4 @@ services:
 volumes:
   postgres-data:
   minio-data:
+  keycloak-data:
