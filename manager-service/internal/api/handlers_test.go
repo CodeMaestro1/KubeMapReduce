@@ -1874,3 +1874,49 @@ func TestNewHandlers(t *testing.T) {
 		t.Errorf("expected now to be initialized, got nil")
 	}
 }
+
+func TestHandleRoot_OK(t *testing.T) {
+	h := newTestHandlers()
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	rec := httptest.NewRecorder()
+
+	h.HandleRoot(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d", http.StatusOK, rec.Code)
+	}
+
+	if !strings.Contains(rec.Body.String(), `"name":"KubeMapReduce API"`) {
+		t.Fatalf("expected body to contain name, got %q", rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"status":"running"`) {
+		t.Fatalf("expected body to contain status running, got %q", rec.Body.String())
+	}
+}
+
+func TestHandleRoot_NotFound(t *testing.T) {
+	h := newTestHandlers()
+
+	req := httptest.NewRequest(http.MethodGet, "/subpath", nil)
+	rec := httptest.NewRecorder()
+
+	h.HandleRoot(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("expected status %d, got %d", http.StatusNotFound, rec.Code)
+	}
+}
+
+func TestHandleRoot_MethodNotAllowed(t *testing.T) {
+	h := newTestHandlers()
+
+	req := httptest.NewRequest(http.MethodPost, "/", nil)
+	rec := httptest.NewRecorder()
+
+	h.HandleRoot(rec, req)
+
+	if rec.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("expected status %d, got %d", http.StatusMethodNotAllowed, rec.Code)
+	}
+}
