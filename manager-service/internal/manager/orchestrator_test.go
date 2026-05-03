@@ -11,6 +11,67 @@ import (
 	"k8s.io/client-go/kubernetes/fake"
 )
 
+func TestNewKubeOrchestrator(t *testing.T) {
+	client := fake.NewSimpleClientset()
+
+	tests := []struct {
+		name                 string
+		namespace            string
+		workerImage          string
+		workerSecretName     string
+		wantNamespace        string
+		wantWorkerImage      string
+		wantWorkerSecretName string
+	}{
+		{
+			name:                 "defaults applied when empty",
+			namespace:            "",
+			workerImage:          "",
+			workerSecretName:     "",
+			wantNamespace:        "default",
+			wantWorkerImage:      "kubemapreduce-worker:latest",
+			wantWorkerSecretName: "kubemapreduce-secrets",
+		},
+		{
+			name:                 "explicit values retained",
+			namespace:            "custom-ns",
+			workerImage:          "custom-image:v1",
+			workerSecretName:     "custom-secret",
+			wantNamespace:        "custom-ns",
+			wantWorkerImage:      "custom-image:v1",
+			wantWorkerSecretName: "custom-secret",
+		},
+		{
+			name:                 "partial values provided",
+			namespace:            "partial-ns",
+			workerImage:          "",
+			workerSecretName:     "partial-secret",
+			wantNamespace:        "partial-ns",
+			wantWorkerImage:      "kubemapreduce-worker:latest",
+			wantWorkerSecretName: "partial-secret",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			orchestrator := NewKubeOrchestrator(client, tc.namespace, tc.workerImage, tc.workerSecretName)
+
+			if orchestrator.clientset != client {
+				t.Errorf("expected clientset to be set correctly")
+			}
+			if orchestrator.namespace != tc.wantNamespace {
+				t.Errorf("expected namespace %q, got %q", tc.wantNamespace, orchestrator.namespace)
+			}
+			if orchestrator.workerImage != tc.wantWorkerImage {
+				t.Errorf("expected workerImage %q, got %q", tc.wantWorkerImage, orchestrator.workerImage)
+			}
+			if orchestrator.workerSecretName != tc.wantWorkerSecretName {
+				t.Errorf("expected workerSecretName %q, got %q", tc.wantWorkerSecretName, orchestrator.workerSecretName)
+			}
+		})
+	}
+}
+
 func TestBuildWorkerJobName_DNSLabelBounded(t *testing.T) {
 	taskID := strings.Repeat("A", 100) + "{}"
 	sanitized := sanitizeForDNSLabel(taskID)
