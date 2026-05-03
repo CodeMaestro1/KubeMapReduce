@@ -41,8 +41,8 @@ func TestDownloadCode_PythonReturnsPathAndCleanup(t *testing.T) {
 	}
 	defer cleanup()
 
-	if execPath != filepath.Join(tempDir, "mapper.py") {
-		t.Errorf("execPath = %q, want %q", execPath, filepath.Join(tempDir, "mapper.py"))
+	if execPath != filepath.Join(tempDir, "usercode.py") {
+		t.Errorf("execPath = %q, want %q", execPath, filepath.Join(tempDir, "usercode.py"))
 	}
 
 	got, err := os.ReadFile(execPath)

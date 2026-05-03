@@ -117,13 +117,12 @@ func downloadCode(ctx context.Context, storage objectStorage, codeURI, tempDir s
 		return "", func() {}, fmt.Errorf("read code: %w", err)
 	}
 
-	baseName := filepath.Base(key)
-	codePath := filepath.Join(tempDir, baseName)
+	ext := strings.ToLower(filepath.Ext(key))
+	codePath := filepath.Join(tempDir, "usercode"+ext)
 	if err := os.WriteFile(codePath, data, 0o755); err != nil {
 		return "", func() {}, fmt.Errorf("write code: %w", err)
 	}
 
-	ext := strings.ToLower(filepath.Ext(key))
 	switch ext {
 	case ".c":
 		outPath := strings.TrimSuffix(codePath, ext)
