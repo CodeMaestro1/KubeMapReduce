@@ -22,6 +22,7 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
 	"github.com/minio/minio-go/v7"
+	"github.com/minio/minio-go/v7/pkg/credentials"
 )
 
 func newTestHandlers() *Handlers {
@@ -1838,6 +1839,65 @@ func (s *shortReadObjectClient) GetObject(_ context.Context, _, _ string, _ mini
 
 func (s *shortReadObjectClient) ListObjects(context.Context, string, string, bool) ([]scheduleObjectInfo, error) {
 	return nil, errors.New("not implemented")
+}
+
+func TestMinioScheduleObjectClient_GetObject(t *testing.T) {
+	expectedData := []byte("hello minio object")
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/mybucket/myobject" {
+			w.Header().Set("Accept-Ranges", "bytes")
+			w.Header().Set("Content-Length", fmt.Sprintf("%d", len(expectedData)))
+			w.Header().Set("Content-Type", "application/octet-stream")
+			w.Header().Set("ETag", `"d41d8cd98f00b204e9800998ecf8427e"`)
+			w.Header().Set("Last-Modified", "Wed, 21 Oct 2015 07:28:00 GMT")
+			_, _ = w.Write(expectedData)
+		} else {
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer ts.Close()
+
+	endpoint := strings.TrimPrefix(ts.URL, "http://")
+
+	client, err := minio.New(endpoint, &minio.Options{
+		Creds:  credentials.NewStaticV4("test", "test", ""),
+		Secure: false,
+		Region: "us-east-1",
+	})
+	if err != nil {
+		t.Fatalf("failed to create minio client: %v", err)
+	}
+
+	sc := newScheduleObjectClient(client)
+
+	// Test successful GetObject
+	obj, err := sc.GetObject(context.Background(), "mybucket", "myobject", minio.GetObjectOptions{})
+	if err != nil {
+		t.Fatalf("failed to GetObject: %v", err)
+	}
+	defer obj.Close()
+
+	data, err := io.ReadAll(obj)
+	if err != nil {
+		t.Fatalf("failed to read object data: %v", err)
+	}
+
+	if string(data) != string(expectedData) {
+		t.Errorf("expected %q, got %q", expectedData, data)
+	}
+
+	// Test GetObject failure
+	objFail, err := sc.GetObject(context.Background(), "mybucket", "not-exist", minio.GetObjectOptions{})
+	if err != nil {
+		t.Fatalf("failed to call GetObject: %v", err)
+	}
+	defer objFail.Close()
+
+	_, err = io.ReadAll(objFail)
+	if err == nil {
+		t.Fatalf("expected error reading non-existent object, got nil")
+	}
 }
 
 func TestNewHandlers(t *testing.T) {
