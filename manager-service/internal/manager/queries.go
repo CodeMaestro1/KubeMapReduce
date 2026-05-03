@@ -162,7 +162,11 @@ const QueryFailRunningAttemptsByJob = `
 // The Manager's Active Reaper uses this to reclaim zombie workers (Section 5.1).
 // Expiry is computed using lease_ttl so correctness does not depend on the caller's timeout value.
 const QuerySelectStaleTasks = `
-	SELECT t.task_id, a.attempt_id
+	SELECT
+		t.task_id,
+		a.attempt_id,
+		t.job_id,
+		(SELECT COUNT(*) FROM TASK_ATTEMPTS WHERE task_id = t.task_id) as attempt_count
 	FROM TASKS t
 	JOIN TASK_ATTEMPTS a ON t.current_attempt_id = a.attempt_id
 	WHERE t.status = 'In-Progress' AND a.status = 'Running' AND a.last_renewed_at + a.lease_ttl * INTERVAL '1 second' < NOW()

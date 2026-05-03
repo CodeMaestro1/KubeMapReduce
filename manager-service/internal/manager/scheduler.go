@@ -1017,16 +1017,19 @@ func (s *Scheduler) FailStaleTasks(ctx context.Context) (int, error) {
 	defer rows.Close()
 
 	type staleRec struct {
-		taskID    string
-		attemptID string
+		taskID       string
+		attemptID    string
+		jobID        string
+		attemptCount int
 	}
 	var stales []staleRec
 	for rows.Next() {
-		var t, a string
-		if err := rows.Scan(&t, &a); err != nil {
+		var t, a, j string
+		var c int
+		if err := rows.Scan(&t, &a, &j, &c); err != nil {
 			return 0, fmt.Errorf("scanning stale task row: %w", err)
 		}
-		stales = append(stales, staleRec{t, a})
+		stales = append(stales, staleRec{t, a, j, c})
 	}
 	if err := rows.Err(); err != nil {
 		return 0, fmt.Errorf("iterating stale task rows: %w", err)
@@ -1042,19 +1045,8 @@ func (s *Scheduler) FailStaleTasks(ctx context.Context) (int, error) {
 	var failedTaskIDs []string
 	failedJobs := make(map[string]struct{})
 	for _, rec := range stales {
-		var jobID string
-		if err := tx.QueryRowContext(ctx, QueryGetTaskJobID, rec.taskID).Scan(&jobID); err != nil {
-			return 0, fmt.Errorf("loading job for task %s: %w", rec.taskID, err)
-		}
-
-		var attemptCount int
-		err = tx.QueryRowContext(ctx, QueryCountAttemptsByTask, rec.taskID).Scan(&attemptCount)
-		if err != nil {
-			return 0, fmt.Errorf("counting attempts for task %s: %w", rec.taskID, err)
-		}
-
 		newState := "Idle"
-		if attemptCount >= MaxTaskAttempts {
+		if rec.attemptCount >= MaxTaskAttempts {
 			newState = "Failed"
 		}
 
@@ -1068,17 +1060,17 @@ func (s *Scheduler) FailStaleTasks(ctx context.Context) (int, error) {
 			return 0, fmt.Errorf("failing attempt %s: %w", rec.attemptID, err)
 		}
 		if newState == "Failed" {
-			if err := s.updateJobStatusTx(ctx, tx, jobID, "Cleaning"); err != nil {
-				return 0, fmt.Errorf("marking job %s failed: %w", jobID, err)
+			if err := s.updateJobStatusTx(ctx, tx, rec.jobID, "Cleaning"); err != nil {
+				return 0, fmt.Errorf("marking job %s failed: %w", rec.jobID, err)
 			}
 			failedTaskIDs = append(failedTaskIDs, rec.taskID)
-			failedJobs[jobID] = struct{}{}
+			failedJobs[rec.jobID] = struct{}{}
 		} else if newState == "Idle" {
 			retryAttemptID, err := s.prepareRetryAttemptTx(ctx, tx, rec.taskID)
 			if err != nil {
 				return 0, fmt.Errorf("creating retry attempt for task %s: %w", rec.taskID, err)
 			}
-			respawnTasks = append(respawnTasks, retrySpawn{taskID: rec.taskID, attemptID: retryAttemptID, jobID: jobID})
+			respawnTasks = append(respawnTasks, retrySpawn{taskID: rec.taskID, attemptID: retryAttemptID, jobID: rec.jobID})
 		}
 		recoveredCount++
 	}
