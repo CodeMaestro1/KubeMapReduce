@@ -35,9 +35,9 @@ func TestNewLogger_RespectsLogLevel(t *testing.T) {
 
 func TestNewLogger_AllLogLevels(t *testing.T) {
 	tests := []struct {
-		envLevel  string
-		enabled   slog.Level
-		disabled  slog.Level
+		envLevel string
+		enabled  slog.Level
+		disabled slog.Level
 	}{
 		{"debug", slog.LevelDebug, slog.Level(-8)},
 		{"warn", slog.LevelWarn, slog.LevelInfo},
