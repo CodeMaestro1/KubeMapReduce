@@ -646,7 +646,7 @@ func TestWorkerServer_TaskComplete_SuccessReturnsAck(t *testing.T) {
 	mock.ExpectExec(regexp.QuoteMeta(manager.QuerySucceedAttempt)).
 		WithArgs(attemptID).
 		WillReturnResult(sqlmock.NewResult(1, 1))
-	mock.ExpectExec(regexp.QuoteMeta(manager.QueryInsertOutput)).
+	mock.ExpectExec(regexp.QuoteMeta(manager.QueryInsertOutputBulkBase)).
 		WithArgs(taskID, 0, "s3://outputs/reduce-0.jsonl", "sha256-output").
 		WillReturnResult(sqlmock.NewResult(1, 1))
 	mock.ExpectQuery(regexp.QuoteMeta(manager.QueryGetTaskJobID)).
