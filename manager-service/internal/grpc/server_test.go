@@ -953,6 +953,94 @@ func TestWorkerServer_TaskComplete_SuccessReturnsAck(t *testing.T) {
 	}
 }
 
+func TestWorkerServer_TaskFailed_MissingArgsReturnsInvalidArgument(t *testing.T) {
+	_, _, server := setupMockServer(t)
+
+	tests := []struct {
+		name      string
+		taskId    string
+		attemptId string
+		leaseId   string
+	}{
+		{"missing task_id", "", "attempt123", "lease123"},
+		{"missing attempt_id", "task123", "", "lease123"},
+		{"missing lease_id", "task123", "attempt123", ""},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := server.TaskFailed(context.Background(), &pb.TaskFailedRequest{
+				TaskId:       tc.taskId,
+				AttemptId:    tc.attemptId,
+				LeaseId:      tc.leaseId,
+				ErrorMessage: "worker crashed",
+			})
+			if err == nil {
+				t.Fatalf("expected error, got nil")
+			}
+			st, ok := status.FromError(err)
+			if !ok || st.Code() != codes.InvalidArgument {
+				t.Fatalf("expected InvalidArgument, got %v", err)
+			}
+		})
+	}
+}
+
+func TestWorkerServer_TaskFailed_TaskNotFoundReturnsNotFound(t *testing.T) {
+	db, mock, server := setupMockServer(t)
+	defer db.Close()
+
+	taskID := uuid.New().String()
+	attemptID := uuid.New().String()
+
+	mock.ExpectBegin()
+	mock.ExpectQuery(regexp.QuoteMeta(manager.QuerySelectTaskForUpdate)).
+		WithArgs(taskID).
+		WillReturnError(sql.ErrNoRows)
+	mock.ExpectRollback()
+
+	_, err := server.TaskFailed(context.Background(), &pb.TaskFailedRequest{
+		TaskId:       taskID,
+		AttemptId:    attemptID,
+		LeaseId:      "lease123",
+		ErrorMessage: "worker crashed",
+	})
+	if err == nil {
+		t.Fatalf("expected error, got nil")
+	}
+	st, ok := status.FromError(err)
+	if !ok || st.Code() != codes.NotFound {
+		t.Fatalf("expected NotFound, got %v", err)
+	}
+}
+
+func TestWorkerServer_TaskFailed_InternalErrorReturnsInternal(t *testing.T) {
+	db, mock, server := setupMockServer(t)
+	defer db.Close()
+
+	taskID := uuid.New().String()
+	attemptID := uuid.New().String()
+
+	mock.ExpectBegin()
+	mock.ExpectQuery(regexp.QuoteMeta(manager.QuerySelectTaskForUpdate)).
+		WithArgs(taskID).
+		WillReturnError(errors.New("database connection failed"))
+	mock.ExpectRollback()
+
+	_, err := server.TaskFailed(context.Background(), &pb.TaskFailedRequest{
+		TaskId:       taskID,
+		AttemptId:    attemptID,
+		LeaseId:      "lease123",
+		ErrorMessage: "worker crashed",
+	})
+	if err == nil {
+		t.Fatalf("expected error, got nil")
+	}
+	st, ok := status.FromError(err)
+	if !ok || st.Code() != codes.Internal {
+		t.Fatalf("expected Internal, got %v", err)
+	}
+}
 func TestWorkerServer_TaskFailed_StaleAttemptReturnsPermissionDenied(t *testing.T) {
 	db, mock, server := setupMockServer(t)
 	defer db.Close()
