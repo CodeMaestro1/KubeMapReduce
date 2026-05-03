@@ -14,6 +14,7 @@ import (
 
 	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/google/uuid"
+	"github.com/minio/minio-go/v7"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
@@ -61,6 +62,60 @@ func (f *fakeManifestUploader) UploadManifest(ctx context.Context, bucketName, o
 		return f.uri, nil
 	}
 	return fmt.Sprintf("s3://%s/%s", bucketName, objectName), nil
+}
+
+func TestNewWorkerServer(t *testing.T) {
+	db, _, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("unexpected error creating sqlmock: %v", err)
+	}
+	defer db.Close()
+
+	scheduler, err := manager.NewScheduler(db, 0, 1, &manager.MockOrchestrator{}, "manager-0:50051", 30, nil)
+	if err != nil {
+		t.Fatalf("unexpected error creating scheduler: %v", err)
+	}
+
+	t.Run("without minioClient", func(t *testing.T) {
+		server := NewWorkerServer(scheduler, nil, 0)
+		if server == nil {
+			t.Fatal("expected non-nil server")
+		}
+		if server.scheduler != scheduler {
+			t.Errorf("expected scheduler %v, got %v", scheduler, server.scheduler)
+		}
+		if server.minioClient != nil {
+			t.Errorf("expected nil minioClient, got %v", server.minioClient)
+		}
+		if server.uploader != nil {
+			t.Errorf("expected nil uploader, got %v", server.uploader)
+		}
+		if server.manifestThresholdBytes != maxTaskAssignmentSizeBytes {
+			t.Errorf("expected default threshold %d, got %d", maxTaskAssignmentSizeBytes, server.manifestThresholdBytes)
+		}
+	})
+
+	t.Run("with minioClient and threshold", func(t *testing.T) {
+		dummyClient := &minio.Client{}
+		threshold := 1024
+
+		server := NewWorkerServer(scheduler, dummyClient, threshold)
+		if server == nil {
+			t.Fatal("expected non-nil server")
+		}
+		if server.minioClient != dummyClient {
+			t.Errorf("expected minioClient %v, got %v", dummyClient, server.minioClient)
+		}
+		if server.uploader == nil {
+			t.Fatal("expected non-nil uploader")
+		}
+		if _, ok := server.uploader.(*minioManifestUploader); !ok {
+			t.Errorf("expected uploader to be *minioManifestUploader, got %T", server.uploader)
+		}
+		if server.manifestThresholdBytes != threshold {
+			t.Errorf("expected threshold %d, got %d", threshold, server.manifestThresholdBytes)
+		}
+	})
 }
 
 func TestWorkerServer_Register_Success(t *testing.T) {
