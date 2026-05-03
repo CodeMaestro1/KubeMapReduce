@@ -274,6 +274,106 @@ func TestWorkerServer_Register_PermissionDenied(t *testing.T) {
 	}
 }
 
+func TestWorkerServer_Heartbeat_MissingArguments(t *testing.T) {
+	_, _, server := setupMockServer(t)
+
+	tests := []struct {
+		name      string
+		taskID    string
+		attemptID string
+		leaseID   string
+	}{
+		{"Missing TaskId", "", "attempt123", "lease123"},
+		{"Missing AttemptId", "task123", "", "lease123"},
+		{"Missing LeaseId", "task123", "attempt123", ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := &pb.HeartbeatRequest{
+				TaskId:    tt.taskID,
+				AttemptId: tt.attemptID,
+				LeaseId:   tt.leaseID,
+			}
+			_, err := server.Heartbeat(context.Background(), req)
+			if err == nil {
+				t.Fatalf("expected error, got nil")
+			}
+			st, ok := status.FromError(err)
+			if !ok {
+				t.Fatalf("expected gRPC status error, got: %v", err)
+			}
+			if st.Code() != codes.InvalidArgument {
+				t.Errorf("expected InvalidArgument, got %v", st.Code())
+			}
+		})
+	}
+}
+
+func TestWorkerServer_Heartbeat_TaskNotFound(t *testing.T) {
+	db, mock, server := setupMockServer(t)
+	defer db.Close()
+
+	taskID := uuid.New().String()
+	attemptID := uuid.New().String()
+	leaseID := "lease123"
+
+	mock.ExpectBegin()
+	mock.ExpectQuery(regexp.QuoteMeta(manager.QuerySelectTaskForUpdate)).
+		WithArgs(taskID).
+		WillReturnError(sql.ErrNoRows)
+
+	mock.ExpectRollback()
+
+	req := &pb.HeartbeatRequest{
+		TaskId:    taskID,
+		AttemptId: attemptID,
+		LeaseId:   leaseID,
+	}
+
+	resp, err := server.Heartbeat(context.Background(), req)
+	if err != nil {
+		t.Fatalf("unexpected error, should return TERMINATE cleanly: %v", err)
+	}
+	if resp.Action != pb.HeartbeatResponse_TERMINATE {
+		t.Errorf("expected TERMINATE, got %v", resp.Action)
+	}
+}
+
+func TestWorkerServer_Heartbeat_InternalError(t *testing.T) {
+	db, mock, server := setupMockServer(t)
+	defer db.Close()
+
+	taskID := uuid.New().String()
+	attemptID := uuid.New().String()
+	leaseID := "lease123"
+
+	mock.ExpectBegin()
+	mock.ExpectQuery(regexp.QuoteMeta(manager.QuerySelectTaskForUpdate)).
+		WithArgs(taskID).
+		WillReturnError(errors.New("db connection failed"))
+
+	mock.ExpectRollback()
+
+	req := &pb.HeartbeatRequest{
+		TaskId:    taskID,
+		AttemptId: attemptID,
+		LeaseId:   leaseID,
+	}
+
+	_, err := server.Heartbeat(context.Background(), req)
+	if err == nil {
+		t.Fatalf("expected error, got nil")
+	}
+	st, ok := status.FromError(err)
+	if !ok {
+		t.Fatalf("expected gRPC status error, got: %v", err)
+	}
+	if st.Code() != codes.Internal {
+		t.Errorf("expected Internal error, got %v", st.Code())
+	}
+}
+
 func TestWorkerServer_Heartbeat_Success(t *testing.T) {
 	db, mock, server := setupMockServer(t)
 	defer db.Close()
