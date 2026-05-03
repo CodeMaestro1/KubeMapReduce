@@ -8,10 +8,11 @@ services:
       - "8080:8080"
     command: start-dev
     healthcheck:
-      test: ["CMD-SHELL", "curl -sf http://localhost:8080/health/ready || exit 1"]
+      test: ["CMD-SHELL", "timeout 5 bash -c ':> /dev/tcp/127.0.0.1/8080' || exit 1"]
       interval: 10s
       timeout: 5s
-      retries: 10
+      retries: 30
+      start_period: 30s
 
   auth-setup:
     build:
@@ -20,6 +21,8 @@ services:
     container_name: mapreduce-auth-setup
     env_file:
       - .env
+    environment:
+      - KEYCLOAK_BASE_URL=http://keycloak:8080
     depends_on:
       keycloak:
         condition: service_healthy
@@ -52,10 +55,11 @@ services:
     volumes:
       - minio-data:/data
     healthcheck:
-      test: ["CMD", "curl", "-sf", "http://localhost:9000/minio/health/live"]
+      test: ["CMD-SHELL", "timeout 20 bash -c ':> /dev/tcp/127.0.0.1/9000' || exit 1"]
       interval: 5s
       timeout: 3s
-      retries: 10
+      retries: 15
+      start_period: 30s
 
   minio-init:
     image: minio/mc
