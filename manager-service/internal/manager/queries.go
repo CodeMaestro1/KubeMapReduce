@@ -115,8 +115,8 @@ const QueryCompleteTask = `UPDATE TASKS SET status = 'Completed', current_attemp
 // QuerySucceedAttempt marks the current attempt as successful with an end timestamp.
 const QuerySucceedAttempt = `UPDATE TASK_ATTEMPTS SET status = 'Success', end_time = NOW() WHERE attempt_id = $1`
 
-// QueryInsertOutput persists a single output shard to TASK_OUTPUTS (1NF compliant).
-const QueryInsertOutput = `INSERT INTO TASK_OUTPUTS (task_id, partition_index, output_uri, checksum) VALUES ($1, $2, $3, $4)`
+// QueryInsertOutputBulkBase is the prefix for a multi-row INSERT into TASK_OUTPUTS.
+const QueryInsertOutputBulkBase = `INSERT INTO TASK_OUTPUTS (task_id, partition_index, output_uri, checksum) VALUES `
 
 // ---------------------------------------------------------------------------
 // Lease management queries
