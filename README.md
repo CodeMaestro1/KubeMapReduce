@@ -12,11 +12,13 @@ A distributed MapReduce platform built on Kubernetes. Workers run as K8s Jobs sp
 
 The `docker-compose.yml` starts Keycloak, Postgres, MinIO, the API server, and the Manager. It does **not** run real worker jobs — the Manager spawns workers as Kubernetes Jobs and requires an in-cluster environment for actual job execution. Use this setup to develop and test the API, auth, and job submission flows.
 
-Add this line to `infra/docker/.env` before starting (required for admin user management endpoints):
+Copy the example env file (`.env` is gitignored — each developer maintains their own copy):
 
-```env
-KEYCLOAK_ADMIN_USERNAME=admin
+```bash
+cp infra/docker/.env.example infra/docker/.env
 ```
+
+The example contains working local-dev defaults. **For production**, replace all placeholder secrets and set `ALLOW_INSECURE_WORKER_RPC=false` with a real TLS cert pair.
 
 Then start the stack:
 
@@ -49,9 +51,7 @@ Get-Content migrations\0001_initial_schema.sql | docker exec -i mapreduce-postgr
 
 ## Quick Start (local smoke test)
 
-1. Add `KEYCLOAK_ADMIN_USERNAME=admin` to `infra/docker/.env` (see Local Development section above).
-
-2. Start all services:
+1. Start all services:
 
    ```bash
    cd infra/docker
@@ -60,7 +60,7 @@ Get-Content migrations\0001_initial_schema.sql | docker exec -i mapreduce-postgr
 
    The `auth-setup` container bootstraps the Keycloak realm automatically. Wait for all containers to be healthy before proceeding.
 
-3. Run DB migrations (first start only):
+2. Run DB migrations (first start only):
 
    ```bash
    # Linux/macOS
@@ -70,7 +70,7 @@ Get-Content migrations\0001_initial_schema.sql | docker exec -i mapreduce-postgr
    Get-Content migrations\0001_initial_schema.sql | docker exec -i mapreduce-postgres psql -U mapreduce -d mapreduce
    ```
 
-4. Create the first admin user:
+3. Create the first admin user:
 
    ```bash
    go run ./auth-service/cmd/setup \
@@ -81,7 +81,12 @@ Get-Content migrations\0001_initial_schema.sql | docker exec -i mapreduce-postgr
      --role ADMIN
    ```
 
-5. Verify the stack is healthy and submit a job:
+   - `--admin-password` matches `KEYCLOAK_ADMIN_PASSWORD` in `.env`.
+   - Use `--prompt-password` so the new user's password is not visible in shell history.
+   - Use `--role USER` to create a normal user instead of an admin.
+   - After the first user exists, use `kubemapreduce admin create-user` for additional users.
+
+4. Verify the stack is healthy and submit a job:
 
    ```bash
    go run ./cli-service/cmd/cli login --username platform-admin
@@ -200,12 +205,6 @@ infra/            # infra/deploy assets (docker-compose, env files, etc.)
 
 Service code is isolated under the service folders so each service can be extracted into its own repository later.
 
-## URLs
-
-- API: `http://localhost:8081`
-- Health check: `http://localhost:8081/health`
-- Keycloak Admin Console: `http://localhost:8080`
-
 ## Authentication and Roles
 
 The CLI authenticates with Keycloak using **username/password** (Resource Owner
@@ -322,27 +321,6 @@ Dump the full raw JWT claims (useful for debugging):
 ```bash
 go run ./cli-service/cmd/cli token inspect
 ```
-
-## Initial Setup
-
-When running via `docker compose`, the `auth-setup` container bootstraps the Keycloak realm automatically on startup. To create the first admin user, run from the repo root:
-
-```bash
-go run ./auth-service/cmd/setup \
-  --admin-password admin \
-  --username platform-admin \
-  --email platform-admin@example.com \
-  --prompt-password \
-  --role ADMIN
-```
-
-Notes:
-
-- `--admin-password` is the Keycloak master realm admin password (set in `.env`).
-- Use `--prompt-password` (recommended) so the new user's password is hidden.
-- Use `--role USER` to create a normal user instead of an admin.
-- Omit `--username` to re-run realm bootstrap only (idempotent).
-- After the first user exists, use `kubemapreduce admin create-user` via the CLI for additional users.
 
 ## Configuration
 
