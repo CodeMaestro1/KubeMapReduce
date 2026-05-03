@@ -30,6 +30,9 @@ Security is critical. Always check for vulnerabilities in the dependencies and t
 - **Architecture**: Respect the microservices architecture. Place code in the appropriate service directories (`auth-service`, `cli-service`, `manager-service`, `worker-service`).
 - **Dependencies**: Keep dependencies organized. Run `go mod tidy` after adding or removing imports.
 
+## 6
+Ensure that there are no conflicts in your pr with main branch
+
 ## Checklist Before Submission
 Before you submit your changes, ensure you have:
 - [ ] Run `go fmt ./...`
