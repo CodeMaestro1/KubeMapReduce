@@ -5,9 +5,10 @@ Strips HTML tags, skips <script>/<style> blocks, and removes the Gutenberg
 license header/footer surrounding the actual book content.
 
 Output: benchmarks/data/corpus.jsonl
-Each record: {"key": "pg1342:000042", "value": "text line"}
+Each record: {"key": "NameOfTheFile:000042", "value": "text line"}
 """
 
+import gzip
 import json
 import os
 import re
@@ -91,8 +92,9 @@ def extract_book_text(html_content):
 
 
 def book_id_from_filename(filename):
-    """pg1342-images.html -> pg1342"""
-    stem = os.path.splitext(os.path.basename(filename))[0]
+    """PrideandPrejudice.html.gz -> PrideandPrejudice"""
+    base = os.path.basename(filename)
+    stem = base.replace(".html.gz", "").replace(".html", "")
     return stem.replace("-images", "")
 
 
@@ -100,10 +102,10 @@ def build_corpus():
     os.makedirs(OUTPUT_DIR, exist_ok=True)
 
     html_files = sorted(
-        f for f in os.listdir(CORPUS_DIR) if f.endswith(".html")
+        f for f in os.listdir(CORPUS_DIR) if f.endswith(".html.gz")
     )
     if not html_files:
-        print(f"No HTML files found in {CORPUS_DIR}", file=sys.stderr)
+        print(f"No .html.gz files found in {CORPUS_DIR}", file=sys.stderr)
         sys.exit(1)
 
     total_lines = 0
@@ -114,7 +116,7 @@ def build_corpus():
             path = os.path.join(CORPUS_DIR, filename)
             book_id = book_id_from_filename(filename)
 
-            with open(path, encoding="utf-8") as f:
+            with gzip.open(path, "rt", encoding="utf-8") as f:
                 html = f.read()
 
             lines = extract_book_text(html)
