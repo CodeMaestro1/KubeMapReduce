@@ -85,6 +85,9 @@ services:
     container_name: mapreduce-api
     env_file:
       - .env
+    environment:
+      - KEYCLOAK_BASE_URL=http://keycloak:8080
+      - KEYCLOAK_ISSUER=http://localhost:8080/realms/mapreduce
     ports:
       - "8081:8081"
     depends_on:
