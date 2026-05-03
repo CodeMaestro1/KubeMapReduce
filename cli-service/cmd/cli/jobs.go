@@ -198,62 +198,8 @@ func cmdJobsSubmit(args []string) {
 
 		// Authenticate before uploads so we can fail fast on auth errors.
 		token, serverURL = jobsSubmitGetValidToken()
-		userID := userIDFromToken(token)
-		codeBucket := codeStorageBucket()
-		inputBucket := inputStorageBucket()
 
-		mapperURI, _, err := jobsSubmitUploadFile(token, serverURL, codeBucket, codeKey(userID, *mapperPath), *mapperPath)
-		if err != nil {
-			log.Fatalf("upload mapper: %v", err)
-		}
-
-		reducerURI, _, err := jobsSubmitUploadFile(token, serverURL, codeBucket, codeKey(userID, *reducerPath), *reducerPath)
-		if err != nil {
-			log.Fatalf("upload reducer: %v", err)
-		}
-
-		_, inputChecksum, err := jobsSubmitUploadFile(token, serverURL, inputBucket, filepath.Base(*inputFile), *inputFile)
-		if err != nil {
-			log.Fatalf("upload input: %v", err)
-		}
-
-		payload := cliJobPayload{
-			Filename:       filepath.Base(*inputFile),
-			InputChecksum:  inputChecksum,
-			InputChecksums: []string{inputChecksum},
-			Mapper: cliJobFuncSpec{
-				Language:   inferLanguage(*mapperPath),
-				Artifact:   mapperURI,
-				Entrypoint: "map",
-				Interface:  "map(key,value)->[]KeyValue",
-			},
-			Reducer: cliJobFuncSpec{
-				Language:   inferLanguage(*reducerPath),
-				Artifact:   reducerURI,
-				Entrypoint: "reduce",
-				Interface:  "reduce(key,values)->Value",
-			},
-			Reducers: *numReducers,
-		}
-
-		if *combinerPath != "" {
-			combinerURI, _, err := jobsSubmitUploadFile(token, serverURL, codeBucket, codeKey(userID, *combinerPath), *combinerPath)
-			if err != nil {
-				log.Fatalf("upload combiner: %v", err)
-			}
-			payload.Combiner = &cliJobFuncSpec{
-				Language:   inferLanguage(*combinerPath),
-				Artifact:   combinerURI,
-				Entrypoint: "combine",
-				Interface:  "reduce(key,values)->Value",
-			}
-		}
-
-		var marshalErr error
-		data, marshalErr = json.Marshal(payload)
-		if marshalErr != nil {
-			log.Fatalf("failed to build job request: %v", marshalErr)
-		}
+		data = uploadJobFilesAndBuildPayload(token, serverURL, *mapperPath, *reducerPath, *combinerPath, *inputFile, *numReducers)
 	}
 
 	if token == "" {
@@ -271,6 +217,66 @@ func cmdJobsSubmit(args []string) {
 	defer resp.Body.Close()
 
 	printResponse(resp)
+}
+
+func uploadJobFilesAndBuildPayload(token, serverURL, mapperPath, reducerPath, combinerPath, inputFile string, numReducers int) []byte {
+	userID := userIDFromToken(token)
+	codeBucket := codeStorageBucket()
+	inputBucket := inputStorageBucket()
+
+	mapperURI, _, err := jobsSubmitUploadFile(token, serverURL, codeBucket, codeKey(userID, mapperPath), mapperPath)
+	if err != nil {
+		log.Fatalf("upload mapper: %v", err)
+	}
+
+	reducerURI, _, err := jobsSubmitUploadFile(token, serverURL, codeBucket, codeKey(userID, reducerPath), reducerPath)
+	if err != nil {
+		log.Fatalf("upload reducer: %v", err)
+	}
+
+	_, inputChecksum, err := jobsSubmitUploadFile(token, serverURL, inputBucket, filepath.Base(inputFile), inputFile)
+	if err != nil {
+		log.Fatalf("upload input: %v", err)
+	}
+
+	payload := cliJobPayload{
+		Filename:       filepath.Base(inputFile),
+		InputChecksum:  inputChecksum,
+		InputChecksums: []string{inputChecksum},
+		Mapper: cliJobFuncSpec{
+			Language:   inferLanguage(mapperPath),
+			Artifact:   mapperURI,
+			Entrypoint: "map",
+			Interface:  "map(key,value)->[]KeyValue",
+		},
+		Reducer: cliJobFuncSpec{
+			Language:   inferLanguage(reducerPath),
+			Artifact:   reducerURI,
+			Entrypoint: "reduce",
+			Interface:  "reduce(key,values)->Value",
+		},
+		Reducers: numReducers,
+	}
+
+	if combinerPath != "" {
+		combinerURI, _, err := jobsSubmitUploadFile(token, serverURL, codeBucket, codeKey(userID, combinerPath), combinerPath)
+		if err != nil {
+			log.Fatalf("upload combiner: %v", err)
+		}
+		payload.Combiner = &cliJobFuncSpec{
+			Language:   inferLanguage(combinerPath),
+			Artifact:   combinerURI,
+			Entrypoint: "combine",
+			Interface:  "reduce(key,values)->Value",
+		}
+	}
+
+	data, marshalErr := json.Marshal(payload)
+	if marshalErr != nil {
+		log.Fatalf("failed to build job request: %v", marshalErr)
+	}
+
+	return data
 }
 
 // ── jobs list ──────────────────────────────────────────────
