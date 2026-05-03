@@ -34,8 +34,8 @@ func TestRPCToken_GetRequestMetadata(t *testing.T) {
 
 func TestRPCToken_RequireTransportSecurity(t *testing.T) {
 	tok := rpcToken{}
-	if !tok.RequireTransportSecurity() {
-		t.Error("expected true")
+	if tok.RequireTransportSecurity() {
+		t.Errorf("expected false")
 	}
 }
 

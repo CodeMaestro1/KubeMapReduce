@@ -1841,6 +1841,65 @@ func (s *shortReadObjectClient) ListObjects(context.Context, string, string, boo
 	return nil, errors.New("not implemented")
 }
 
+func TestMinioScheduleObjectClient_GetObject(t *testing.T) {
+	expectedData := []byte("hello minio object")
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/mybucket/myobject" {
+			w.Header().Set("Accept-Ranges", "bytes")
+			w.Header().Set("Content-Length", fmt.Sprintf("%d", len(expectedData)))
+			w.Header().Set("Content-Type", "application/octet-stream")
+			w.Header().Set("ETag", `"d41d8cd98f00b204e9800998ecf8427e"`)
+			w.Header().Set("Last-Modified", "Wed, 21 Oct 2015 07:28:00 GMT")
+			_, _ = w.Write(expectedData)
+		} else {
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer ts.Close()
+
+	endpoint := strings.TrimPrefix(ts.URL, "http://")
+
+	client, err := minio.New(endpoint, &minio.Options{
+		Creds:  credentials.NewStaticV4("test", "test", ""),
+		Secure: false,
+		Region: "us-east-1",
+	})
+	if err != nil {
+		t.Fatalf("failed to create minio client: %v", err)
+	}
+
+	sc := newScheduleObjectClient(client)
+
+	// Test successful GetObject
+	obj, err := sc.GetObject(context.Background(), "mybucket", "myobject", minio.GetObjectOptions{})
+	if err != nil {
+		t.Fatalf("failed to GetObject: %v", err)
+	}
+	defer obj.Close()
+
+	data, err := io.ReadAll(obj)
+	if err != nil {
+		t.Fatalf("failed to read object data: %v", err)
+	}
+
+	if string(data) != string(expectedData) {
+		t.Errorf("expected %q, got %q", expectedData, data)
+	}
+
+	// Test GetObject failure
+	objFail, err := sc.GetObject(context.Background(), "mybucket", "not-exist", minio.GetObjectOptions{})
+	if err != nil {
+		t.Fatalf("failed to call GetObject: %v", err)
+	}
+	defer objFail.Close()
+
+	_, err = io.ReadAll(objFail)
+	if err == nil {
+		t.Fatalf("expected error reading non-existent object, got nil")
+	}
+}
+
 func TestNewHandlers(t *testing.T) {
 	var adminClient *auth.KeycloakAdminClient
 	var store JobStore
@@ -1941,5 +2000,51 @@ func TestMinioScheduleObjectClient_StatObject_NotFound(t *testing.T) {
 	errResp := minio.ToErrorResponse(err)
 	if errResp.StatusCode != http.StatusNotFound {
 		t.Errorf("expected status code 404, got %d", errResp.StatusCode)
+	}
+}
+
+func TestHandleRoot_OK(t *testing.T) {
+	h := newTestHandlers()
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	rec := httptest.NewRecorder()
+
+	h.HandleRoot(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d", http.StatusOK, rec.Code)
+	}
+
+	if !strings.Contains(rec.Body.String(), `"name":"KubeMapReduce API"`) {
+		t.Fatalf("expected body to contain name, got %q", rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"status":"running"`) {
+		t.Fatalf("expected body to contain status running, got %q", rec.Body.String())
+	}
+}
+
+func TestHandleRoot_NotFound(t *testing.T) {
+	h := newTestHandlers()
+
+	req := httptest.NewRequest(http.MethodGet, "/subpath", nil)
+	rec := httptest.NewRecorder()
+
+	h.HandleRoot(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("expected status %d, got %d", http.StatusNotFound, rec.Code)
+	}
+}
+
+func TestHandleRoot_MethodNotAllowed(t *testing.T) {
+	h := newTestHandlers()
+
+	req := httptest.NewRequest(http.MethodPost, "/", nil)
+	rec := httptest.NewRecorder()
+
+	h.HandleRoot(rec, req)
+
+	if rec.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("expected status %d, got %d", http.StatusMethodNotAllowed, rec.Code)
 	}
 }
