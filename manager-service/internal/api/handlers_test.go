@@ -1839,3 +1839,38 @@ func (s *shortReadObjectClient) GetObject(_ context.Context, _, _ string, _ mini
 func (s *shortReadObjectClient) ListObjects(context.Context, string, string, bool) ([]scheduleObjectInfo, error) {
 	return nil, errors.New("not implemented")
 }
+
+func TestNewHandlers(t *testing.T) {
+	var adminClient *auth.KeycloakAdminClient
+	var store JobStore
+	var minioClient *minio.Client
+	managerAddr := "localhost:8081"
+	internalAPIKey := "secret"
+
+	handlers := NewHandlers(adminClient, store, minioClient, managerAddr, internalAPIKey)
+
+	if handlers.adminClient != adminClient {
+		t.Errorf("expected adminClient %v, got %v", adminClient, handlers.adminClient)
+	}
+	if handlers.store != store {
+		t.Errorf("expected store %v, got %v", store, handlers.store)
+	}
+	if handlers.minioClient != minioClient {
+		t.Errorf("expected minioClient %v, got %v", minioClient, handlers.minioClient)
+	}
+	if handlers.managerAddr != managerAddr {
+		t.Errorf("expected managerAddr %v, got %v", managerAddr, handlers.managerAddr)
+	}
+	if handlers.internalAPIKey != internalAPIKey {
+		t.Errorf("expected internalAPIKey %v, got %v", internalAPIKey, handlers.internalAPIKey)
+	}
+	if handlers.copier != nil {
+		t.Errorf("expected copier to be nil, got %v", handlers.copier)
+	}
+	if handlers.httpClient == nil {
+		t.Errorf("expected httpClient to be initialized, got nil")
+	}
+	if handlers.now == nil {
+		t.Errorf("expected now to be initialized, got nil")
+	}
+}
