@@ -19,6 +19,106 @@ import (
 
 const outputBucket = "mapreduce-outputs"
 
+func (w *Worker) downloadShuffleInputs(ctx context.Context, a *pb.TaskAssignment, taskTempDir string) (readers []io.Reader, closers []io.Closer, err error) {
+	readers = make([]io.Reader, 0, len(a.DataLocations))
+	closers = make([]io.Closer, 0, len(a.DataLocations))
+
+	for i, rawURI := range a.DataLocations {
+		dataURI, expectedChecksum := splitChecksumURI(rawURI)
+		bucket, key, parseErr := parseS3URI(dataURI)
+		if parseErr != nil {
+			return nil, closers, parseErr
+		}
+		obj, getErr := w.storage.GetObject(ctx, bucket, key, minio.GetObjectOptions{})
+		if getErr != nil {
+			return nil, closers, fmt.Errorf("GetObject %s: %w", dataURI, getErr)
+		}
+
+		// Write to temp file instead of memory to prevent OOM.
+		tmpPath := filepath.Join(taskTempDir, fmt.Sprintf("input-%d.jsonl", i))
+		tmpFile, err := os.Create(tmpPath)
+		if err != nil {
+			obj.Close()
+			return nil, closers, fmt.Errorf("create temp input file: %w", err)
+		}
+		closers = append(closers, tmpFile)
+
+		h := sha256.New()
+		if _, copyErr := io.Copy(io.MultiWriter(tmpFile, h), obj); copyErr != nil {
+			obj.Close()
+			return nil, closers, fmt.Errorf("reading shuffle input %s: %w", dataURI, copyErr)
+		}
+		obj.Close()
+
+		if expectedChecksum != "" {
+			got := hex.EncodeToString(h.Sum(nil))
+			if got != expectedChecksum {
+				return nil, closers, fmt.Errorf("checksum mismatch for shuffle input %s: want %s got %s", dataURI, expectedChecksum, got)
+			}
+		}
+
+		if _, err := tmpFile.Seek(0, io.SeekStart); err != nil {
+			return nil, closers, fmt.Errorf("seek temp input file: %w", err)
+		}
+		readers = append(readers, tmpFile)
+	}
+	return readers, closers, nil
+}
+
+func (w *Worker) mergeShuffleInputs(a *pb.TaskAssignment, taskTempDir string, readers []io.Reader) (io.Reader, io.Closer, error) {
+	// External k-way merge sort over pre-sorted mapper output files.
+	// Write merged output to a temp file instead of a bytes.Buffer to prevent OOM.
+	mergedFile, err := os.Create(filepath.Join(taskTempDir, "merged.jsonl"))
+	if err != nil {
+		return nil, nil, fmt.Errorf("create merged file: %w", err)
+	}
+
+	mergeCfg := shuffle.DefaultMergeConfig()
+	mergeCfg.TempDir = taskTempDir
+	if w.cfg.ShuffleBatchSize > 0 {
+		mergeCfg.BatchSize = w.cfg.ShuffleBatchSize
+	}
+	if w.cfg.ShuffleMaxRecordBytes > 0 {
+		mergeCfg.MaxRecordBytes = w.cfg.ShuffleMaxRecordBytes
+	}
+	mergeStats, mergeErr := shuffle.MergeInputs(readers, mergedFile, mergeCfg)
+	if mergeErr != nil {
+		mergedFile.Close()
+		return nil, nil, fmt.Errorf("merge: %w", mergeErr)
+	}
+
+	if _, err := mergedFile.Seek(0, 0); err != nil {
+		mergedFile.Close()
+		return nil, nil, fmt.Errorf("seek merged output: %w", err)
+	}
+	log.Printf("[reduce] merge stats task=%s passes=%d spills=%d peak_streams=%d records=%d",
+		a.TaskId, mergeStats.TotalPasses, mergeStats.SpillCount, mergeStats.PeakOpenStreams, mergeStats.TotalRecords)
+
+	if _, err := mergedFile.Seek(0, io.SeekStart); err != nil {
+		mergedFile.Close()
+		return nil, nil, fmt.Errorf("seek merged file: %w", err)
+	}
+	return mergedFile, mergedFile, nil
+}
+
+func (w *Worker) uploadReduceOutput(ctx context.Context, a *pb.TaskAssignment, reduceOut []byte) (uri, checksum string, err error) {
+	// Upload reducer output.
+	key := fmt.Sprintf("%s/partition-%d.jsonl", a.JobId, a.PartitionId)
+	h := sha256.New()
+	h.Write(reduceOut)
+	_, err = w.storage.PutObject(ctx, outputBucket, key,
+		bytes.NewReader(reduceOut), int64(len(reduceOut)),
+		minio.PutObjectOptions{ContentType: "application/x-ndjson"})
+	if err != nil {
+		return "", "", fmt.Errorf("upload output: %w", err)
+	}
+
+	uri = fmt.Sprintf("s3://%s/%s", outputBucket, key)
+	checksum = hex.EncodeToString(h.Sum(nil))
+	log.Printf("[reduce] done task=%s output=%s", a.TaskId, uri)
+	return uri, checksum, nil
+}
+
 func (w *Worker) runReduce(ctx context.Context, a *pb.TaskAssignment) (outputURIs, outputChecksums []string, err error) {
 	log.Printf("[reduce] task=%s partition=%d inputs=%d", a.TaskId, a.PartitionId, len(a.DataLocations))
 
@@ -37,104 +137,34 @@ func (w *Worker) runReduce(ctx context.Context, a *pb.TaskAssignment) (outputURI
 	defer cleanup()
 
 	// Download all shuffle-input files for this partition as streaming readers.
-	readers := make([]io.Reader, 0, len(a.DataLocations))
-	closers := make([]io.Closer, 0, len(a.DataLocations))
+	readers, closers, err := w.downloadShuffleInputs(ctx, a, taskTempDir)
 	defer func() {
 		for _, c := range closers {
 			c.Close()
 		}
 	}()
-
-	for i, rawURI := range a.DataLocations {
-		dataURI, expectedChecksum := splitChecksumURI(rawURI)
-		bucket, key, parseErr := parseS3URI(dataURI)
-		if parseErr != nil {
-			return nil, nil, parseErr
-		}
-		obj, getErr := w.storage.GetObject(ctx, bucket, key, minio.GetObjectOptions{})
-		if getErr != nil {
-			return nil, nil, fmt.Errorf("GetObject %s: %w", dataURI, getErr)
-		}
-
-		// Write to temp file instead of memory to prevent OOM.
-		tmpPath := filepath.Join(taskTempDir, fmt.Sprintf("input-%d.jsonl", i))
-		tmpFile, err := os.Create(tmpPath)
-		if err != nil {
-			obj.Close()
-			return nil, nil, fmt.Errorf("create temp input file: %w", err)
-		}
-		closers = append(closers, tmpFile)
-
-		h := sha256.New()
-		if _, copyErr := io.Copy(io.MultiWriter(tmpFile, h), obj); copyErr != nil {
-			obj.Close()
-			return nil, nil, fmt.Errorf("reading shuffle input %s: %w", dataURI, copyErr)
-		}
-		obj.Close()
-
-		if expectedChecksum != "" {
-			got := hex.EncodeToString(h.Sum(nil))
-			if got != expectedChecksum {
-				return nil, nil, fmt.Errorf("checksum mismatch for shuffle input %s: want %s got %s", dataURI, expectedChecksum, got)
-			}
-		}
-
-		if _, err := tmpFile.Seek(0, io.SeekStart); err != nil {
-			return nil, nil, fmt.Errorf("seek temp input file: %w", err)
-		}
-		readers = append(readers, tmpFile)
+	if err != nil {
+		return nil, nil, err
 	}
 
 	// External k-way merge sort over pre-sorted mapper output files.
-	// Write merged output to a temp file instead of a bytes.Buffer to prevent OOM.
-	mergedFile, err := os.Create(filepath.Join(taskTempDir, "merged.jsonl"))
+	mergedReader, mergedCloser, err := w.mergeShuffleInputs(a, taskTempDir, readers)
 	if err != nil {
-		return nil, nil, fmt.Errorf("create merged file: %w", err)
+		return nil, nil, err
 	}
-	closers = append(closers, mergedFile)
-
-	mergeCfg := shuffle.DefaultMergeConfig()
-	mergeCfg.TempDir = taskTempDir
-	if w.cfg.ShuffleBatchSize > 0 {
-		mergeCfg.BatchSize = w.cfg.ShuffleBatchSize
-	}
-	if w.cfg.ShuffleMaxRecordBytes > 0 {
-		mergeCfg.MaxRecordBytes = w.cfg.ShuffleMaxRecordBytes
-	}
-	mergeStats, mergeErr := shuffle.MergeInputs(readers, mergedFile, mergeCfg)
-	if mergeErr != nil {
-		return nil, nil, fmt.Errorf("merge: %w", mergeErr)
-	}
-
-	if _, err := mergedFile.Seek(0, 0); err != nil {
-		return nil, nil, fmt.Errorf("seek merged output: %w", err)
-	}
-	log.Printf("[reduce] merge stats task=%s passes=%d spills=%d peak_streams=%d records=%d",
-		a.TaskId, mergeStats.TotalPasses, mergeStats.SpillCount, mergeStats.PeakOpenStreams, mergeStats.TotalRecords)
-
-	if _, err := mergedFile.Seek(0, io.SeekStart); err != nil {
-		return nil, nil, fmt.Errorf("seek merged file: %w", err)
-	}
+	defer mergedCloser.Close()
 
 	// Execute reducer with globally sorted JSONL on stdin.
-	reduceOut, err := w.execCode(ctx, codePath, a.RuntimeEnv, mergedFile)
+	reduceOut, err := w.execCode(ctx, codePath, a.RuntimeEnv, mergedReader)
 	if err != nil {
 		return nil, nil, fmt.Errorf("reducer: %w", err)
 	}
 
 	// Upload reducer output.
-	key := fmt.Sprintf("%s/partition-%d.jsonl", a.JobId, a.PartitionId)
-	h := sha256.New()
-	h.Write(reduceOut)
-	_, err = w.storage.PutObject(ctx, outputBucket, key,
-		bytes.NewReader(reduceOut), int64(len(reduceOut)),
-		minio.PutObjectOptions{ContentType: "application/x-ndjson"})
+	uri, chk, err := w.uploadReduceOutput(ctx, a, reduceOut)
 	if err != nil {
-		return nil, nil, fmt.Errorf("upload output: %w", err)
+		return nil, nil, err
 	}
 
-	uri := fmt.Sprintf("s3://%s/%s", outputBucket, key)
-	chk := hex.EncodeToString(h.Sum(nil))
-	log.Printf("[reduce] done task=%s output=%s", a.TaskId, uri)
 	return []string{uri}, []string{chk}, nil
 }
