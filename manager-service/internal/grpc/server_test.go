@@ -731,6 +731,42 @@ func TestWorkerServer_Register_ManifestTooLargeReturnsResourceExhausted(t *testi
 	}
 }
 
+func TestWorkerServer_TaskComplete_MissingArgumentsReturnsInvalidArgument(t *testing.T) {
+	_, _, server := setupMockServer(t)
+
+	cases := []struct {
+		name      string
+		taskID    string
+		attemptID string
+		leaseID   string
+	}{
+		{"missing_task_id", "", "attempt123", "lease123"},
+		{"missing_attempt_id", "task123", "", "lease123"},
+		{"missing_lease_id", "task123", "attempt123", ""},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := server.TaskComplete(context.Background(), &pb.TaskCompleteRequest{
+				TaskId:          tc.taskID,
+				AttemptId:       tc.attemptID,
+				LeaseId:         tc.leaseID,
+				OutputLocations: []string{"s3://outputs/reduce-0.jsonl"},
+				OutputChecksums: []string{"sha256-output"},
+			})
+
+			if err == nil {
+				t.Fatalf("expected error for %s, got nil", tc.name)
+			}
+
+			st, ok := status.FromError(err)
+			if !ok || st.Code() != codes.InvalidArgument {
+				t.Fatalf("expected InvalidArgument for %s, got %v", tc.name, err)
+			}
+		})
+	}
+}
+
 func TestWorkerServer_TaskComplete_StaleAttemptReturnsPermissionDenied(t *testing.T) {
 	db, mock, server := setupMockServer(t)
 	defer db.Close()
@@ -809,6 +845,64 @@ func TestWorkerServer_TaskComplete_OutputMismatchReturnsInvalidArgument(t *testi
 	st, ok := status.FromError(err)
 	if !ok || st.Code() != codes.InvalidArgument {
 		t.Fatalf("expected InvalidArgument, got %v", err)
+	}
+}
+
+func TestWorkerServer_TaskComplete_TaskNotFoundReturnsNotFound(t *testing.T) {
+	db, mock, server := setupMockServer(t)
+	defer db.Close()
+
+	taskID := uuid.New().String()
+	attemptID := uuid.New().String()
+
+	mock.ExpectBegin()
+	mock.ExpectQuery(regexp.QuoteMeta(manager.QuerySelectTaskForUpdate)).
+		WithArgs(taskID).
+		WillReturnError(sql.ErrNoRows)
+	mock.ExpectRollback()
+
+	_, err := server.TaskComplete(context.Background(), &pb.TaskCompleteRequest{
+		TaskId:          taskID,
+		AttemptId:       attemptID,
+		LeaseId:         "lease123",
+		OutputLocations: []string{"s3://outputs/reduce-0.jsonl"},
+		OutputChecksums: []string{"sha256-output"},
+	})
+	if err == nil {
+		t.Fatalf("expected error, got nil")
+	}
+	st, ok := status.FromError(err)
+	if !ok || st.Code() != codes.NotFound {
+		t.Fatalf("expected NotFound, got %v", err)
+	}
+}
+
+func TestWorkerServer_TaskComplete_InternalErrorReturnsInternal(t *testing.T) {
+	db, mock, server := setupMockServer(t)
+	defer db.Close()
+
+	taskID := uuid.New().String()
+	attemptID := uuid.New().String()
+
+	mock.ExpectBegin()
+	mock.ExpectQuery(regexp.QuoteMeta(manager.QuerySelectTaskForUpdate)).
+		WithArgs(taskID).
+		WillReturnError(errors.New("db error"))
+	mock.ExpectRollback()
+
+	_, err := server.TaskComplete(context.Background(), &pb.TaskCompleteRequest{
+		TaskId:          taskID,
+		AttemptId:       attemptID,
+		LeaseId:         "lease123",
+		OutputLocations: []string{"s3://outputs/reduce-0.jsonl"},
+		OutputChecksums: []string{"sha256-output"},
+	})
+	if err == nil {
+		t.Fatalf("expected error, got nil")
+	}
+	st, ok := status.FromError(err)
+	if !ok || st.Code() != codes.Internal {
+		t.Fatalf("expected Internal, got %v", err)
 	}
 }
 
