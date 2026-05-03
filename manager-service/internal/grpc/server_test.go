@@ -118,6 +118,38 @@ func TestNewWorkerServer(t *testing.T) {
 	})
 }
 
+func TestWorkerServer_Register_MissingArgs(t *testing.T) {
+	db, _, server := setupMockServer(t)
+	defer db.Close()
+
+	cases := []struct {
+		name string
+		req  *pb.RegisterRequest
+	}{
+		{
+			name: "missing task_id",
+			req:  &pb.RegisterRequest{AttemptId: "attempt-1"},
+		},
+		{
+			name: "missing attempt_id",
+			req:  &pb.RegisterRequest{TaskId: "task-1"},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := server.Register(context.Background(), tc.req)
+			if err == nil {
+				t.Fatalf("expected error, got nil")
+			}
+			st, ok := status.FromError(err)
+			if !ok || st.Code() != codes.InvalidArgument {
+				t.Fatalf("expected InvalidArgument, got %v", err)
+			}
+		})
+	}
+}
+
 func TestWorkerServer_Register_Success(t *testing.T) {
 	db, mock, server := setupMockServer(t)
 	defer db.Close()
