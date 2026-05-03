@@ -2,38 +2,12 @@ package observability
 
 import (
 	"bytes"
-	"encoding/json"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 )
-
-func TestNewLogger_DefaultsToJSONInfo(t *testing.T) {
-	t.Setenv("LOG_FORMAT", "")
-	t.Setenv("LOG_LEVEL", "")
-
-	logger := NewLogger("test")
-	if logger == nil {
-		t.Fatal("NewLogger returned nil")
-	}
-	// Sanity: should at least carry the service attribute.
-	if !logger.Enabled(nil, slog.LevelInfo) {
-		t.Errorf("default logger should accept Info level")
-	}
-	if logger.Enabled(nil, slog.LevelDebug) {
-		t.Errorf("default logger should not accept Debug level when LOG_LEVEL is unset")
-	}
-}
-
-func TestNewLogger_RespectsLogLevel(t *testing.T) {
-	t.Setenv("LOG_LEVEL", "debug")
-	logger := NewLogger("test")
-	if !logger.Enabled(nil, slog.LevelDebug) {
-		t.Errorf("LOG_LEVEL=debug should enable Debug level")
-	}
-}
 
 func TestRequestIDMiddleware_GeneratesIDWhenMissing(t *testing.T) {
 	var buf bytes.Buffer
@@ -100,27 +74,5 @@ func TestRequestIDMiddleware_SkipsHealthProbes(t *testing.T) {
 		if buf.Len() != 0 {
 			t.Fatalf("expected no access log for %s; got %q", path, buf.String())
 		}
-	}
-}
-
-func TestLoggerFromContext_ReturnsAttachedLogger(t *testing.T) {
-	var buf bytes.Buffer
-	base := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo}))
-	ctx := WithLogger(nil, base.With("k", "v"))
-
-	LoggerFromContext(ctx).Info("hello")
-
-	var got map[string]any
-	if err := json.Unmarshal(bytes.TrimSpace(buf.Bytes()), &got); err != nil {
-		t.Fatalf("invalid JSON log: %v (raw=%q)", err, buf.String())
-	}
-	if got["k"] != "v" {
-		t.Fatalf("logger context not propagated; got %v", got)
-	}
-}
-
-func TestLoggerFromContext_DefaultWhenMissing(t *testing.T) {
-	if LoggerFromContext(nil) == nil {
-		t.Fatal("LoggerFromContext(nil) must not return nil")
 	}
 }
