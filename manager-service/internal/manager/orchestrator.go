@@ -158,6 +158,12 @@ func (k *KubeOrchestrator) SpawnWorker(ctx context.Context, taskID string, jobID
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{
 					Labels: labels,
+					Annotations: map[string]string{
+						// Enable Linkerd auto-injection for worker pods
+						// This enables automatic mTLS with the Manager and
+						// per-RPC timeout enforcement via Linkerd traffic policies
+						"linkerd.io/inject": "enabled",
+					},
 				},
 				Spec: corev1.PodSpec{
 					RestartPolicy:                corev1.RestartPolicyNever,

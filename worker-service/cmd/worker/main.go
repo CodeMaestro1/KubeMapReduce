@@ -15,6 +15,7 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 
 	"kubemapreduce/manager-service/pkg/observability"
+	timeoutgrpc "kubemapreduce/pkg/grpc"
 	pb "kubemapreduce/proto"
 	"kubemapreduce/worker-service/internal/config"
 	"kubemapreduce/worker-service/internal/worker"
@@ -31,7 +32,15 @@ func main() {
 		log.Fatalf("config: %v", err)
 	}
 
-	dialOpts := []grpc.DialOption{transportOption(cfg)}
+	// Initialize timeout configuration for per-RPC method timeouts
+	timeoutCfg := timeoutgrpc.NewDefaultTimeoutConfig()
+	timeoutCfg.ValidateConfig()
+
+	dialOpts := []grpc.DialOption{
+		transportOption(cfg),
+		grpc.WithChainUnaryInterceptor(timeoutCfg.ClientUnaryInterceptor()),
+		grpc.WithChainStreamInterceptor(timeoutCfg.ClientStreamInterceptor()),
+	}
 	if cfg.WorkerRPCToken != "" {
 		dialOpts = append(dialOpts, grpc.WithPerRPCCredentials(rpcToken{cfg.WorkerRPCToken}))
 	}

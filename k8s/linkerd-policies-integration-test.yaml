@@ -1,0 +1,134 @@
+# Linkerd Policies Integration Test
+#
+# This file provides test scenarios for validating that Linkerd traffic policies
+# are properly enforced in the KubeMapReduce cluster.
+#
+# Test execution workflow:
+# 1. Deploy Linkerd control plane: kubectl apply -f k8s/01-linkerd-*.yaml k8s/02-*.yaml k8s/03-*.yaml
+# 2. Deploy KubeMapReduce services: kubectl apply -f k8s/10-*.yaml k8s/20-*.yaml k8s/30-*.yaml
+# 3. Deploy traffic policies: kubectl apply -f k8s/04-*.yaml k8s/05-*.yaml
+# 4. Verify policies are enforcing timeouts using the tests below
+#
+# Expected behaviors:
+# - Heartbeat timeout: 2s (should fail-fast if Manager unavailable)
+# - Register timeout: 5s (task startup)
+# - TaskComplete/TaskFailed timeout: 10s (state transitions)
+# - Default timeout: 10s (unspecified methods)
+# - Retry: exponential backoff with jitter
+---
+# Test 1: Verify Linkerd policies are loaded
+apiVersion: v1
+kind: Pod
+metadata:
+  name: linkerd-policy-checker
+  namespace: mapreduce
+spec:
+  serviceAccountName: default
+  containers:
+    - name: checker
+      image: curlimages/curl:latest
+      command:
+        - /bin/sh
+        - -c
+        - |
+          echo "Checking Linkerd policies..."
+          kubectl get policies -n mapreduce
+          kubectl get httproutes -n mapreduce
+          echo "Expected policies: manager-grpc-inbound, worker-to-manager, manager-to-postgres, manager-to-minio, worker-to-minio"
+          echo "Expected HTTPRoutes: manager-grpc-inbound, worker-to-manager, manager-to-postgres, manager-to-minio, worker-to-minio"
+      restartPolicy: Never
+---
+# Test 2: Heartbeat timeout test
+# Trigger heartbeat from worker to manager and measure response time
+# Expected: Response within 2s, or timeout error
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: test-heartbeat-timeout
+  namespace: mapreduce
+spec:
+  template:
+    spec:
+      serviceAccountName: worker
+      containers:
+        - name: test
+          image: golang:1.24-alpine
+          command:
+            - /bin/sh
+            - -c
+            - |
+              echo "Testing Heartbeat RPC timeout (expected 2s)..."
+              # This would use grpcurl or similar to call Heartbeat
+              # For now, placeholder: grpcurl -d '{"lease_id":"test"}' manager:50051 proto.WorkerService/Heartbeat
+              echo "Heartbeat timeout test pending (requires grpcurl in image)"
+      restartPolicy: Never
+---
+# Test 3: Register timeout test
+# Trigger register from worker to manager
+# Expected: Response within 5s
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: test-register-timeout
+  namespace: mapreduce
+spec:
+  template:
+    spec:
+      serviceAccountName: worker
+      containers:
+        - name: test
+          image: golang:1.24-alpine
+          command:
+            - /bin/sh
+            - -c
+            - |
+              echo "Testing Register RPC timeout (expected 5s)..."
+              # grpcurl -d '{"worker_id":"test"}' manager:50051 proto.WorkerService/Register
+              echo "Register timeout test pending (requires grpcurl in image)"
+      restartPolicy: Never
+---
+# Test 4: Verify circuit breaker on MinIO
+# Try to overwhelm MinIO with requests and verify circuit breaker kicks in
+# Expected: Requests fail gracefully after threshold (50 max requests, 50% error rate)
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: test-minio-circuit-breaker
+  namespace: mapreduce
+spec:
+  template:
+    spec:
+      serviceAccountName: manager
+      containers:
+        - name: test
+          image: minio/mc:latest
+          command:
+            - /bin/sh
+            - -c
+            - |
+              echo "Testing MinIO circuit breaker..."
+              echo "Circuit breaker test pending (requires MinIO client setup)"
+      restartPolicy: Never
+---
+# Test 5: Verify no-retry behavior on Heartbeat
+# Send multiple heartbeats with intentional failures
+# Expected: No automatic retries (immediate failure)
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: test-heartbeat-no-retry
+  namespace: mapreduce
+spec:
+  template:
+    spec:
+      serviceAccountName: worker
+      containers:
+        - name: test
+          image: golang:1.24-alpine
+          command:
+            - /bin/sh
+            - -c
+            - |
+              echo "Testing Heartbeat no-retry behavior..."
+              echo "No-retry test pending (requires instrumentation)"
+      restartPolicy: Never

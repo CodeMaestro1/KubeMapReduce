@@ -96,6 +96,13 @@ spec:
     metadata:
       labels:
         app.kubernetes.io/name: manager
+      annotations:
+        # Enable Linkerd auto-injection for sidecar proxy
+        # This allows the Manager to participate in the service mesh with:
+        # - Automatic mTLS to all peers
+        # - Per-RPC method timeouts enforced by policies
+        # - Distributed tracing and metrics collection
+        linkerd.io/inject: enabled
     spec:
       serviceAccountName: manager
       securityContext:

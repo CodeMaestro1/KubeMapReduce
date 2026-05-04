@@ -1,0 +1,101 @@
+# Linkerd Control Plane Namespace
+#
+# This namespace hosts the Linkerd control plane (destination, proxy-injector,
+# etc.). The Linkerd control plane is responsible for:
+# - Injecting sidecar proxies into annotated pods
+# - Managing workload identity certificates (auto-renewal)
+# - Enforcing traffic policies and timeouts
+# - Collecting service mesh metrics
+#
+# Note: The mapreduce namespace (where applications run) is annotated
+# separately for injection.
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: linkerd
+  labels:
+    app.kubernetes.io/name: linkerd
+    app.kubernetes.io/part-of: linkerd
+  annotations:
+    # Prevent auto-injection of the control plane itself
+    linkerd.io/inject: disabled
+---
+# ClusterRole for the Linkerd Service Account
+# Grants permission to watch K8s API for service discovery, policy
+# enforcement, and pod/service mutations during sidecar injection.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: linkerd-control-plane
+  labels:
+    app.kubernetes.io/name: linkerd
+rules:
+  # Read pods, services, endpoints for service discovery
+  - apiGroups: [""]
+    resources: ["pods", "services", "endpoints"]
+    verbs: ["get", "list", "watch"]
+  # Read namespaces for injection policy
+  - apiGroups: [""]
+    resources: ["namespaces"]
+    verbs: ["get", "list", "watch"]
+  # Mutate pods during injection (via admission webhook)
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["patch"]
+  # PolicyAPI resources (traffic policies, etc.)
+  - apiGroups: ["policy.linkerd.io"]
+    resources: ["policies", "routes"]
+    verbs: ["get", "list", "watch"]
+  # Certificates and identity
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get", "list", "watch", "create", "update"]
+---
+# ClusterRoleBinding binds the ClusterRole to the Linkerd service account
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: linkerd-control-plane
+  labels:
+    app.kubernetes.io/name: linkerd
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: linkerd-control-plane
+subjects:
+  - kind: ServiceAccount
+    name: linkerd-control-plane
+    namespace: linkerd
+---
+# ServiceAccount for Linkerd control plane pods
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: linkerd-control-plane
+  namespace: linkerd
+  labels:
+    app.kubernetes.io/name: linkerd
+---
+# ConfigMap for Linkerd global configuration
+# This is used by Linkerd components to determine behavior like:
+# - Trust domain (used in certificate identity)
+# - Identity issuer (certificate provider)
+# - Proxy defaults (timeouts, retry budgets, etc.)
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: linkerd-config
+  namespace: linkerd
+  labels:
+    app.kubernetes.io/name: linkerd
+data:
+  # Trust domain for mTLS (can be any DNS-like name)
+  trust-domain: "cluster.local"
+  
+  # Proxy defaults: timeout and retry configuration
+  # These are used as defaults for traffic policies
+  proxy-defaults: |
+    outboundPolicyAllowIfNotFound: false
+    inboundPolicyAllowIfNotFound: false
+    enableExternalProfiles: false

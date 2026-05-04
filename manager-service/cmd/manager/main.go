@@ -32,6 +32,7 @@ import (
 	mgrpc "kubemapreduce/manager-service/internal/grpc"
 	"kubemapreduce/manager-service/internal/manager"
 	"kubemapreduce/manager-service/pkg/observability"
+	timeoutgrpc "kubemapreduce/pkg/grpc"
 	pb "kubemapreduce/proto"
 )
 
@@ -143,10 +144,11 @@ func main() {
 	httpSrv := &http.Server{
 		Addr:              cfg.ServerAddr,
 		Handler:           observability.RequestIDMiddleware(logger)(mux),
-		ReadHeaderTimeout: 5 * time.Second,
-		ReadTimeout:       15 * time.Second,
-		WriteTimeout:      30 * time.Second,
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		WriteTimeout:      45 * time.Second,
 		IdleTimeout:       60 * time.Second,
+		MaxHeaderBytes:    16 * 1024, // 16 KB
 	}
 	go func() {
 		log.Printf("HTTP health server running on %s", cfg.ServerAddr)
@@ -174,8 +176,19 @@ func main() {
 		log.Printf("minio endpoint configured without credentials; manifest fallback disabled")
 	}
 
+	// Initialize timeout configuration for per-RPC method timeouts
+	timeoutCfg := timeoutgrpc.NewDefaultTimeoutConfig()
+	timeoutCfg.ValidateConfig()
+
 	grpcOpts := []grpc.ServerOption{
-		grpc.UnaryInterceptor(workerAuthUnaryInterceptor(cfg.WorkerRPCToken)),
+		// Chain auth and timeout interceptors
+		grpc.ChainUnaryInterceptor(
+			workerAuthUnaryInterceptor(cfg.WorkerRPCToken),
+			timeoutCfg.UnaryInterceptor(),
+		),
+		grpc.ChainStreamInterceptor(
+			timeoutCfg.StreamInterceptor(),
+		),
 		grpc.MaxRecvMsgSize(4 << 20),
 		grpc.MaxSendMsgSize(16 << 20),
 	}
