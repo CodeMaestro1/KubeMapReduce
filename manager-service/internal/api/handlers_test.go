@@ -1920,3 +1920,71 @@ func TestHandleRoot_MethodNotAllowed(t *testing.T) {
 		t.Fatalf("expected status %d, got %d", http.StatusMethodNotAllowed, rec.Code)
 	}
 }
+
+func TestValidateUploadKey(t *testing.T) {
+	tests := []struct {
+		key     string
+		userID  string
+		wantErr bool
+	}{
+		{"temp/user-1/file.txt", "user-1", false},
+		{"", "user-1", true},
+		{"temp/user-2/file.txt", "user-1", true},
+		{"temp/user-1/dir/file.txt", "user-1", true},
+		{"temp/user-1/../file.txt", "user-1", true},
+		{"temp/user-1/file\x00.txt", "user-1", true},
+	}
+
+	for _, tt := range tests {
+		err := validateUploadKey(tt.key, tt.userID)
+		if (err != nil) != tt.wantErr {
+			t.Errorf("validateUploadKey(%q, %q) error = %v, wantErr %v", tt.key, tt.userID, err, tt.wantErr)
+		}
+	}
+}
+
+func TestValidateDownloadKey(t *testing.T) {
+	tests := []struct {
+		key     string
+		jobID   string
+		wantErr bool
+	}{
+		{"outputs/51de4a35-1a22-4912-8d7d-5c68b75e1f0e/output.txt", "51de4a35-1a22-4912-8d7d-5c68b75e1f0e", false},
+		{"", "", true},
+		{"outputs/job-1/../output.txt", "", true},
+		{"outputs/job-1/output\x00.txt", "", true},
+	}
+
+	for _, tt := range tests {
+		jobID, err := validateDownloadKey(tt.key)
+		if (err != nil) != tt.wantErr {
+			t.Errorf("validateDownloadKey(%q) error = %v, wantErr %v", tt.key, err, tt.wantErr)
+		}
+		if err == nil && jobID != tt.jobID {
+			t.Errorf("validateDownloadKey(%q) jobID = %q, want %q", tt.key, jobID, tt.jobID)
+		}
+	}
+}
+
+func TestHandlePresignUpload(t *testing.T) {
+	h := &Handlers{minioClient: nil}
+	reqBody := `{"key": "temp/test-user/file.txt"}`
+	req := httptest.NewRequest("POST", "/upload", bytes.NewBufferString(reqBody))
+	// simulate mock for SubjectContextKey which is an unexported type
+	// The handler expects standard extractUserIDFromLocation logic if possible,
+	// or we can test failure path on empty user.
+	h.HandlePresignUpload(httptest.NewRecorder(), req)
+}
+
+func TestMinioCopier_CopyObject(t *testing.T) {
+	client, err := minio.New("localhost:9000", &minio.Options{})
+	if err != nil {
+		t.Fatalf("failed to create dummy minio client: %v", err)
+	}
+	copier := &minioCopier{client: client}
+	// just testing the interface implementation, we expect a network error from dummy host
+	_, err = copier.CopyObject(context.Background(), minio.CopyDestOptions{}, minio.CopySrcOptions{})
+	if err == nil {
+		t.Fatalf("expected network error")
+	}
+}

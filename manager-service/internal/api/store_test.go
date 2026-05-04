@@ -110,6 +110,30 @@ func TestPostgresJobStore_GetJob_ReturnsPersistedJob(t *testing.T) {
 	}
 }
 
+func TestPostgresJobStore_GetAnyJob(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("failed to open mock db: %v", err)
+	}
+	defer db.Close()
+
+	store := NewPostgresJobStore(db)
+	jobID := uuid.New().String()
+
+	mock.ExpectQuery(regexp.QuoteMeta(queryGetAPIJobAny)).
+		WithArgs(sqlmock.AnyArg()).
+		WillReturnRows(sqlmock.NewRows([]string{"job_id", "status", "filename", "reducers", "created_at"}).
+			AddRow(jobID, "Running", "code.py", 5, time.Now()))
+
+	rec, err := store.GetAnyJob(context.Background(), jobID)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if rec == nil || rec.JobID != jobID || rec.Status != "Running" {
+		t.Fatalf("unexpected job record: %+v", rec)
+	}
+}
+
 func TestPostgresJobStore_GetJob_ReturnsNilForMissing(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	if err != nil {

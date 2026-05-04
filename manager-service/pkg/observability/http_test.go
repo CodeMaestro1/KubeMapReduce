@@ -2,6 +2,7 @@ package observability
 
 import (
 	"bytes"
+	"errors"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -74,5 +75,38 @@ func TestRequestIDMiddleware_SkipsHealthProbes(t *testing.T) {
 		if buf.Len() != 0 {
 			t.Fatalf("expected no access log for %s; got %q", path, buf.String())
 		}
+	}
+}
+
+type mockResponseWriter struct {
+	http.ResponseWriter
+}
+
+func (m *mockResponseWriter) Write(b []byte) (int, error) {
+	return 0, errors.New("write err")
+}
+
+func TestLoggingResponseWriter_Write(t *testing.T) {
+	w := httptest.NewRecorder()
+	lw := &statusRecorder{ResponseWriter: w}
+
+	n, err := lw.Write([]byte("test"))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if n != 4 {
+		t.Fatalf("expected 4 bytes written, got %d", n)
+	}
+	if lw.bytes != 4 {
+		t.Fatalf("expected BytesWritten to be 4, got %d", lw.bytes)
+	}
+}
+
+func TestStatusClass(t *testing.T) {
+	if statusClass(200) != "2xx" {
+		t.Fatalf("expected 2xx, got %s", statusClass(200))
+	}
+	if statusClass(404) != "4xx" {
+		t.Fatalf("expected 4xx, got %s", statusClass(404))
 	}
 }
