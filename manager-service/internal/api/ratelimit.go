@@ -12,9 +12,9 @@ import (
 // TokenBucketLimiter implements a thread-safe token bucket rate limiter.
 // It allows at most `capacity` requests per `window` time period.
 type TokenBucketLimiter struct {
-	mu        sync.Mutex
-	tokens    float64 // Current number of tokens
-	capacity  float64 // Maximum number of tokens
+	mu         sync.Mutex
+	tokens     float64 // Current number of tokens
+	capacity   float64 // Maximum number of tokens
 	refillRate float64 // Tokens added per second
 	lastRefill time.Time
 }

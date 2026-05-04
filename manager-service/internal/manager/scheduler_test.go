@@ -918,6 +918,16 @@ func TestScheduler_FailStaleTasks_DeduplicatesJobCancellation(t *testing.T) {
 
 	mock.ExpectCommit()
 
+	// Expectations for finalizeJob's transaction (deletes staging, then updates DB status to terminal)
+	mock.ExpectBegin()
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT status FROM JOBS WHERE job_id = $1 FOR UPDATE")).
+		WithArgs(jobID).
+		WillReturnRows(sqlmock.NewRows([]string{"status"}).AddRow("Cleaning"))
+	mock.ExpectExec(regexp.QuoteMeta(QueryUpdateJobStatus)).
+		WithArgs(jobID, "Failed").
+		WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectCommit()
+
 	recovered, err := scheduler.FailStaleTasks(context.Background())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -1008,6 +1018,26 @@ func TestScheduler_FailStaleTasks_UsesPerJobFinalizeDeadlines(t *testing.T) {
 		WithArgs(job2, "Cleaning").
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
+	mock.ExpectCommit()
+
+	// Expectations for finalizeJob's transaction for job1
+	mock.ExpectBegin()
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT status FROM JOBS WHERE job_id = $1 FOR UPDATE")).
+		WithArgs(job1).
+		WillReturnRows(sqlmock.NewRows([]string{"status"}).AddRow("Cleaning"))
+	mock.ExpectExec(regexp.QuoteMeta(QueryUpdateJobStatus)).
+		WithArgs(job1, "Failed").
+		WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectCommit()
+
+	// Expectations for finalizeJob's transaction for job2
+	mock.ExpectBegin()
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT status FROM JOBS WHERE job_id = $1 FOR UPDATE")).
+		WithArgs(job2).
+		WillReturnRows(sqlmock.NewRows([]string{"status"}).AddRow("Cleaning"))
+	mock.ExpectExec(regexp.QuoteMeta(QueryUpdateJobStatus)).
+		WithArgs(job2, "Failed").
+		WillReturnResult(sqlmock.NewResult(1, 1))
 	mock.ExpectCommit()
 
 	recovered, err := scheduler.FailStaleTasks(context.Background())

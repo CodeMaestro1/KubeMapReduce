@@ -1300,16 +1300,7 @@ func (s *Scheduler) popPendingCleanup(limit int) map[string]string {
 }
 
 func (s *Scheduler) finalizeJob(ctx context.Context, jobID, terminalState string) {
-	if err := s.orchestrator.CancelJob(ctx, jobID); err != nil {
-		slog.ErrorContext(ctx, "failed to cleanup K8s worker jobs",
-			slog.String("job_id", jobID),
-			slog.String("terminal_state", terminalState),
-			slog.Any("err", err),
-		)
-		s.enqueueCleanup(jobID, terminalState)
-		return
-	}
-
+	// Stage 1: Delete staging objects first (cleanup work independent of DB state).
 	if s.staging != nil {
 		if err := s.staging.DeleteStagingObjects(ctx, jobID); err != nil {
 			slog.ErrorContext(ctx, "failed to delete staging objects",
@@ -1322,6 +1313,7 @@ func (s *Scheduler) finalizeJob(ctx context.Context, jobID, terminalState string
 		}
 	}
 
+	// Stage 2: Atomically update DB status (commit this first to prevent split-brain).
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		slog.ErrorContext(ctx, "failed to begin tx for terminal status update",
@@ -1345,6 +1337,18 @@ func (s *Scheduler) finalizeJob(ctx context.Context, jobID, terminalState string
 	if err := tx.Commit(); err != nil {
 		slog.ErrorContext(ctx, "failed to commit terminal status update",
 			slog.String("job_id", jobID),
+			slog.Any("err", err),
+		)
+		s.enqueueCleanup(jobID, terminalState)
+		return
+	}
+
+	// Stage 3: Delete Kubernetes worker jobs (now that DB state is committed).
+	// If this fails, pods still exist but DB is terminal; enqueue for cleanup reconciliation.
+	if err := s.orchestrator.CancelJob(ctx, jobID); err != nil {
+		slog.ErrorContext(ctx, "failed to cleanup K8s worker jobs",
+			slog.String("job_id", jobID),
+			slog.String("terminal_state", terminalState),
 			slog.Any("err", err),
 		)
 		s.enqueueCleanup(jobID, terminalState)

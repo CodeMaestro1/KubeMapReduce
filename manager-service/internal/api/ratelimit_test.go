@@ -12,22 +12,22 @@ import (
 
 func TestTokenBucketLimiter_Allow(t *testing.T) {
 	tests := []struct {
-		name               string
+		name              string
 		requestsPerSecond float64
-		requests           int
-		wantAllowed        int
+		requests          int
+		wantAllowed       int
 	}{
 		{
-			name:               "single request per second",
+			name:              "single request per second",
 			requestsPerSecond: 1,
 			requests:          3,
-			wantAllowed:        1, // First request succeeds, rest fail
+			wantAllowed:       1, // First request succeeds, rest fail
 		},
 		{
-			name:               "ten requests per second",
+			name:              "ten requests per second",
 			requestsPerSecond: 10,
 			requests:          15,
-			wantAllowed:        10, // First 10 succeed
+			wantAllowed:       10, // First 10 succeed
 		},
 	}
 
