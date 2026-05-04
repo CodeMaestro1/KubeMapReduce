@@ -1,0 +1,22 @@
+Add unit tests to achieve 100% coverage in non-cmd/proto files
+
+* Added unit test coverage for previously untested methods including:
+  * `WriteErrorJSON` in `pkg/httputil/response.go`
+  * Download/Upload key validations and copy handlers in `internal/api`
+  * `GetAnyJob` and `ListAllJobs` repository methods
+  * gRPC server assignment utilities
+  * `KubeOrchestrator.CancelJob`
+  * `GetWorkerResourceLimits` in DB configuration provider
+  * Terminal state detection and generic config fetching in Scheduler
+  * `DeleteStagingObjects` testing in Minio cleaner
+  * HTTP status class observability checks
+* Enhanced stability and testing coverage metric.
+
+# What
+Adds explicit tests to paths flagged with 0% coverage throughout the codebase.
+
+# Coverage
+New testing additions guarantee the required completeness and testing validation per repository standards.
+
+# Result
+Codebase maintains stricter verification protocols ensuring future modifications adhere to well-tested logic across internal components.
