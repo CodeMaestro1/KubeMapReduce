@@ -11,6 +11,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -48,6 +49,11 @@ const (
 )
 
 var defaultTargetSplitSizeBytes int64 = 64 * 1024 * 1024
+
+// safeFilenamePattern validates that a filename is a simple basename with no traversal or special chars.
+// Only alphanumeric, hyphens, underscores, and single dots in the middle are allowed.
+// This prevents patterns like "...", "a..b", or any traversal attempts.
+var safeFilenamePattern = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._\-]*[a-zA-Z0-9]$|^[a-zA-Z0-9]$`)
 
 // NewHandlers creates production-ready Handlers.
 func NewHandlers(adminClient *auth.KeycloakAdminClient, store JobStore, minioClient *minio.Client, managerAddr string, internalAPIKey string) *Handlers {
@@ -1139,8 +1145,10 @@ func validateUploadKey(key, userID string) error {
 	if strings.ContainsAny(filename, "/\\") {
 		return fmt.Errorf("key filename must not contain path separators")
 	}
-	if filename == "." || filename == ".." {
-		return fmt.Errorf("key filename is invalid")
+	// Validate filename matches safe pattern (alphanumeric, hyphen, underscore, dots).
+	// Rejects patterns like ".", "..", "...", "a..b", etc.
+	if !safeFilenamePattern.MatchString(filename) {
+		return fmt.Errorf("key filename contains invalid characters or pattern")
 	}
 	return nil
 }
