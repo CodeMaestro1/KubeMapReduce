@@ -20,68 +20,82 @@ func TestBuildCmd(t *testing.T) {
 		codePath   string
 		runtimeEnv string
 		wantCmd    []string
+		wantErr    bool
 	}{
 		{
 			name:       "python runtime",
-			codePath:   "/path/to/script",
+			codePath:   "script",
 			runtimeEnv: "python",
-			wantCmd:    []string{"python3", "/path/to/script"},
+			wantCmd:    []string{"python3", "./script"},
+			wantErr:    false,
 		},
 		{
 			name:       "python3 runtime",
-			codePath:   "/path/to/script",
+			codePath:   "script",
 			runtimeEnv: "python3",
-			wantCmd:    []string{"python3", "/path/to/script"},
+			wantCmd:    []string{"python3", "./script"},
+			wantErr:    false,
 		},
 		{
 			name:       "python extension fallback",
-			codePath:   "/path/to/script.py",
+			codePath:   "script.py",
 			runtimeEnv: "",
-			wantCmd:    []string{"python3", "/path/to/script.py"},
+			wantCmd:    []string{"python3", "./script.py"},
+			wantErr:    false,
 		},
 		{
 			name:       "java runtime",
-			codePath:   "/path/to/app.jar",
+			codePath:   "app.jar",
 			runtimeEnv: "java",
-			wantCmd:    []string{"java", "-jar", "/path/to/app.jar"},
+			wantCmd:    []string{"java", "-jar", "./app.jar"},
+			wantErr:    false,
 		},
 		{
 			name:       "jar extension fallback",
-			codePath:   "/path/to/app.jar",
+			codePath:   "app.jar",
 			runtimeEnv: "",
-			wantCmd:    []string{"java", "-jar", "/path/to/app.jar"},
+			wantCmd:    []string{"java", "-jar", "./app.jar"},
+			wantErr:    false,
 		},
 		{
-			name:       "default binary",
-			codePath:   "/path/to/binary",
+			name:       "default binary (no extension, no runtime)",
+			codePath:   "binary",
 			runtimeEnv: "",
-			wantCmd:    []string{"/path/to/binary"},
+			wantCmd:    []string{"./binary"},
+			wantErr:    false,
 		},
 		{
 			name:       "c runtime env runs binary directly",
-			codePath:   "/path/to/binary",
+			codePath:   "binary",
 			runtimeEnv: "c",
-			wantCmd:    []string{"/path/to/binary"},
+			wantCmd:    []string{"./binary"},
+			wantErr:    false,
 		},
 		{
 			name:       "cpp runtime env runs binary directly",
-			codePath:   "/path/to/binary",
+			codePath:   "binary",
 			runtimeEnv: "cpp",
-			wantCmd:    []string{"/path/to/binary"},
+			wantCmd:    []string{"./binary"},
+			wantErr:    false,
 		},
 		{
-			name:       "unknown runtime env runs binary directly",
-			codePath:   "/path/to/binary",
+			// Security fix: unknown runtime now returns error instead of silently running as binary
+			name:       "unknown runtime rejects with error",
+			codePath:   "binary",
 			runtimeEnv: "unknown",
-			wantCmd:    []string{"/path/to/binary"},
+			wantCmd:    nil,
+			wantErr:    true,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			cmd, err := buildCmd(ctx, tt.codePath, tt.runtimeEnv)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("buildCmd() error = %v, wantErr %v", err, tt.wantErr)
+			}
 			if err != nil {
-				t.Fatalf("buildCmd() error = %v", err)
+				return // Expected error case
 			}
 			if len(cmd.Args) != len(tt.wantCmd) {
 				t.Fatalf("buildCmd() got %v, want %v", cmd.Args, tt.wantCmd)
@@ -91,7 +105,7 @@ func TestBuildCmd(t *testing.T) {
 				// so we check if it ends with the expected command or equals it.
 				if i == 0 {
 					if !strings.HasSuffix(arg, tt.wantCmd[i]) && arg != tt.wantCmd[i] {
-						t.Errorf("buildCmd() arg[%d] got %v, want it to end with %v", i, arg, tt.wantCmd[i])
+						t.Errorf("buildCmd() arg[%d] got %v, want it to end with %v or equal %v", i, arg, tt.wantCmd[i], tt.wantCmd[i])
 					}
 				} else {
 					if arg != tt.wantCmd[i] {

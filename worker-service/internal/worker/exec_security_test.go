@@ -14,7 +14,6 @@ func TestEnsureSafePath(t *testing.T) {
 		expected string
 	}{
 		{"file.c", "./file.c"},
-		{"/abs/path/file.c", "/abs/path/file.c"},
 		{"./file.c", "./file.c"},
 		{"../file.c", "../file.c"},
 		{"-o", "./-o"},
@@ -26,6 +25,13 @@ func TestEnsureSafePath(t *testing.T) {
 		if got != tt.expected {
 			t.Errorf("ensureSafePath(%q) = %q, want %q", tt.input, got, tt.expected)
 		}
+	}
+
+	// Test with platform-specific absolute path
+	absPath := filepath.Join(t.TempDir(), "file.c")
+	got := ensureSafePath(absPath)
+	if got != absPath {
+		t.Errorf("ensureSafePath(absolute path) = %q, want %q", got, absPath)
 	}
 }
 

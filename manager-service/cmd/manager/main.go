@@ -199,10 +199,26 @@ func main() {
 	grpcServer := grpc.NewServer(grpcOpts...)
 	workerServer := mgrpc.NewWorkerServer(scheduler, minioClient, cfg.ManifestThresholdBytes)
 	pb.RegisterWorkerServiceServer(grpcServer, workerServer)
+
+	// gRPC Reflection is disabled by default for security.
+	// Reflection exposes service definitions and allows clients to discover available RPC methods.
+	// Only enable in development environments with explicit opt-in via:
+	//   1. ENABLE_GRPC_REFLECTION=true environment variable
+	//   2. DEBUG_MODE=true environment variable (additional guard for production safety)
+	// In production, keep reflection disabled to reduce attack surface.
 	if cfg.EnableGRPCReflection {
 		if os.Getenv("DEBUG_MODE") != "true" {
-			slog.Warn("gRPC reflection requested but DEBUG_MODE is not set; skipping")
+			slog.Warn(
+				"gRPC reflection is requested but DEBUG_MODE=true is not set; reflection disabled for security",
+				slog.String("component", "grpc"),
+				slog.String("recommendation", "set DEBUG_MODE=true only in development environments"),
+			)
 		} else {
+			slog.Warn(
+				"gRPC reflection is enabled; service definitions are exposed",
+				slog.String("component", "grpc"),
+				slog.String("security_note", "only enable in development environments"),
+			)
 			reflection.Register(grpcServer)
 		}
 	}

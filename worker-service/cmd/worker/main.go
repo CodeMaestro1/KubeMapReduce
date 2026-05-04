@@ -98,6 +98,9 @@ func buildMinioClient(cfg *config.Config) (*minio.Client, error) {
 	if cfg.MinioEndpoint == "" {
 		return nil, nil
 	}
+
+	// The minio-go client will use the context passed to its methods for timeout control.
+	// Callers must pass a context with timeout when using GetObject/PutObject.
 	return minio.New(cfg.MinioEndpoint, &minio.Options{
 		Creds:  miniocreds.NewStaticV4(cfg.MinioAccessKey, cfg.MinioSecretKey, ""),
 		Secure: cfg.MinioUseSSL,

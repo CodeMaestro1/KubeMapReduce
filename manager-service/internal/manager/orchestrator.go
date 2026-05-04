@@ -189,6 +189,20 @@ func (k *KubeOrchestrator) SpawnWorker(ctx context.Context, taskID string, jobID
 								},
 							},
 						},
+						{
+							Name: "worker-secrets",
+							VolumeSource: corev1.VolumeSource{
+								Secret: &corev1.SecretVolumeSource{
+									SecretName: k.workerSecretName,
+									Items: []corev1.KeyToPath{
+										{Key: "MINIO_ENDPOINT", Path: "endpoint"},
+										{Key: "MINIO_ACCESS_KEY", Path: "access-key"},
+										{Key: "MINIO_SECRET_KEY", Path: "secret-key"},
+									},
+									DefaultMode: func() *int32 { mode := int32(0400); return &mode }(),
+								},
+							},
+						},
 					},
 					Containers: []corev1.Container{
 						{
@@ -200,9 +214,6 @@ func (k *KubeOrchestrator) SpawnWorker(ctx context.Context, taskID string, jobID
 								{Name: "MANAGER_ADDR", Value: managerAddr},
 								{Name: "ATTEMPT_ID", Value: attemptID},
 								{Name: "GRPC_TLS_CERT_FILE", Value: "/tls/tls.crt"},
-								secretEnvVar("S3_ENDPOINT", k.workerSecretName, "MINIO_ENDPOINT"),
-								secretEnvVar("S3_ACCESS_KEY", k.workerSecretName, "MINIO_ACCESS_KEY"),
-								secretEnvVar("S3_SECRET_KEY", k.workerSecretName, "MINIO_SECRET_KEY"),
 								secretEnvVar("MINIO_BUCKET", k.workerSecretName, "MINIO_BUCKET"),
 								secretEnvVar("WORKER_RPC_TOKEN", k.workerSecretName, "MANAGER_WORKER_RPC_TOKEN"),
 							},
@@ -223,6 +234,11 @@ func (k *KubeOrchestrator) SpawnWorker(ctx context.Context, taskID string, jobID
 								{
 									Name:      "grpc-tls",
 									MountPath: "/tls",
+									ReadOnly:  true,
+								},
+								{
+									Name:      "worker-secrets",
+									MountPath: "/etc/worker-secrets",
 									ReadOnly:  true,
 								},
 							},
