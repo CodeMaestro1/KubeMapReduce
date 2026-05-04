@@ -37,9 +37,6 @@ type fakeObjectCopier struct {
 }
 
 func (f *fakeObjectCopier) CopyObject(_ context.Context, dst minio.CopyDestOptions, src minio.CopySrcOptions) (minio.UploadInfo, error) {
-	if f.err != nil || dst.Bucket == "" || src.Bucket == "" {
-		return minio.UploadInfo{}, errors.New("copy failed")
-	}
 	f.copies = append(f.copies, struct{ srcBucket, srcKey, dstBucket, dstKey string }{src.Bucket, src.Object, dst.Bucket, dst.Object})
 	return minio.UploadInfo{}, f.err
 }

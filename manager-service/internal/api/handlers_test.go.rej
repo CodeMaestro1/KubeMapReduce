@@ -1,0 +1,11 @@
+--- handlers_test.go
++++ handlers_test.go
+@@ -39,7 +39,7 @@
+ }
+
+ func (f *fakeObjectCopier) CopyObject(_ context.Context, dst minio.CopyDestOptions, src minio.CopySrcOptions) (minio.UploadInfo, error) {
+-	if f.shouldFail {
++	if f.shouldFail || dst.Bucket == "" || src.Bucket == "" {
+		return minio.UploadInfo{}, errors.New("copy failed")
+	}
+	f.copies = append(f.copies, struct{ dst, src string }{

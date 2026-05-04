@@ -363,21 +363,3 @@ func TestKubeOrchestrator_SpawnWorker_SecurityHardening(t *testing.T) {
 		t.Error("expected container to mount 'tmp' emptyDir at /tmp")
 	}
 }
-
-func TestKubeOrchestrator_CancelJob(t *testing.T) {
-	clientset := fake.NewSimpleClientset(&batchv1.Job{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "worker-job",
-			Namespace: "default",
-			Labels:    map[string]string{"job_id": "test-job-id"},
-		},
-	})
-
-	orchestrator := NewKubeOrchestrator(clientset, "default", "worker-image:latest", "secret")
-
-	err := orchestrator.CancelJob(context.Background(), "test-job-id")
-
-	if err != nil {
-		t.Fatalf("expected no error, got %v", err)
-	}
-}

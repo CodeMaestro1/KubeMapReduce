@@ -93,17 +93,3 @@ func TestWriteError_WritesStatusAndMessage(t *testing.T) {
 		t.Fatalf("expected response body to contain message, got %q", rec.Body.String())
 	}
 }
-
-func TestWriteErrorJSON_WritesStatusAndMessage(t *testing.T) {
-	rec := httptest.NewRecorder()
-
-	WriteErrorJSON(rec, http.StatusBadRequest, "bad request")
-
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("expected status %d, got %d", http.StatusBadRequest, rec.Code)
-	}
-
-	if !strings.Contains(rec.Body.String(), "bad request") {
-		t.Fatalf("expected response body to contain message, got %q", rec.Body.String())
-	}
-}

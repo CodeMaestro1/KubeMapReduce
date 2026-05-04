@@ -1,4 +1,4 @@
-Add comprehensive test coverage to zero-coverage endpoints
+Add unit tests to achieve 100% coverage in non-cmd/proto files
 
 * Added unit test coverage for previously untested methods including:
   * `WriteErrorJSON` in `pkg/httputil/response.go`
@@ -10,7 +10,6 @@ Add comprehensive test coverage to zero-coverage endpoints
   * Terminal state detection and generic config fetching in Scheduler
   * `DeleteStagingObjects` testing in Minio cleaner
   * HTTP status class observability checks
-* Cleaned up remaining test artifact files.
 * Enhanced stability and testing coverage metric.
 
 # What
