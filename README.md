@@ -364,6 +364,7 @@ Comprehensive guides for deploying, configuring, and troubleshooting KubeMapRedu
 ### Core Documentation
 
 - **[Deployment Guide](docs/DEPLOYMENT.md)** — Complete step-by-step deployment guide for both local Docker Compose and production Kubernetes clusters
+- **[External Access Guide](docs/EXTERNAL_ACCESS.md)** — How to expose the API to external clients (minikube Ingress, production Gateway API, NodePort, port forwarding)
 - **[Linkerd Setup Guide](docs/LINKERD_SETUP.md)** — Service mesh installation and configuration for automatic mTLS and per-RPC timeouts (production-recommended)
 - **[Timeout Configuration Guide](docs/TIMEOUT_CONFIGURATION.md)** — Detailed tuning guidelines for timeout values, retry strategies, and circuit breaker settings
 - **[Architecture Documentation](docs/ARCHITECTURE.md)** — System design, component interactions, and fault tolerance patterns
