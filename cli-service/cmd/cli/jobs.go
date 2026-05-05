@@ -421,8 +421,9 @@ func cmdJobsDownload(args []string) {
 }
 
 // downloadShard fetches a pre-signed URL and writes the body to path.
+// Uses cliHTTPClient with 30-second timeout to prevent indefinite hangs.
 func downloadShard(rawURL, path string) (int64, error) {
-	resp, err := http.Get(rawURL) //nolint:noctx
+	resp, err := cliHTTPClient.Get(rawURL)
 	if err != nil {
 		return 0, err
 	}
