@@ -8,7 +8,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"hash/fnv"
+
 	"io"
 	"log"
 
@@ -207,9 +207,12 @@ func taskInputSplits(a *pb.TaskAssignment) []taskInputSplit {
 
 // hashPartition assigns a record key to partition [0, R) using FNV-32a.
 func hashPartition(key string, R int) int {
-	h := fnv.New32a()
-	h.Write([]byte(key))
-	return int(h.Sum32()&0x7FFFFFFF) % R
+	var h uint32 = 2166136261
+	for i := 0; i < len(key); i++ {
+		h ^= uint32(key[i])
+		h *= 16777619
+	}
+	return int(h&0x7FFFFFFF) % R
 }
 
 // parseJSONLRecords decodes newline-delimited JSON objects into shuffle.Record values.
