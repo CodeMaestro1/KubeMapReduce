@@ -34,6 +34,7 @@ docker-compose.yaml text eol=lf
 # Documentation
 *.md                text eol=lf
 *.txt               text eol=lf
+*.html              text eol=lf
 LICENSE             text eol=lf
 README              text eol=lf
 
