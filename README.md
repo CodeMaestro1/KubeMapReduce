@@ -7,6 +7,10 @@ A distributed MapReduce platform built on Kubernetes. Workers run as K8s Jobs sp
 - Go 1.26+
 - Docker + Docker Compose
 - `kubectl` (for Kubernetes deployment)
+- **Kubernetes 1.21+** (for Linkerd service mesh)
+- **Linkerd 2.15+** (optional, recommended for production mTLS and timeout management)
+  - Install with: `curl -fsL https://linkerd.io/install-edge | sh`
+  - See [Linkerd Setup Guide](docs/LINKERD_SETUP.md) for deployment instructions
 
 ## Local Development (infrastructure only)
 
@@ -191,6 +195,37 @@ go run ./cli-service/cmd/cli jobs status   --id <job-id>
 go run ./cli-service/cmd/cli jobs download --id <job-id>
 ```
 
+### Linkerd Service Mesh (Optional)
+
+For production deployments with automatic mTLS, per-RPC timeouts, and advanced traffic policies, deploy Linkerd 2.15+:
+
+```bash
+# 1. Install Linkerd control plane
+linkerd install | kubectl apply -f -
+
+# 2. Wait for control plane to be ready
+linkerd check
+
+# 3. Install traffic policies into mapreduce namespace
+kubectl apply -f k8s/01-linkerd-namespace.yaml
+kubectl apply -f k8s/02-linkerd-crds.yaml
+kubectl apply -f k8s/04-manager-linkerd-policy.yaml
+kubectl apply -f k8s/05-linkerd-storage-policies.yaml
+
+# 4. Re-roll pods to inject Linkerd sidecar proxies
+kubectl -n mapreduce rollout restart statefulset/manager
+kubectl -n mapreduce rollout restart deployment/ui
+```
+
+This enables:
+- **Automatic mTLS** between all pods (24h certificate rotation)
+- **Per-RPC method timeouts** (Heartbeat 2s, Register 5s, TaskComplete/TaskFailed 10s)
+- **Retry policies** with exponential backoff (configurable per RPC)
+- **Circuit breaking** for external dependencies (PostgreSQL, MinIO, MinIO clients)
+- **Prometheus metrics** and Linkerd dashboard for traffic visualization
+
+See [Linkerd Setup Guide](docs/LINKERD_SETUP.md) for detailed instructions and [Timeout Configuration](docs/TIMEOUT_CONFIGURATION.md) for tuning guidelines.
+
 ## Repository Layout
 
 This repository now follows a polyrepo-ready microservice layout:
@@ -321,6 +356,30 @@ Dump the full raw JWT claims (useful for debugging):
 ```bash
 go run ./cli-service/cmd/cli token inspect
 ```
+
+## Documentation
+
+Comprehensive guides for deploying, configuring, and troubleshooting KubeMapReduce:
+
+### Core Documentation
+
+- **[Deployment Guide](docs/DEPLOYMENT.md)** — Complete step-by-step deployment guide for both local Docker Compose and production Kubernetes clusters
+- **[Linkerd Setup Guide](docs/LINKERD_SETUP.md)** — Service mesh installation and configuration for automatic mTLS and per-RPC timeouts (production-recommended)
+- **[Timeout Configuration Guide](docs/TIMEOUT_CONFIGURATION.md)** — Detailed tuning guidelines for timeout values, retry strategies, and circuit breaker settings
+- **[Architecture Documentation](docs/ARCHITECTURE.md)** — System design, component interactions, and fault tolerance patterns
+
+### Quick References
+
+- **API Reference** — REST and gRPC API specifications (see `proto/mapreduce.proto` for RPC definitions)
+- **Troubleshooting** — Common issues and solutions in [Deployment Guide](docs/DEPLOYMENT.md#troubleshooting)
+- **Security** — Authentication, authorization, and TLS configuration in relevant guides
+
+### Development
+
+- **Build all services:** `go build ./...`
+- **Run tests:** `go test ./...`
+- **Format code:** `go fmt ./...`
+- **Lint code:** `go vet ./...`
 
 ## Configuration
 
