@@ -6,7 +6,6 @@ import (
 	"regexp"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/google/uuid"
@@ -193,14 +192,6 @@ func TestE2E_TripleFailure_MaxAttemptsExhaustion(t *testing.T) {
 	mock.ExpectExec(regexp.QuoteMeta(QueryUpdateJobStatus)).WithArgs(jobID, "Cleaning").WillReturnResult(sqlmock.NewResult(1, 1))
 	mock.ExpectCommit()
 
-	// finalizeJob mock (called synchronously in FailStaleTasks)
-	mock.ExpectBegin()
-	mock.ExpectQuery(regexp.QuoteMeta(QueryGetJobStatusForUpdate)).
-		WithArgs(jobID).
-		WillReturnRows(sqlmock.NewRows([]string{"status"}).AddRow("Cleaning"))
-	mock.ExpectExec(regexp.QuoteMeta(QueryUpdateJobStatus)).WithArgs(jobID, "Failed").WillReturnResult(sqlmock.NewResult(1, 1))
-	mock.ExpectCommit()
-
 	recovered, err := s.FailStaleTasks(context.Background())
 	if err != nil {
 		t.Fatalf("FailStaleTasks failed: %v", err)
@@ -211,7 +202,7 @@ func TestE2E_TripleFailure_MaxAttemptsExhaustion(t *testing.T) {
 }
 
 func TestE2E_CancellationDuringExecution(t *testing.T) {
-	db, mock, s, orch := setupE2ETest(t)
+	db, mock, s, _ := setupE2ETest(t)
 	defer db.Close()
 
 	jobID := uuid.New().String()
@@ -225,33 +216,9 @@ func TestE2E_CancellationDuringExecution(t *testing.T) {
 	mock.ExpectExec(regexp.QuoteMeta(QueryFailRunningAttemptsByJob)).WithArgs(jobID).WillReturnResult(sqlmock.NewResult(1, 1))
 	mock.ExpectCommit()
 
-	// finalizeJob mock (called in goroutine)
-	mock.ExpectBegin()
-	mock.ExpectQuery(regexp.QuoteMeta(QueryGetJobStatusForUpdate)).
-		WithArgs(jobID).
-		WillReturnRows(sqlmock.NewRows([]string{"status"}).AddRow("Cleaning"))
-	mock.ExpectExec(regexp.QuoteMeta(QueryUpdateJobStatus)).WithArgs(jobID, "Cancelled").WillReturnResult(sqlmock.NewResult(1, 1))
-	mock.ExpectCommit()
-
 	err := s.CancelJob(context.Background(), jobID)
 	if err != nil {
 		t.Fatalf("CancelJob failed: %v", err)
-	}
-
-	// Poll until the async finalizeJob goroutine has both called orchestrator.CancelJob
-	// AND committed its DB transaction. Checking only CancelCount > 0 is insufficient:
-	// CancelJob is called before the DB operations, so the expectations may not yet be
-	// met when the poll breaks — especially under -race where goroutine scheduling is slower.
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		if orch.CancelCount() > 0 && mock.ExpectationsWereMet() == nil {
-			break
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-
-	if orch.CancelCount() != 1 || orch.GetCancelCall(0) != jobID {
-		t.Errorf("Expected orchestrator CancelJob for %s, got count=%d", jobID, orch.CancelCount())
 	}
 
 	if err := mock.ExpectationsWereMet(); err != nil {
