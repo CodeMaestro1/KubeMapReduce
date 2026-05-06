@@ -2256,3 +2256,30 @@ func TestExtractMapTaskIDs(t *testing.T) {
 		t.Errorf("expected map tasks [%s, %s], got %v", map1, map2, result)
 	}
 }
+
+func TestScheduler_HighlyConcurrentAssignment(t *testing.T) {
+	// sqlmock does not handle concurrency well natively, but we can simulate the
+	// goroutine contention around the orchestrator/scheduler tracking structures
+	// to ensure they are thread-safe under -race.
+	db, mock, scheduler := setupMockDB(t)
+	defer db.Close()
+
+	mock.MatchExpectationsInOrder(false)
+	for i := 0; i < 100; i++ {
+		mock.ExpectBegin()
+		mock.ExpectQuery(regexp.QuoteMeta(`SELECT COUNT(*) FROM tasks WHERE job_id = $1 AND status = 'FAILED'`)).
+			WithArgs("f9e7eecc-58b2-4d24-81eb-e1cd2a3fb129").
+			WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(1)) // fail early
+		mock.ExpectRollback()
+	}
+
+	var wg sync.WaitGroup
+	for i := 0; i < 100; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, _ = scheduler.GetNextTask(context.Background(), "f9e7eecc-58b2-4d24-81eb-e1cd2a3fb129", "worker-1")
+		}()
+	}
+	wg.Wait()
+}
