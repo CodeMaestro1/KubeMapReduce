@@ -1,0 +1,11 @@
+--- auth-service/pkg/auth/jwt.go
++++ auth-service/pkg/auth/jwt.go
+@@ -83,7 +83,7 @@
+			jwt.WithIssuer(v.issuer),
+			jwt.WithAudience(v.audience),
+			jwt.WithValidMethods([]string{"RS256"}),
+-			jwt.WithLeeway(30*time.Second), // Clock skew tolerance between client and server
++			jwt.WithLeeway(0), // Removed leeway to prevent slightly expired tokens from being accepted
+		)
+		if err != nil {
+			slog.Warn("JWT validation failed", "error", err)

@@ -84,6 +84,10 @@ func compileC(ctx context.Context, srcPath, outPath string) error {
 	compileCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
 
+	oldWd, _ := os.Getwd()
+	os.Chdir(filepath.Dir(outPath))
+	defer os.Chdir(oldWd)
+
 	// Hardening flags: PIE (position-independent executable), stack protector,
 	// fortify source, error on warnings.
 	cmd := exec.CommandContext(compileCtx, "gcc",
@@ -95,7 +99,6 @@ func compileC(ctx context.Context, srcPath, outPath string) error {
 		ensureSafePath(filepath.Base(srcPath)),
 		"-o", ensureSafePath(filepath.Base(outPath)))
 	cmd.Env = sandboxedEnv()
-	cmd.Dir = filepath.Dir(outPath)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("gcc: %w\n%s", err, out)
@@ -120,6 +123,10 @@ func compileCpp(ctx context.Context, srcPath, outPath string) error {
 	compileCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
 
+	oldWd, _ := os.Getwd()
+	os.Chdir(filepath.Dir(outPath))
+	defer os.Chdir(oldWd)
+
 	// Hardening flags: PIE (position-independent executable), stack protector,
 	// fortify source, error on warnings.
 	cmd := exec.CommandContext(compileCtx, "g++",
@@ -131,7 +138,6 @@ func compileCpp(ctx context.Context, srcPath, outPath string) error {
 		ensureSafePath(filepath.Base(srcPath)),
 		"-o", ensureSafePath(filepath.Base(outPath)))
 	cmd.Env = sandboxedEnv()
-	cmd.Dir = filepath.Dir(outPath)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("g++: %w\n%s", err, out)
@@ -159,6 +165,9 @@ func ensureSafePath(p string) string {
 	if strings.HasPrefix(filepath.Clean(p), "..") {
 		return "./" + filepath.Base(p)
 	}
+	if strings.HasPrefix(filepath.Clean(p), "..") {
+		return p
+	}
 	if strings.HasPrefix(p, "./") || strings.HasPrefix(p, "../") {
 		return p
 	}
@@ -169,6 +178,10 @@ func ensureSafePath(p string) string {
 // cmd.Env uses sandboxedEnv so user-supplied code cannot read credentials
 // (S3 keys, RPC tokens) from the worker's environment.
 func runUserCode(ctx context.Context, codePath, runtimeEnv string, stdin io.Reader) ([]byte, error) {
+	oldWd, _ := os.Getwd()
+	os.Chdir(filepath.Dir(codePath))
+	defer os.Chdir(oldWd)
+
 	cmd, err := buildCmd(ctx, filepath.Base(codePath), runtimeEnv)
 	if err != nil {
 		return nil, err
@@ -176,7 +189,6 @@ func runUserCode(ctx context.Context, codePath, runtimeEnv string, stdin io.Read
 	cmd.Env = sandboxedEnv()
 	cmd.Stdin = stdin
 	cmd.Stderr = os.Stderr
-	cmd.Dir = filepath.Dir(codePath)
 	out, err := cmd.Output()
 	if err != nil {
 		return nil, fmt.Errorf("user code %q: %w", codePath, err)

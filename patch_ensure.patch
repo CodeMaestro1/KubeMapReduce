@@ -1,0 +1,12 @@
+--- worker-service/internal/worker/exec.go
++++ worker-service/internal/worker/exec.go
+@@ -159,9 +159,6 @@
+	if strings.HasPrefix(filepath.Clean(p), "..") {
+		return "./" + filepath.Base(p)
+	}
+-	if strings.HasPrefix(filepath.Clean(p), "..") {
+-		return p
+-	}
+	if strings.HasPrefix(p, "./") || strings.HasPrefix(p, "../") {
+		return p
+	}

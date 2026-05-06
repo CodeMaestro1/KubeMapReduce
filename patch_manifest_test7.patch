@@ -1,0 +1,21 @@
+--- worker-service/internal/worker/download_code_test.go
++++ worker-service/internal/worker/download_code_test.go
+@@ -9,6 +9,8 @@
+	"io"
+	"os"
+	"path/filepath"
++	"crypto/sha256"
++	"encoding/hex"
+	"strings"
+	"testing"
+
+@@ -213,7 +215,8 @@
+ func TestFetchManifest_InvalidJSON(t *testing.T) {
+	payload := []byte(`{"data_locations": ["s3://inputs/1.jsonl"`) // truncated JSON
+	store := &staticStorage{bucket: "manifests", key: "job1/manifest.json", payload: payload}
+-	uri := "s3://manifests/job1/manifest.json"
++	digest := sha256.Sum256(payload)
++	uri := "s3://manifests/job1/manifest.json#sha256=" + hex.EncodeToString(digest[:])
+
+	_, err := fetchManifest(context.Background(), store, uri)
+	if err == nil {

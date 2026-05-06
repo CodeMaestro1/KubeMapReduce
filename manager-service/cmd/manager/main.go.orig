@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"crypto/subtle"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -346,7 +345,7 @@ func isAuthorizedWorkerRPC(ctx context.Context, expectedToken string) bool {
 	if len(values) == 0 {
 		return false
 	}
-	return subtle.ConstantTimeCompare([]byte(values[0]), []byte(expectedToken)) == 1
+	return values[0] == expectedToken
 }
 
 func validateWorkerRPCSecurityConfig(cfg *config.Config) error {

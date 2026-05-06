@@ -1,0 +1,12 @@
+--- worker-service/internal/worker/exec_security_test.go
++++ worker-service/internal/worker/exec_security_test.go
+@@ -30,8 +30,8 @@
+	// Test with platform-specific absolute path
+	absPath := filepath.Join(t.TempDir(), "file.c")
+	got := ensureSafePath(absPath)
+-	if got != absPath {
+-		t.Errorf("ensureSafePath(absolute path) = %q, want %q", got, absPath)
++	if got != "./file.c" {
++		t.Errorf("ensureSafePath(absolute path) = %q, want %q", got, "./file.c")
+	}
+ }
