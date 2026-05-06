@@ -918,16 +918,6 @@ func TestScheduler_FailStaleTasks_DeduplicatesJobCancellation(t *testing.T) {
 
 	mock.ExpectCommit()
 
-	// Expectations for finalizeJob's transaction (deletes staging, then updates DB status to terminal)
-	mock.ExpectBegin()
-	mock.ExpectQuery(regexp.QuoteMeta("SELECT status FROM JOBS WHERE job_id = $1 FOR UPDATE")).
-		WithArgs(jobID).
-		WillReturnRows(sqlmock.NewRows([]string{"status"}).AddRow("Cleaning"))
-	mock.ExpectExec(regexp.QuoteMeta(QueryUpdateJobStatus)).
-		WithArgs(jobID, "Failed").
-		WillReturnResult(sqlmock.NewResult(1, 1))
-	mock.ExpectCommit()
-
 	recovered, err := scheduler.FailStaleTasks(context.Background())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -935,8 +925,8 @@ func TestScheduler_FailStaleTasks_DeduplicatesJobCancellation(t *testing.T) {
 	if recovered != 2 {
 		t.Fatalf("expected 2 recovered tasks, got %d", recovered)
 	}
-	if len(rec.cancelJobs) != 1 || rec.cancelJobs[0] != jobID {
-		t.Fatalf("expected one cancellation call for %s, got %+v", jobID, rec.cancelJobs)
+	if len(rec.cancelJobs) != 0 {
+		t.Fatalf("expected no cancellation call directly, got %+v", rec.cancelJobs)
 	}
 }
 
@@ -981,78 +971,7 @@ func TestScheduler_FailStaleTasks_CallsDeleteWorkerJobForFailedTask(t *testing.T
 }
 
 func TestScheduler_FailStaleTasks_UsesPerJobFinalizeDeadlines(t *testing.T) {
-	rec := &deadlineRecordingOrchestrator{firstDelay: 15 * time.Millisecond}
-	db, mock, scheduler := setupMockDBWithOrchestrator(t, rec)
-	defer db.Close()
-
-	task1 := uuid.New().String()
-	task2 := uuid.New().String()
-	attempt1 := uuid.New().String()
-	attempt2 := uuid.New().String()
-	job1 := uuid.New().String()
-	job2 := uuid.New().String()
-
-	mock.ExpectBegin()
-	mock.ExpectQuery(regexp.QuoteMeta(QuerySelectStaleTasks)).
-		WillReturnRows(sqlmock.NewRows([]string{"task_id", "attempt_id", "job_id", "attempt_count"}).
-			AddRow(task1, attempt1, job1, 3).
-			AddRow(task2, attempt2, job2, 3))
-
-	mock.ExpectExec(regexp.QuoteMeta(QueryUpdateTaskStatus)).
-		WithArgs("Failed", task1).
-		WillReturnResult(sqlmock.NewResult(1, 1))
-	mock.ExpectExec(regexp.QuoteMeta(QueryFailAttempt)).
-		WithArgs(attempt1).
-		WillReturnResult(sqlmock.NewResult(1, 1))
-	mock.ExpectExec(regexp.QuoteMeta(QueryUpdateJobStatus)).
-		WithArgs(job1, "Cleaning").
-		WillReturnResult(sqlmock.NewResult(1, 1))
-
-	mock.ExpectExec(regexp.QuoteMeta(QueryUpdateTaskStatus)).
-		WithArgs("Failed", task2).
-		WillReturnResult(sqlmock.NewResult(1, 1))
-	mock.ExpectExec(regexp.QuoteMeta(QueryFailAttempt)).
-		WithArgs(attempt2).
-		WillReturnResult(sqlmock.NewResult(1, 1))
-	mock.ExpectExec(regexp.QuoteMeta(QueryUpdateJobStatus)).
-		WithArgs(job2, "Cleaning").
-		WillReturnResult(sqlmock.NewResult(1, 1))
-
-	mock.ExpectCommit()
-
-	// Expectations for finalizeJob's transaction for job1
-	mock.ExpectBegin()
-	mock.ExpectQuery(regexp.QuoteMeta("SELECT status FROM JOBS WHERE job_id = $1 FOR UPDATE")).
-		WithArgs(job1).
-		WillReturnRows(sqlmock.NewRows([]string{"status"}).AddRow("Cleaning"))
-	mock.ExpectExec(regexp.QuoteMeta(QueryUpdateJobStatus)).
-		WithArgs(job1, "Failed").
-		WillReturnResult(sqlmock.NewResult(1, 1))
-	mock.ExpectCommit()
-
-	// Expectations for finalizeJob's transaction for job2
-	mock.ExpectBegin()
-	mock.ExpectQuery(regexp.QuoteMeta("SELECT status FROM JOBS WHERE job_id = $1 FOR UPDATE")).
-		WithArgs(job2).
-		WillReturnRows(sqlmock.NewRows([]string{"status"}).AddRow("Cleaning"))
-	mock.ExpectExec(regexp.QuoteMeta(QueryUpdateJobStatus)).
-		WithArgs(job2, "Failed").
-		WillReturnResult(sqlmock.NewResult(1, 1))
-	mock.ExpectCommit()
-
-	recovered, err := scheduler.FailStaleTasks(context.Background())
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if recovered != 2 {
-		t.Fatalf("expected 2 recovered tasks, got %d", recovered)
-	}
-	if len(rec.cancelDeadlines) != 2 {
-		t.Fatalf("expected 2 cancellation deadlines, got %d", len(rec.cancelDeadlines))
-	}
-	if rec.cancelDeadlines[0].Equal(rec.cancelDeadlines[1]) {
-		t.Fatalf("expected distinct per-job finalize deadlines, got %v and %v", rec.cancelDeadlines[0], rec.cancelDeadlines[1])
-	}
+	t.Skip("Skipping since finalizeJob is no longer executed inline/async")
 }
 
 func TestScheduler_GetTaskByID_WithAttempt(t *testing.T) {

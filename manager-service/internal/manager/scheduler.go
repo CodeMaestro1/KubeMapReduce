@@ -813,11 +813,7 @@ func (s *Scheduler) CompleteTask(ctx context.Context, taskID string, attemptID s
 	}
 
 	if jobCompleted {
-		go func() {
-			cancelCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Minute)
-			defer cancel()
-			s.finalizeJob(cancelCtx, jobID, "Completed")
-		}()
+		s.enqueueCleanup(jobID, "Completed")
 	}
 
 	return nil
@@ -892,11 +888,7 @@ func (s *Scheduler) CancelJob(ctx context.Context, jobID string) error {
 		return err
 	}
 
-	go func() {
-		cancelCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Minute)
-		defer cancel()
-		s.finalizeJob(cancelCtx, jobID, "Cancelled")
-	}()
+	s.enqueueCleanup(jobID, "Cancelled")
 
 	return nil
 }
@@ -980,11 +972,7 @@ func (s *Scheduler) FailTask(ctx context.Context, taskID string, attemptID strin
 	}
 
 	if newState == "Failed" {
-		go func() {
-			cancelCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Minute)
-			defer cancel()
-			s.finalizeJob(cancelCtx, jobID, "Failed")
-		}()
+		s.enqueueCleanup(jobID, "Failed")
 	} else if newState == "Idle" {
 		spawnCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
 		defer cancel()
@@ -1102,9 +1090,7 @@ func (s *Scheduler) FailStaleTasks(ctx context.Context) (int, error) {
 	}
 
 	for jobID := range failedJobs {
-		finalizeCtx, finalizeCancel := context.WithTimeout(ctx, 2*time.Minute)
-		s.finalizeJob(finalizeCtx, jobID, "Failed")
-		finalizeCancel()
+		s.enqueueCleanup(jobID, "Failed")
 	}
 
 	for _, rec := range respawnTasks {
