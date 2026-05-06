@@ -12,7 +12,7 @@ As requested, here is the comprehensive analysis and audit of the testing strate
 | **Integration Test**| `manager-service` <-> `worker-service` | Tested primarily via mocked gRPC clients. | No real in-memory/localhost gRPC integration test combining actual manager and worker networking layers. | High |
 | **Integration Test**| `k8s.io/client-go` orchestration | Uses `fake.NewSimpleClientset()` extensively. | Lack of integration tests against a real or `envtest` Kubernetes API server. | Medium |
 | **Distributed Failures**| General System Resilience | Covered by `e2e_failure_injection.sh` (Worker Kill, Manager Restart, Zombie Fencing). | No automated injection of network partitions, delayed packets, or dropped gRPC connections (e.g., via Linkerd fault injection). | High |
-| **Concurrency / Race**| Manager `Scheduler` & `Orchestrator` | Unit tests exist with standard assertions. | Lack of continuous `-race` detection tests in CI under highly concurrent mock job submissions. | High |
+| **Concurrency / Race**| Manager `Scheduler` & `Orchestrator` | Unit tests exist with standard assertions, and CI runs `go test -race`. | Tests do not simulate highly concurrent scenarios (e.g., hundreds of simultaneous submissions/assignments) needed to effectively trigger race conditions in the Scheduler. | High |
 | **MinIO Failure** | Storage layer | Happy path MinIO usage in E2E. | What happens if MinIO returns 503s mid-upload, or drops connections during `PutObject`? Missing retry/backoff assertion tests. | High |
 | **Auth / Security** | JWT Validation & Keycloak | Tested via `net/http/httptest` JWKS mocks. | No tests simulating Keycloak downtime, JWT tampering, or token expiry exactly mid-flight during long-running streaming RPCs. | High |
 | **Load / Stress** | System throughput | `benchmarks` dir exists but no formalized stress testing. | Manager performance degradation with 1000+ concurrent workers and massive DDS queue buildup is untested. | Critical |
@@ -23,7 +23,7 @@ As requested, here is the comprehensive analysis and audit of the testing strate
 
 **Phase 1: High-ROI Unit & Race Condition Fixes (Weeks 1-2)**
 1. **Fix missing unit coverage**: Write tests for `storage.go` MinIO error paths, `sortRecordsSpilling` edge cases, and CLI token refresh logic.
-2. **Enable Race Detector**: Add a CI step that runs all existing Go tests with `-race`. Fix any data races found in `Manager` orchestrator state transitions.
+2. **Add Concurrent Test Scenarios**: Write tests that spawn 100+ concurrent goroutines against the Manager and Scheduler APIs. This ensures the existing `-race` CI check actually encounters contention and validates state transitions properly.
 
 **Phase 2: Integration & MinIO Fault Tolerance (Weeks 3-4)**
 1. **MinIO Fault Injection Tests**: Implement integration tests using `toxiproxy` or custom `http.RoundTripper` mocks to simulate slow uploads, timeouts, and connection resets to MinIO, ensuring the worker handles backoff/retries gracefully.
