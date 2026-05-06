@@ -53,7 +53,7 @@ var defaultTargetSplitSizeBytes int64 = 64 * 1024 * 1024
 // safeFilenamePattern validates that a filename is a simple basename with no traversal or special chars.
 // Only alphanumeric, hyphens, underscores, and single dots in the middle are allowed.
 // This prevents patterns like "...", "a..b", or any traversal attempts.
-var safeFilenamePattern = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._\-]*[a-zA-Z0-9]$|^[a-zA-Z0-9]$`)
+var safeFilenamePattern = regexp.MustCompile(`^[a-zA-Z0-9](?:[a-zA-Z0-9_\-]|(?:\.[a-zA-Z0-9_\-]))*[a-zA-Z0-9]?$|^[a-zA-Z0-9]$`)
 
 // NewHandlers creates production-ready Handlers.
 func NewHandlers(adminClient *auth.KeycloakAdminClient, store JobStore, minioClient *minio.Client, managerAddr string, internalAPIKey string) *Handlers {
