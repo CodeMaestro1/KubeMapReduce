@@ -239,3 +239,130 @@ func TestCliHTTPClient_HasTimeout(t *testing.T) {
 		t.Fatalf("expected cliHTTPClient.Timeout=%v, got %v", cliRequestTimeout, cliHTTPClient.Timeout)
 	}
 }
+
+func TestGetValidToken_RefreshLogic(t *testing.T) {
+	// Setup overrides for test isolation
+	originalLoad := loadStoredTokens
+	originalSave := saveStoredTokens
+	originalRefresh := refreshStoredTokens
+	defer func() {
+		loadStoredTokens = originalLoad
+		saveStoredTokens = originalSave
+		refreshStoredTokens = originalRefresh
+	}()
+
+	t.Run("ValidTokenReturnsImmediately", func(t *testing.T) {
+		loadStoredTokens = func() (*auth.StoredTokens, error) {
+			return &auth.StoredTokens{
+				AccessToken: "valid-token",
+				ExpiresAt:   time.Now().Add(10 * time.Minute).Unix(),
+				ServerURL:   "http://test.example",
+			}, nil
+		}
+
+		refreshCalled := false
+		refreshStoredTokens = func(ctx context.Context, client *http.Client, baseURL, realm, clientID, refreshToken string) (*auth.OAuthTokenResponse, error) {
+			refreshCalled = true
+			return nil, nil
+		}
+
+		token, url := getValidToken()
+		if token != "valid-token" {
+			t.Errorf("expected valid-token, got %q", token)
+		}
+		if url != "http://test.example" {
+			t.Errorf("expected http://test.example, got %q", url)
+		}
+		if refreshCalled {
+			t.Errorf("expected refresh not to be called for valid token")
+		}
+	})
+}
+
+func TestDoAuthRequestWithContext_ValidatesTokenAndURL(t *testing.T) {
+	ctx := context.Background()
+
+	_, err := doAuthRequestWithContext(ctx, "GET", "http://example.com", "", nil)
+	if err == nil || !strings.Contains(err.Error(), "missing access token") {
+		t.Errorf("expected missing token error, got %v", err)
+	}
+
+	_, err = doAuthRequestWithContext(ctx, "GET", "file:///etc/passwd", "token", nil)
+	if err == nil || !strings.Contains(err.Error(), "unsupported URL scheme") {
+		t.Errorf("expected unsupported URL scheme error, got %v", err)
+	}
+
+	_, err = doAuthRequestWithContext(ctx, "GET", "http://", "token", nil)
+	if err == nil || !strings.Contains(err.Error(), "missing host") {
+		t.Errorf("expected missing host error, got %v", err)
+	}
+}
+
+func TestDoAuthRequestWithContext_SendsBearerToken(t *testing.T) {
+	var capturedAuth string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedAuth = r.Header.Get("Authorization")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	ctx := context.Background()
+	_, err := doAuthRequestWithContext(ctx, "GET", server.URL, "my-test-token", nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if capturedAuth != "Bearer my-test-token" {
+		t.Errorf("expected Bearer my-test-token, got %q", capturedAuth)
+	}
+}
+func TestGetValidToken_RefreshLogicExpired(t *testing.T) {
+	// Setup overrides for test isolation
+	originalLoad := loadStoredTokens
+	originalSave := saveStoredTokens
+	originalRefresh := refreshStoredTokens
+	defer func() {
+		loadStoredTokens = originalLoad
+		saveStoredTokens = originalSave
+		refreshStoredTokens = originalRefresh
+	}()
+
+	loadStoredTokens = func() (*auth.StoredTokens, error) {
+		return &auth.StoredTokens{
+			AccessToken:  "expired-token",
+			RefreshToken: "valid-refresh-token",
+			ExpiresAt:    time.Now().Add(-10 * time.Minute).Unix(),
+			ServerURL:    "http://test.example",
+		}, nil
+	}
+
+	saveCalled := false
+	saveStoredTokens = func(tokens *auth.StoredTokens) error {
+		saveCalled = true
+		return nil
+	}
+
+	refreshCalled := false
+	refreshStoredTokens = func(ctx context.Context, client *http.Client, baseURL, realm, clientID, refreshToken string) (*auth.OAuthTokenResponse, error) {
+		refreshCalled = true
+		return &auth.OAuthTokenResponse{
+			AccessToken:  "new-valid-token",
+			RefreshToken: "new-refresh-token",
+			ExpiresIn:    300,
+		}, nil
+	}
+
+	token, url := getValidToken()
+	if token != "new-valid-token" {
+		t.Errorf("expected new-valid-token, got %q", token)
+	}
+	if url != "http://test.example" {
+		t.Errorf("expected http://test.example, got %q", url)
+	}
+	if !refreshCalled {
+		t.Errorf("expected refresh to be called for expired token")
+	}
+	if !saveCalled {
+		t.Errorf("expected save to be called after refresh")
+	}
+}

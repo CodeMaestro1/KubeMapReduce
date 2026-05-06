@@ -3,6 +3,7 @@ package worker
 import (
 	"encoding/json"
 	"hash/fnv"
+	"io"
 	"math/rand"
 	"sort"
 	"strconv"
@@ -195,5 +196,43 @@ func TestJSONLReader(t *testing.T) {
 	want := `{"key":"a","value":"1"}` + "\n" + `{"key":"b","value":"2"}` + "\n"
 	if got != want {
 		t.Errorf("jsonlReader: got %q, want %q", got, want)
+	}
+}
+
+func TestSortRecordsSpilling(t *testing.T) {
+	records := []shuffle.Record{
+		{Key: "b", Value: `1`},
+		{Key: "a", Value: `2`},
+		{Key: "c", Value: `3`},
+	}
+
+	// Test case: no spill (threshold is larger than data size)
+	rc, err := sortRecordsSpilling(records, 1024, t.TempDir())
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+	defer rc.Close()
+	data, _ := io.ReadAll(rc)
+	expected := `{"key":"a","value":"2"}` + "\n" + `{"key":"b","value":"1"}` + "\n" + `{"key":"c","value":"3"}` + "\n"
+	if string(data) != expected {
+		t.Errorf("expected %q, got %q", expected, string(data))
+	}
+
+	// Test case: force spill (threshold is very small)
+	rc, err = sortRecordsSpilling(records, 1, t.TempDir())
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+	defer rc.Close()
+	data, _ = io.ReadAll(rc)
+	if string(data) != expected {
+		t.Errorf("expected %q, got %q", expected, string(data))
+	}
+
+	// Test case: AddAll fails due to unwritable temp dir
+	badDir := "/root/forbidden-dir-test"
+	_, err = sortRecordsSpilling(records, 1, badDir)
+	if err == nil {
+		t.Error("expected error for bad dir, got nil")
 	}
 }
