@@ -13,6 +13,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc \
     g++ \
     ca-certificates \
+    iproute2 \
   && rm -rf /var/lib/apt/lists/*
 
 RUN groupadd --gid 65532 nonroot && useradd --uid 65532 --gid 65532 --no-create-home nonroot

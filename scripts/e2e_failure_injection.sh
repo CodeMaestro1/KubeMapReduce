@@ -25,18 +25,6 @@ fail() {
     exit 1
 }
 
-# extract_job_id parses a .jobId UUID from a JSON string.
-# Uses jq -re so that null/missing values cause a non-zero exit, which is
-# caught by the caller before proceeding with the ID.
-extract_job_id() {
-    local json="$1"
-    local id
-    if ! id=$(echo "$json" | jq -re '.jobId' 2>/dev/null) || [[ -z "$id" ]]; then
-        return 1
-    fi
-    printf '%s' "$id"
-}
-
 assert_job_completed() {
     local job_id=$1
     local timeout_secs=$2
@@ -83,20 +71,64 @@ wait_for_workers() {
     done
 }
 
-test_worker_kill() {
-    log "--- SCENARIO: Worker Pod Kill ---"
+test_worker_crash_mid_reduce() {
+    log "--- SCENARIO: Worker Pod Crash Mid-Reduce ---"
     local job_output=$($CLI_EXE jobs submit --spec "$SLEEP_JOB")
     local job_id=$(echo "$job_output" | jq -r '.jobId')
     log "Submitted job: $job_id"
 
     wait_for_workers "$job_id" 60
 
+    # Wait until job is explicitly in reducing state
+    local start_time=$(date +%s)
+    while true; do
+        local progress
+        progress=$($CLI_EXE jobs status --id "$job_id" | jq -r '.progress')
+        if echo "$progress" | grep -qi "Reduce"; then
+            break
+        fi
+        if (( $(date +%s) - start_time > 180 )); then
+            fail "Timeout waiting for job to enter Reduce phase"
+        fi
+        sleep 5
+    done
+
     local target_pod=$(kubectl get pods -l app=kubemapreduce-worker,job_id=$job_id -o name | head -n 1)
-    log "Killing worker pod: $target_pod"
+    log "Killing worker pod during Reduce phase: $target_pod"
     kubectl delete "$target_pod" --grace-period=0 --force
 
     assert_job_completed "$job_id" 300
-    log "Worker Kill Scenario: PASSED"
+    log "Worker Crash Mid-Reduce Scenario: PASSED"
+}
+
+test_worker_crash_mid_map() {
+    log "--- SCENARIO: Worker Pod Crash Mid-Map ---"
+    local job_output=$($CLI_EXE jobs submit --spec "$SLEEP_JOB")
+    local job_id=$(echo "$job_output" | jq -r '.jobId')
+    log "Submitted job: $job_id"
+
+    wait_for_workers "$job_id" 60
+
+    # Wait until job is explicitly in mapping state
+    local start_time=$(date +%s)
+    while true; do
+        local progress
+        progress=$($CLI_EXE jobs status --id "$job_id" | jq -r '.progress')
+        if echo "$progress" | grep -qi "Map"; then
+            break
+        fi
+        if (( $(date +%s) - start_time > 60 )); then
+            fail "Timeout waiting for job to enter Map phase"
+        fi
+        sleep 2
+    done
+
+    local target_pod=$(kubectl get pods -l app=kubemapreduce-worker,job_id=$job_id -o name | head -n 1)
+    log "Killing worker pod during Map phase: $target_pod"
+    kubectl delete "$target_pod" --grace-period=0 --force
+
+    assert_job_completed "$job_id" 300
+    log "Worker Crash Mid-Map Scenario: PASSED"
 }
 
 test_manager_restart() {
@@ -116,16 +148,12 @@ test_manager_restart() {
 }
 
 test_duplicate_job_creation() {
-    log "--- SCENARIO: Burst Concurrent Job Submission ---"
+    log "--- SCENARIO: Duplicate Job Creation ---"
     local pids=()
     local output_dir="$REPORT_DIR/duplicate_jobs"
     mkdir -p "$output_dir"
 
-    # The API always generates a fresh UUID per submission so concurrent identical
-    # submits legitimately create multiple jobs (each with a unique UUID). This
-    # scenario validates that the system handles burst concurrent submits without
-    # crashing or corrupting state, and that accepted jobs complete successfully.
-    log "Submitting 5 jobs concurrently..."
+    log "Submitting 5 identical jobs concurrently..."
     for i in {1..5}; do
         $CLI_EXE jobs submit --spec "$SLEEP_JOB" > "$output_dir/out_$i.json" 2>&1 &
         pids+=($!)
@@ -136,32 +164,88 @@ test_duplicate_job_creation() {
     done
 
     local success_count=0
-    local job_ids=()
+    local created_job_id=""
     for i in {1..5}; do
-        local file="$output_dir/out_$i.json"
-        local id
-        # Only treat the file as JSON if jq succeeds; otherwise skip as a failed submission.
-        # jq -re exits non-zero for null/missing fields, so no extra null check is needed.
-        if id=$(jq -re '.jobId' "$file" 2>/dev/null) && [[ -n "$id" ]]; then
+        if grep -q "jobId" "$output_dir/out_$i.json"; then
             ((success_count++))
-            job_ids+=("$id")
+            created_job_id=$(jq -r '.jobId' "$output_dir/out_$i.json")
         fi
     done
 
-    log "Successful submissions: $success_count / 5"
-    if [[ "$success_count" -eq 0 ]]; then
+    log "Successful submissions: $success_count"
+    # Depending on how idempotency is implemented, either 1 job is created and others fail,
+    # or all return the same job ID.
+    if [[ "$success_count" -gt 1 ]]; then
+        # Check if they all have the same jobId
+        local unique_jobs=$(cat "$output_dir"/out_*.json | jq -r '.jobId' | grep -v null | sort -u | wc -l)
+        if [[ "$unique_jobs" -gt 1 ]]; then
+            fail "Duplicate jobs were scheduled! Expected 1, got $unique_jobs"
+        else
+            log "Idempotency worked: Multiple requests returned the same Job ID."
+        fi
+    elif [[ "$success_count" -eq 1 ]]; then
+        log "Idempotency worked: 1 request succeeded, others failed or were rejected."
+    else
         fail "All job submissions failed."
     fi
 
-    # Validate the first successfully parsed job ID before polling.
-    local created_job_id="${job_ids[0]}"
-    if [[ -z "$created_job_id" || "$created_job_id" == "null" ]]; then
-        fail "Could not obtain a valid job ID from any successful submission."
+    assert_job_completed "$created_job_id" 300
+    log "Duplicate Job Creation Scenario: PASSED"
+}
+
+test_delayed_task_ack() {
+    log "--- SCENARIO: Delayed Task Acknowledgement ---"
+    local job_output=$($CLI_EXE jobs submit --spec "$SLEEP_JOB")
+    local job_id=$(echo "$job_output" | jq -r '.jobId')
+    log "Submitted job: $job_id"
+
+    wait_for_workers "$job_id" 60
+
+    local target_pod=$(kubectl get pods -l app=kubemapreduce-worker,job_id=$job_id -o name | head -n 1)
+
+    log "Simulating slow worker (SIGSTOP) immediately to delay task completion ack: $target_pod"
+    kubectl exec "$target_pod" -- kill -STOP 1
+
+    # The default heartbeat timeout is typically 10-30s, and lease is 60s. Wait long enough to trigger reassignment.
+    log "Waiting 90 seconds to ensure task times out and is reassigned..."
+    sleep 90
+
+    log "Resuming slow worker (SIGCONT) so it attempts a stale ack: $target_pod"
+    kubectl exec "$target_pod" -- kill -CONT 1
+
+    assert_job_completed "$job_id" 300
+    log "Delayed Task Acknowledgement Scenario: PASSED (System handled stale ack and completed job)"
+}
+
+test_slow_object_storage() {
+    log "--- SCENARIO: Slow Object Storage (MinIO) Latency ---"
+    local job_output=$($CLI_EXE jobs submit --spec "$SLEEP_JOB")
+    local job_id=$(echo "$job_output" | jq -r '.jobId')
+    log "Submitted job: $job_id"
+
+    wait_for_workers "$job_id" 60
+
+    local target_pod=$(kubectl get pods -l app=kubemapreduce-worker,job_id=$job_id -o name | head -n 1)
+
+    # We resolve the MinIO cluster IP because tc rules apply to IPs
+    local minio_ip=$(kubectl get svc minio -n mapreduce -o jsonpath='{.spec.clusterIP}')
+    if [[ -z "$minio_ip" ]]; then
+        fail "Could not resolve minio service cluster IP"
     fi
 
-    log "Verifying that at least one submitted job completes successfully (job: $created_job_id)..."
-    assert_job_completed "$created_job_id" 300
-    log "Burst Concurrent Job Submission Scenario: PASSED ($success_count job(s) accepted)"
+    log "Injecting 5000ms latency to MinIO ($minio_ip) traffic on worker pod: $target_pod"
+    # Create a qdisc and add a filter that delays traffic specifically targeting MinIO
+    kubectl exec "$target_pod" -- tc qdisc add dev eth0 root handle 1: prio
+    kubectl exec "$target_pod" -- tc qdisc add dev eth0 parent 1:1 handle 10: netem delay 5000ms
+    kubectl exec "$target_pod" -- tc filter add dev eth0 protocol ip parent 1:0 prio 1 u32 match ip dst "$minio_ip" flowid 1:1
+
+    # Observe that the job should still eventually complete without crashing
+    assert_job_completed "$job_id" 400
+
+    log "Cleaning up latency injection..."
+    kubectl exec "$target_pod" -- tc qdisc del dev eth0 root || true
+
+    log "Slow Object Storage Scenario: PASSED"
 }
 
 test_zombie_fencing() {
@@ -194,17 +278,15 @@ test_zombie_fencing() {
     log "Zombie Fencing Scenario: PASSED (Recovery completed and stale attempt was rejected)"
 }
 
+# Main Execution
+log "Starting KubeMapReduce E2E Failure-Injection Suite"
+
+# Check dependencies
+command -v kubectl >/dev/null 2>&1 || fail "kubectl not found"
+command -v go >/dev/null 2>&1 || fail "go not found"
+
 test_auth_outage() {
     log "--- SCENARIO: Auth Provider Outage ---"
-
-    # Ensure Keycloak is restored on any exit path.
-    _cleanup_auth() {
-        log "Cleanup: Restoring Keycloak to 1 replica..."
-        kubectl scale deployment keycloak -n mapreduce --replicas=1 2>/dev/null || true
-        kubectl rollout status deployment/keycloak -n mapreduce --timeout=120s 2>/dev/null || true
-        trap - EXIT
-    }
-    trap _cleanup_auth EXIT
 
     log "Scaling Keycloak deployment to 0..."
     kubectl scale deployment keycloak -n mapreduce --replicas=0
@@ -212,25 +294,31 @@ test_auth_outage() {
     # Wait for pods to terminate
     sleep 10
 
-    # The API validates JWTs using a cached JWKS key set, so a still-valid access
-    # token will continue to work while Keycloak is down. The correct resilience
-    # assertion is that existing authenticated operations continue uninterrupted.
-    log "Verifying that existing authenticated operations continue with a cached token..."
+    log "Verifying that new job submission fails gracefully..."
     local job_output
     job_output=$($CLI_EXE jobs submit --spec "$SLEEP_JOB" 2>&1 || true)
 
-    local job_id
-    # jq -re exits non-zero for null/missing .jobId, so a separate null guard is redundant.
-    if ! job_id=$(extract_job_id "$job_output") || [[ -z "$job_id" ]]; then
-        fail "Existing job submission failed during Keycloak outage (cached token should suffice). Output: $job_output"
+    if echo "$job_output" | grep -Eqi "unauthorized|503|connection refused|failed"; then
+        log "System rejected submission gracefully during Auth outage."
+    else
+        log "Restoring Keycloak..."
+        kubectl scale deployment keycloak -n mapreduce --replicas=1
+        kubectl rollout status deployment/keycloak -n mapreduce --timeout=120s
+        fail "Expected submission to fail gracefully due to auth outage, but it did not. Output: $job_output"
     fi
-    log "Authenticated submission succeeded during Keycloak outage (job: $job_id)."
 
     log "Scaling Keycloak deployment back to 1..."
     kubectl scale deployment keycloak -n mapreduce --replicas=1
     kubectl rollout status deployment/keycloak -n mapreduce --timeout=120s
 
-    trap - EXIT
+    log "Verifying recovery: Submitting new job..."
+    local recovery_output=$($CLI_EXE jobs submit --spec "$SLEEP_JOB")
+    local job_id=$(echo "$recovery_output" | jq -r '.jobId')
+
+    if [[ -z "$job_id" || "$job_id" == "null" ]]; then
+        fail "Failed to submit job after Keycloak recovery. Output: $recovery_output"
+    fi
+    log "Submitted job after recovery: $job_id"
 
     assert_job_completed "$job_id" 300
     log "Auth Provider Outage Scenario: PASSED"
@@ -239,22 +327,8 @@ test_auth_outage() {
 test_minio_outage() {
     log "--- SCENARIO: MinIO Outage/Latency ---"
 
-    # Ensure MinIO is restored on any exit path.
-    _cleanup_minio() {
-        log "Cleanup: Restoring MinIO to 1 replica..."
-        kubectl scale statefulset minio -n mapreduce --replicas=1 2>/dev/null || true
-        kubectl rollout status statefulset/minio -n mapreduce --timeout=120s 2>/dev/null || true
-        trap - EXIT
-    }
-    trap _cleanup_minio EXIT
-
-    local job_output
-    job_output=$($CLI_EXE jobs submit --spec "$SLEEP_JOB")
-    local job_id
-    # jq -re exits non-zero for null/missing .jobId, so a separate null guard is redundant.
-    if ! job_id=$(extract_job_id "$job_output") || [[ -z "$job_id" ]]; then
-        fail "Failed to submit job before MinIO outage. Output: $job_output"
-    fi
+    local job_output=$($CLI_EXE jobs submit --spec "$SLEEP_JOB")
+    local job_id=$(echo "$job_output" | jq -r '.jobId')
     log "Submitted job: $job_id"
 
     wait_for_workers "$job_id" 60
@@ -268,14 +342,15 @@ test_minio_outage() {
     local status
     status=$($CLI_EXE jobs status --id "$job_id" | jq -r '.status')
     if [[ "$status" == "Failed" || "$status" == "Cancelled" ]]; then
+        log "Restoring MinIO..."
+        kubectl scale statefulset minio -n mapreduce --replicas=1
+        kubectl rollout status statefulset/minio -n mapreduce --timeout=120s
         fail "Job failed prematurely during MinIO outage!"
     fi
 
     log "Scaling MinIO statefulset back to 1..."
     kubectl scale statefulset minio -n mapreduce --replicas=1
     kubectl rollout status statefulset/minio -n mapreduce --timeout=120s
-
-    trap - EXIT
 
     assert_job_completed "$job_id" 400
     log "MinIO Outage Scenario: PASSED"
@@ -284,24 +359,13 @@ test_minio_outage() {
 test_network_partition() {
     log "--- SCENARIO: Network Partition (Workers <-> Coordinator) ---"
 
-    # Ensure the NetworkPolicy is removed on any exit path.
-    _cleanup_network_partition() {
-        log "Cleanup: Removing isolate-workers NetworkPolicy..."
-        kubectl delete networkpolicy isolate-workers -n mapreduce 2>/dev/null || true
-        trap - EXIT
-    }
-    trap _cleanup_network_partition EXIT
-
     local job_output=$($CLI_EXE jobs submit --spec "$SLEEP_JOB")
     local job_id=$(echo "$job_output" | jq -r '.jobId')
     log "Submitted job: $job_id"
 
     wait_for_workers "$job_id" 60
 
-    # Block only worker <-> manager traffic while still allowing DNS and MinIO
-    # egress so that workers can continue storage I/O and DNS resolution.
-    # The missing heartbeats to the manager will trigger lease expiry and rescheduling.
-    log "Applying NetworkPolicy to partition workers from manager (DNS + MinIO still allowed)..."
+    log "Applying NetworkPolicy to isolate workers from manager..."
     cat <<EOF | kubectl apply -f -
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
@@ -314,21 +378,7 @@ spec:
       app: kubemapreduce-worker
   policyTypes:
   - Egress
-  egress:
-  # Allow DNS so workers can resolve service names
-  - ports:
-    - port: 53
-      protocol: UDP
-    - port: 53
-      protocol: TCP
-  # Allow MinIO so workers can continue storage operations
-  - to:
-    - podSelector:
-        matchLabels:
-          app: minio
-    ports:
-    - port: 9000
-      protocol: TCP
+  - Ingress
 EOF
 
     # Wait to simulate partition duration where tasks timeout and re-queue
@@ -338,13 +388,12 @@ EOF
     local status
     status=$($CLI_EXE jobs status --id "$job_id" | jq -r '.status')
     if [[ "$status" == "Failed" || "$status" == "Cancelled" ]]; then
+        kubectl delete networkpolicy isolate-workers -n mapreduce
         fail "Job failed prematurely during network partition!"
     fi
 
     log "Removing NetworkPolicy to heal partition..."
     kubectl delete networkpolicy isolate-workers -n mapreduce
-
-    trap - EXIT
 
     assert_job_completed "$job_id" 400
     log "Network Partition Scenario: PASSED"
@@ -353,34 +402,15 @@ EOF
 test_kubernetes_api_outage() {
     log "--- SCENARIO: Kubernetes API Outage ---"
 
-    # Ensure the NetworkPolicy is removed on any exit path.
-    _cleanup_k8s_api() {
-        log "Cleanup: Removing block-k8s-api NetworkPolicy..."
-        kubectl delete networkpolicy block-k8s-api -n mapreduce 2>/dev/null || true
-        trap - EXIT
-    }
-    trap _cleanup_k8s_api EXIT
-
     local job_output=$($CLI_EXE jobs submit --spec "$SLEEP_JOB")
     local job_id=$(echo "$job_output" | jq -r '.jobId')
     log "Submitted job: $job_id"
 
     wait_for_workers "$job_id" 60
 
-    # Discover the Kubernetes API service ClusterIP dynamically to avoid
-    # hardcoding a cluster-dependent address. kubectl's own error output goes
-    # directly to stderr so the caller can diagnose RBAC or connectivity issues.
-    local k8s_api_ip
-    if ! k8s_api_ip=$(kubectl get svc kubernetes -n default -o jsonpath='{.spec.clusterIP}'); then
-        fail "Could not query the 'kubernetes' service in the 'default' namespace (see kubectl error above)."
-    fi
-    if [[ -z "$k8s_api_ip" ]]; then
-        fail "Kubernetes API service ClusterIP is empty."
-    fi
-    log "Kubernetes API ClusterIP: $k8s_api_ip"
-
-    # Manager pods are labelled app.kubernetes.io/name=manager in the manifests.
-    log "Applying NetworkPolicy to block Manager from K8s API (${k8s_api_ip}/32)..."
+    log "Applying NetworkPolicy to block Manager from K8s API..."
+    # The default Kubernetes API is typically at 10.96.0.1 (kubernetes.default.svc)
+    # We will block all egress to the default namespace API server IP.
     cat <<EOF | kubectl apply -f -
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
@@ -390,7 +420,7 @@ metadata:
 spec:
   podSelector:
     matchLabels:
-      app.kubernetes.io/name: manager
+      app: manager
   policyTypes:
   - Egress
   egress:
@@ -398,7 +428,7 @@ spec:
     - ipBlock:
         cidr: 0.0.0.0/0
         except:
-        - ${k8s_api_ip}/32
+        - 10.96.0.1/32
 EOF
 
     log "Waiting 30 seconds for API outage effects..."
@@ -407,25 +437,16 @@ EOF
     local status
     status=$($CLI_EXE jobs status --id "$job_id" | jq -r '.status')
     if [[ "$status" == "Failed" || "$status" == "Cancelled" ]]; then
+        kubectl delete networkpolicy block-k8s-api -n mapreduce
         fail "Job failed prematurely during Kubernetes API outage!"
     fi
 
     log "Removing NetworkPolicy to restore K8s API access..."
     kubectl delete networkpolicy block-k8s-api -n mapreduce
 
-    trap - EXIT
-
     assert_job_completed "$job_id" 400
     log "Kubernetes API Outage Scenario: PASSED"
 }
-
-# Main Execution
-log "Starting KubeMapReduce E2E Failure-Injection Suite"
-
-# Check dependencies
-command -v kubectl >/dev/null 2>&1 || fail "kubectl not found"
-command -v go >/dev/null 2>&1 || fail "go not found"
-command -v jq >/dev/null 2>&1 || fail "jq not found"
 
 # Run tests
 test_duplicate_job_creation
@@ -433,8 +454,11 @@ test_auth_outage
 test_minio_outage
 test_network_partition
 test_kubernetes_api_outage
-test_worker_kill
+test_worker_crash_mid_map
+test_worker_crash_mid_reduce
 test_manager_restart
+test_delayed_task_ack
+test_slow_object_storage
 test_zombie_fencing
 
 log "Suite completed successfully. Reports saved to $REPORT_DIR"
