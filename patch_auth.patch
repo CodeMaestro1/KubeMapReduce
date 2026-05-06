@@ -1,0 +1,19 @@
+--- manager-service/cmd/manager/main.go
++++ manager-service/cmd/manager/main.go
+@@ -10,6 +10,7 @@
+	"path/filepath"
+	"strconv"
+	"strings"
++	"crypto/subtle"
+	"syscall"
+	"time"
+
+@@ -345,7 +346,7 @@
+	if len(values) == 0 {
+		return false
+	}
+-	return values[0] == expectedToken
++	return subtle.ConstantTimeCompare([]byte(values[0]), []byte(expectedToken)) == 1
+ }
+
+ func validateWorkerRPCSecurityConfig(cfg *config.Config) error {

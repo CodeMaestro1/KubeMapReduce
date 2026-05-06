@@ -1,0 +1,20 @@
+--- worker-service/internal/worker/exec.go
++++ worker-service/internal/worker/exec.go
+@@ -148,11 +148,11 @@
+ // either absolute or explicitly relative (starting with ./ or ../) to prevent
+ // it from being interpreted as a command-line flag or a response file (@file).
+ func ensureSafePath(p string) string {
+-	if filepath.IsAbs(p) {
+-		return "./" + filepath.Base(p)
+-	}
+-	if strings.HasPrefix(p, "./") || strings.HasPrefix(p, "../") {
+-		return p
++	if filepath.IsAbs(p) {
++		return p
++	}
++	if strings.HasPrefix(p, "./") || strings.HasPrefix(p, "../") {
++		return p
+	}
+-	return "./" + filepath.Base(p)
++	return "./" + p
+ }

@@ -1,0 +1,42 @@
+--- worker-service/internal/worker/download_test.go
++++ worker-service/internal/worker/download_test.go
+@@ -140,8 +140,8 @@
+
+	got, err := fetchManifest(context.Background(), store, uri)
+-	if err != nil {
+-		t.Fatalf("unexpected error: %v", err)
+-	}
+-	if len(got) != 1 || got[0] != locs[0] {
+-		t.Errorf("got %v, want %v", got, locs)
+-	}
++	if err == nil {
++		t.Fatal("expected error, got nil")
++	}
++	if !strings.Contains(err.Error(), "manifest missing mandatory digest") {
++		t.Errorf("expected error to mention mandatory digest, got: %v", err)
++	}
+ }
+
+--- worker-service/internal/worker/download_code_test.go
++++ worker-service/internal/worker/download_code_test.go
+@@ -12,6 +12,8 @@
+	"strings"
+	"testing"
+
++	"crypto/sha256"
++	"encoding/hex"
+	"github.com/minio/minio-go/v7"
+ )
+
+@@ -212,8 +214,10 @@
+ func TestFetchManifest_InvalidJSON(t *testing.T) {
+	payload := []byte(`{"data_locations": ["s3://inputs/1.jsonl"`) // truncated JSON
+	store := &staticStorage{bucket: "manifests", key: "job1/manifest.json", payload: payload}
+-	uri := "s3://manifests/job1/manifest.json"
++
++	digest := sha256.Sum256(payload)
++	uri := "s3://manifests/job1/manifest.json#sha256=" + hex.EncodeToString(digest[:])
+
+	_, err := fetchManifest(context.Background(), store, uri)
+	if err == nil {
+		t.Fatal("expected error for invalid JSON")

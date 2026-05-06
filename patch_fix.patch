@@ -1,0 +1,69 @@
+--- worker-service/internal/worker/exec.go
++++ worker-service/internal/worker/exec.go
+@@ -107,10 +107,6 @@
+ func compileC(ctx context.Context, srcPath, outPath string) error {
+	compileCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
+	defer cancel()
+-
+-	oldWd, _ := os.Getwd()
+-	os.Chdir(filepath.Dir(outPath))
+-	defer os.Chdir(oldWd)
+
+	// Hardening flags: PIE (position-independent executable), stack protector,
+	// fortify source, error on warnings.
+@@ -124,6 +120,7 @@
+		ensureSafePath(filepath.Base(srcPath)),
+		"-o", ensureSafePath(filepath.Base(outPath)))
+	cmd.Env = sandboxedEnv()
++	cmd.Dir = filepath.Dir(outPath)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("gcc: %w\n%s", err, out)
+@@ -141,10 +138,6 @@
+ func compileCpp(ctx context.Context, srcPath, outPath string) error {
+	compileCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
+	defer cancel()
+-
+-	oldWd, _ := os.Getwd()
+-	os.Chdir(filepath.Dir(outPath))
+-	defer os.Chdir(oldWd)
+
+	// Hardening flags: PIE (position-independent executable), stack protector,
+	// fortify source, error on warnings.
+@@ -158,6 +151,7 @@
+		ensureSafePath(filepath.Base(srcPath)),
+		"-o", ensureSafePath(filepath.Base(outPath)))
+	cmd.Env = sandboxedEnv()
++	cmd.Dir = filepath.Dir(outPath)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("g++: %w\n%s", err, out)
+@@ -185,10 +179,6 @@
+ // cmd.Env uses sandboxedEnv so user-supplied code cannot read credentials
+ // (S3 keys, RPC tokens) from the worker's environment.
+ func runUserCode(ctx context.Context, codePath, runtimeEnv string, stdin io.Reader) ([]byte, error) {
+-	oldWd, _ := os.Getwd()
+-	os.Chdir(filepath.Dir(codePath))
+-	defer os.Chdir(oldWd)
+-
+	cmd, err := buildCmd(ctx, filepath.Base(codePath), runtimeEnv)
+	if err != nil {
+		return nil, err
+@@ -196,6 +186,7 @@
+	cmd.Env = sandboxedEnv()
+	cmd.Stdin = stdin
+	cmd.Stderr = os.Stderr
++	cmd.Dir = filepath.Dir(codePath)
+	out, err := cmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("user code %q: %w", codePath, err)
+--- manager-service/internal/api/handlers.go
++++ manager-service/internal/api/handlers.go
+@@ -627,7 +627,7 @@
+	}
+
+	cleanPath := filepath.Clean(key)
+-	if !strings.HasPrefix(cleanPath, expectedPrefix) && filepath.ToSlash(cleanPath) != key {
++	if !strings.HasPrefix(cleanPath, expectedPrefix) || filepath.ToSlash(cleanPath) != key {
+		return fmt.Errorf("key contains path traversal")
+	}

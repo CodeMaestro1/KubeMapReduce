@@ -1,0 +1,12 @@
+--- worker-service/internal/worker/download_code_test.go
++++ worker-service/internal/worker/download_code_test.go
+@@ -10,9 +10,7 @@
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+-
+-	"crypto/sha256"
+-	"encoding/hex"
+	"github.com/minio/minio-go/v7"
+ )

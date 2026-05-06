@@ -1,0 +1,18 @@
+--- worker-service/internal/worker/exec.go
++++ worker-service/internal/worker/exec.go
+@@ -165,11 +165,15 @@
+ // cmd.Env uses sandboxedEnv so user-supplied code cannot read credentials
+ // (S3 keys, RPC tokens) from the worker's environment.
+ func runUserCode(ctx context.Context, codePath, runtimeEnv string, stdin io.Reader) ([]byte, error) {
+-	cmd, err := buildCmd(ctx, codePath, runtimeEnv)
++	oldWd, _ := os.Getwd()
++	os.Chdir(filepath.Dir(codePath))
++	defer os.Chdir(oldWd)
++
++	cmd, err := buildCmd(ctx, filepath.Base(codePath), runtimeEnv)
+	if err != nil {
+		return nil, err
+	}
+	cmd.Env = sandboxedEnv()
+	cmd.Stdin = stdin
+	cmd.Stderr = os.Stderr

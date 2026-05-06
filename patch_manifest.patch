@@ -1,0 +1,13 @@
+--- worker-service/internal/worker/download.go
++++ worker-service/internal/worker/download.go
+@@ -62,6 +62,10 @@
+ func fetchManifest(ctx context.Context, storage objectStorage, manifestURI string) ([]string, error) {
+	uri, expectedDigest := parseManifestURIFragment(manifestURI)
+
++	if expectedDigest == "" {
++		return nil, fmt.Errorf("manifest missing mandatory digest: %s", manifestURI)
++	}
++
+	bucket, key, err := parseS3URI(uri)
+	if err != nil {
+		return nil, err
