@@ -203,8 +203,9 @@ func (k *KubeOrchestrator) EnsureWorkerPool(ctx context.Context, jobID string, n
 					},
 					Containers: []corev1.Container{
 						{
-							Name:  "worker",
-							Image: k.workerImage,
+							Name:            "worker",
+							Image:           k.workerImage,
+							ImagePullPolicy: corev1.PullIfNotPresent,
 							Env: []corev1.EnvVar{
 								{Name: "JOB_ID", Value: jobID},
 								{Name: "MANAGER_ADDR", Value: managerAddr},
