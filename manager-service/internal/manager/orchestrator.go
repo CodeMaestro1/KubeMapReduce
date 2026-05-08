@@ -162,6 +162,8 @@ func (k *KubeOrchestrator) EnsureWorkerPool(ctx context.Context, jobID string, n
 					AutomountServiceAccountToken: &falseVal,
 					SecurityContext: &corev1.PodSecurityContext{
 						RunAsNonRoot: &trueVal,
+						RunAsUser:    func() *int64 { uid := WorkerUID; return &uid }(),
+						RunAsGroup:   func() *int64 { gid := WorkerGID; return &gid }(),
 						SeccompProfile: &corev1.SeccompProfile{
 							Type: corev1.SeccompProfileTypeRuntimeDefault,
 						},
