@@ -112,6 +112,22 @@ func NewScheduler(db *sql.DB, replicaIndex int, totalReplicas int, orchestrator 
 // Recover reconciles active attempts assigned to this replica and re-spawns workers.
 //
 // This method should be called immediately after Manager startup. it queries the DDS
+// authoritativeManagerAddr returns the gRPC address of the replica that owns jobID.
+// Workers must connect to that replica — any other replica will reject GetNextTask
+// with a routing mismatch error. If the address cannot be computed (e.g. totalReplicas
+// is 0), this manager's own address is returned as a safe fallback.
+func (s *Scheduler) authoritativeManagerAddr(jobID string) string {
+	idx, err := ComputeReplicaIndex(jobID, s.totalReplicas)
+	if err != nil || idx == s.replicaIndex {
+		return s.managerAddr
+	}
+	// Rewrite the ordinal in the stable DNS name:
+	// "manager-0.manager-headless...." → "manager-N.manager-headless...."
+	old := fmt.Sprintf("manager-%d.", s.replicaIndex)
+	replacement := fmt.Sprintf("manager-%d.", idx)
+	return strings.Replace(s.managerAddr, old, replacement, 1)
+}
+
 // for tasks that are "In-Progress" and bound to this replica index, then uses the
 // orchestrator to ensure a physical worker process exists for each. This ensures
 // continuity across Manager crashes without losing progress.
@@ -157,7 +173,7 @@ func (s *Scheduler) Recover(ctx context.Context) error {
 	spawnFailures := 0
 	for jobID := range uniqueJobs {
 		spawnCtx, cancel := context.WithTimeout(ctx, recoverSpawnTimeout)
-		err := s.orchestrator.EnsureWorkerPool(spawnCtx, jobID, 4, s.managerAddr)
+		err := s.orchestrator.EnsureWorkerPool(spawnCtx, jobID, 4, s.authoritativeManagerAddr(jobID))
 		cancel()
 		if err != nil {
 			slog.ErrorContext(ctx, "failed to ensure worker pool during recovery",
@@ -640,7 +656,7 @@ func (s *Scheduler) ScheduleJob(ctx context.Context, req ScheduleJobRequest) err
 	// We use the worker_replicas from SYSTEM_CONFIG (default 1) or a reasonable pool size.
 	// For simplicity, let's fetch worker count from orchestrator/config provider.
 	// Using 4 as a default pool size per job for now.
-	if err := s.orchestrator.EnsureWorkerPool(ctx, req.JobID, 4, s.managerAddr); err != nil {
+	if err := s.orchestrator.EnsureWorkerPool(ctx, req.JobID, 4, s.authoritativeManagerAddr(req.JobID)); err != nil {
 		slog.ErrorContext(ctx, "failed to ensure worker pool",
 			slog.String("job_id", req.JobID), slog.Any("err", err))
 		// Note: we don't return error here because the job IS scheduled in DB.
@@ -1016,7 +1032,7 @@ func (s *Scheduler) FailTask(ctx context.Context, taskID string, attemptID strin
 		defer cancel()
 
 		// Ensure worker pool is healthy (idempotent)
-		if err := s.orchestrator.EnsureWorkerPool(spawnCtx, jobID, 4, s.managerAddr); err != nil {
+		if err := s.orchestrator.EnsureWorkerPool(spawnCtx, jobID, 4, s.authoritativeManagerAddr(jobID)); err != nil {
 			slog.WarnContext(ctx, "failed to ensure worker pool after task failure; reaper will retry",
 				slog.String("job_id", jobID),
 				slog.Any("err", err),
@@ -1143,7 +1159,7 @@ func (s *Scheduler) FailStaleTasks(ctx context.Context) (int, error) {
 	}
 	for jobID := range uniqueRespawnJobs {
 		spawnCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-		if err := s.orchestrator.EnsureWorkerPool(spawnCtx, jobID, 4, s.managerAddr); err != nil {
+		if err := s.orchestrator.EnsureWorkerPool(spawnCtx, jobID, 4, s.authoritativeManagerAddr(jobID)); err != nil {
 			slog.ErrorContext(ctx, "failed to ensure worker pool during reaper retry",
 				slog.String("job_id", jobID),
 				slog.Any("err", err),
