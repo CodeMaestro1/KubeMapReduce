@@ -20,47 +20,101 @@ import (
 const outputBucket = "mapreduce-outputs"
 
 func (w *Worker) downloadShuffleInputs(ctx context.Context, a *pb.TaskAssignment, taskTempDir string) (readers []io.Reader, closers []io.Closer, err error) {
-	readers = make([]io.Reader, 0, len(a.DataLocations))
-	closers = make([]io.Closer, 0, len(a.DataLocations))
+	if w.shuffleClient != nil {
+		return w.downloadShuffleInputsFromService(ctx, a, taskTempDir)
+	}
+	// Legacy / test fallback: download from object storage.
+	return w.downloadShuffleInputsFromStorage(ctx, a, taskTempDir)
+}
 
-	for i, rawURI := range a.DataLocations {
-		dataURI, expectedChecksum := splitChecksumURI(rawURI)
-		bucket, key, parseErr := parseS3URI(dataURI)
-		if parseErr != nil {
-			return nil, closers, parseErr
-		}
-		obj, getErr := w.storage.GetObject(ctx, bucket, key, minio.GetObjectOptions{})
-		if getErr != nil {
-			return nil, closers, fmt.Errorf("GetObject %s: %w", dataURI, getErr)
-		}
+func (w *Worker) downloadShuffleInputsFromService(ctx context.Context, a *pb.TaskAssignment, taskTempDir string) (readers []io.Reader, closers []io.Closer, err error) {
+	stream, err := w.shuffleClient.GetShuffleData(ctx, &pb.ShuffleDataRequest{
+		JobId:       a.JobId,
+		PartitionId: a.PartitionId,
+	})
+	if err != nil {
+		return nil, nil, fmt.Errorf("open shuffle read stream: %w", err)
+	}
 
-		// Write to temp file instead of memory to prevent OOM.
-		tmpPath := filepath.Join(taskTempDir, fmt.Sprintf("input-%d.jsonl", i))
-		tmpFile, err := os.Create(tmpPath)
+	tmpPath := filepath.Join(taskTempDir, "shuffle-input.jsonl")
+	tmpFile, err := os.Create(tmpPath)
+	if err != nil {
+		return nil, nil, fmt.Errorf("create temp shuffle input file: %w", err)
+	}
+
+	for {
+		chunk, err := stream.Recv()
+		if err == io.EOF {
+			break
+		}
 		if err != nil {
-			obj.Close()
-			return nil, closers, fmt.Errorf("create temp input file: %w", err)
+			tmpFile.Close()
+			return nil, nil, fmt.Errorf("receive shuffle chunk: %w", err)
 		}
-		closers = append(closers, tmpFile)
-
-		h := sha256.New()
-		if _, copyErr := io.Copy(io.MultiWriter(tmpFile, h), obj); copyErr != nil {
-			obj.Close()
-			return nil, closers, fmt.Errorf("reading shuffle input %s: %w", dataURI, copyErr)
+		if _, err := tmpFile.Write(chunk.Data); err != nil {
+			tmpFile.Close()
+			return nil, nil, fmt.Errorf("write shuffle chunk: %w", err)
 		}
-		obj.Close()
+	}
 
-		if expectedChecksum != "" {
-			got := hex.EncodeToString(h.Sum(nil))
-			if got != expectedChecksum {
-				return nil, closers, fmt.Errorf("checksum mismatch for shuffle input %s: want %s got %s", dataURI, expectedChecksum, got)
+	if _, err := tmpFile.Seek(0, io.SeekStart); err != nil {
+		tmpFile.Close()
+		return nil, nil, fmt.Errorf("seek temp shuffle input file: %w", err)
+	}
+
+	return []io.Reader{tmpFile}, []io.Closer{tmpFile}, nil
+}
+
+func (w *Worker) downloadShuffleInputsFromStorage(ctx context.Context, a *pb.TaskAssignment, taskTempDir string) (readers []io.Reader, closers []io.Closer, err error) {
+	for i, loc := range a.DataLocations {
+		bareURI, expectedChecksum := splitChecksumURI(loc)
+		bucket, key, parseErr := parseS3URI(bareURI)
+		if parseErr != nil {
+			for _, c := range closers {
+				c.Close()
 			}
+			return nil, nil, fmt.Errorf("parse input URI %d (%s): %w", i, loc, parseErr)
+		}
+		rc, err := w.storage.GetObject(ctx, bucket, key, minio.GetObjectOptions{})
+		if err != nil {
+			for _, c := range closers {
+				c.Close()
+			}
+			return nil, nil, fmt.Errorf("download input %d (%s): %w", i, loc, err)
 		}
 
-		if _, err := tmpFile.Seek(0, io.SeekStart); err != nil {
-			return nil, closers, fmt.Errorf("seek temp input file: %w", err)
+		data, err := io.ReadAll(rc)
+		rc.Close()
+		if err != nil {
+			for _, c := range closers {
+				c.Close()
+			}
+			return nil, nil, fmt.Errorf("read input %d: %w", i, err)
+		}
+
+		if err := validateChecksum(data, expectedChecksum); err != nil {
+			for _, c := range closers {
+				c.Close()
+			}
+			return nil, nil, fmt.Errorf("input %d checksum mismatch: %w", i, err)
+		}
+
+		tmpPath := filepath.Join(taskTempDir, fmt.Sprintf("input-%d.jsonl", i))
+		if err := os.WriteFile(tmpPath, data, 0o644); err != nil {
+			for _, c := range closers {
+				c.Close()
+			}
+			return nil, nil, fmt.Errorf("write temp input file %d: %w", i, err)
+		}
+		tmpFile, err := os.Open(tmpPath)
+		if err != nil {
+			for _, c := range closers {
+				c.Close()
+			}
+			return nil, nil, fmt.Errorf("open temp input file %d: %w", i, err)
 		}
 		readers = append(readers, tmpFile)
+		closers = append(closers, tmpFile)
 	}
 	return readers, closers, nil
 }

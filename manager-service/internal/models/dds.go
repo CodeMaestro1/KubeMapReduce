@@ -78,11 +78,12 @@ const (
 // It serves as the root entity for all MapReduce operations, linking a user to
 // their submitted work.
 type Job struct {
-	JobID     uuid.UUID `db:"job_id" json:"jobId"`
-	UserID    uuid.UUID `db:"user_id" json:"userId"`
-	Status    JobStatus `db:"status" json:"status"`
-	CreatedAt time.Time `db:"created_at" json:"createdAt"`
-	UpdatedAt time.Time `db:"updated_at" json:"updatedAt"`
+	JobID        uuid.UUID `db:"job_id" json:"jobId"`
+	UserID       uuid.UUID `db:"user_id" json:"userId"`
+	Status       JobStatus `db:"status" json:"status"`
+	CreatedAt    time.Time `db:"created_at" json:"createdAt"`
+	UpdatedAt    time.Time `db:"updated_at" json:"updatedAt"`
+	ReplicaIndex int       `db:"replica_index" json:"replicaIndex"`
 }
 
 // JobConfig corresponds to the JOB_CONFIGS table.

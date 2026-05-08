@@ -54,7 +54,7 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	w := worker.New(cfg, pb.NewWorkerServiceClient(conn), minioClient)
+	w := worker.New(cfg, pb.NewWorkerServiceClient(conn), pb.NewShuffleServiceClient(conn), minioClient)
 	if err := w.Run(ctx); err != nil {
 		log.Printf("worker exited with error: %v", err)
 		os.Exit(1)

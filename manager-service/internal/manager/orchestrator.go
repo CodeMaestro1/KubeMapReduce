@@ -8,7 +8,7 @@ import (
 	"log/slog"
 	"strings"
 
-	batchv1 "k8s.io/api/batch/v1"
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -22,24 +22,15 @@ import (
 // (e.g., Kubernetes, local Docker, or bare processes), facilitating easier testing and
 // future-proofing against platform migrations.
 type WorkerOrchestrator interface {
-	// SpawnWorker initiates a new worker process for a specific task attempt.
-	//
-	// Callers must provide a unique attemptID which acts as the fencing token in the gRPC layer.
-	// The orchestrator is responsible for ensuring environment variables are correctly set so
-	// the worker can dial back to the managerAddr and identify itself.
-	SpawnWorker(ctx context.Context, taskID string, jobID string, attemptID string, managerAddr string) error
+	// EnsureWorkerPool ensures that a pool of workers is running for a specific job.
+	// It uses a K8s Deployment or similar to maintain the desired number of replicas.
+	EnsureWorkerPool(ctx context.Context, jobID string, numWorkers int, managerAddr string) error
 
 	// CancelJob terminates all active worker processes associated with a specific job.
 	//
 	// This is used during job cancellation or failure to immediately reclaim cluster resources.
 	// Implementation should be idempotent and handle cases where some workers might already be dead.
 	CancelJob(ctx context.Context, jobID string) error
-
-	// DeleteWorkerJob removes the K8s Job (and its pod) for a specific task, identified by
-	// the task_id label. Called before SpawnWorker on retry paths so the old pod is
-	// evicted before the new attempt starts, preventing two pods from running concurrently.
-	// Implementation must be idempotent: no error when no matching job exists.
-	DeleteWorkerJob(ctx context.Context, taskID string) error
 }
 
 // KubeOrchestrator implements WorkerOrchestrator using Kubernetes Jobs.
@@ -131,15 +122,15 @@ func (k *KubeOrchestrator) resolveContainerResources(ctx context.Context) corev1
 // DefaultWorkerCPULimit / DefaultWorkerMemoryLimit so worker pods are never
 // scheduled with unbounded resource usage. This closes the regression
 // described in issue #91.
-func (k *KubeOrchestrator) SpawnWorker(ctx context.Context, taskID string, jobID string, attemptID string, managerAddr string) error {
-	sanitizedTaskID := sanitizeForDNSLabel(taskID)
+// EnsureWorkerPool ensures that a pool of workers is running for a specific job.
+// It uses a K8s Deployment to maintain the desired number of replicas.
+func (k *KubeOrchestrator) EnsureWorkerPool(ctx context.Context, jobID string, numWorkers int, managerAddr string) error {
 	sanitizedJobID := sanitizeForDNSLabel(jobID)
-	jobName := buildWorkerJobName(sanitizedTaskID, attemptID)
-	backoffLimit := int32(0)
+	deploymentName := fmt.Sprintf("worker-pool-%s", sanitizedJobID)
+	replicas := int32(numWorkers)
 	labels := map[string]string{
-		"app":     "kubemapreduce-worker",
-		"task_id": sanitizedTaskID,
-		"job_id":  sanitizedJobID,
+		"app":    "kubemapreduce-worker",
+		"job_id": sanitizedJobID,
 	}
 
 	falseVal := false
@@ -147,20 +138,26 @@ func (k *KubeOrchestrator) SpawnWorker(ctx context.Context, taskID string, jobID
 
 	resources := k.resolveContainerResources(ctx)
 
-	job := &batchv1.Job{
+	deployment := &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      jobName,
+			Name:      deploymentName,
 			Namespace: k.namespace,
 			Labels:    labels,
 		},
-		Spec: batchv1.JobSpec{
-			BackoffLimit: &backoffLimit,
+		Spec: appsv1.DeploymentSpec{
+			Replicas: &replicas,
+			Selector: &metav1.LabelSelector{
+				MatchLabels: labels,
+			},
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{
 					Labels: labels,
+					Annotations: map[string]string{
+						"linkerd.io/inject": "enabled",
+					},
 				},
 				Spec: corev1.PodSpec{
-					RestartPolicy:                corev1.RestartPolicyNever,
+					RestartPolicy:                corev1.RestartPolicyAlways,
 					ServiceAccountName:           "worker",
 					AutomountServiceAccountToken: &falseVal,
 					SecurityContext: &corev1.PodSecurityContext{
@@ -189,16 +186,28 @@ func (k *KubeOrchestrator) SpawnWorker(ctx context.Context, taskID string, jobID
 								},
 							},
 						},
+						{
+							Name: "worker-secrets",
+							VolumeSource: corev1.VolumeSource{
+								Secret: &corev1.SecretVolumeSource{
+									SecretName: k.workerSecretName,
+									Items: []corev1.KeyToPath{
+										{Key: "MINIO_ENDPOINT", Path: "endpoint"},
+										{Key: "MINIO_ACCESS_KEY", Path: "access-key"},
+										{Key: "MINIO_SECRET_KEY", Path: "secret-key"},
+									},
+									DefaultMode: func() *int32 { mode := int32(0400); return &mode }(),
+								},
+							},
+						},
 					},
 					Containers: []corev1.Container{
 						{
 							Name:  "worker",
 							Image: k.workerImage,
 							Env: []corev1.EnvVar{
-								{Name: "TASK_ID", Value: taskID},
 								{Name: "JOB_ID", Value: jobID},
 								{Name: "MANAGER_ADDR", Value: managerAddr},
-								{Name: "ATTEMPT_ID", Value: attemptID},
 								{Name: "GRPC_TLS_CERT_FILE", Value: "/tls/tls.crt"},
 								secretEnvVar("S3_ENDPOINT", k.workerSecretName, "MINIO_ENDPOINT"),
 								secretEnvVar("S3_ACCESS_KEY", k.workerSecretName, "MINIO_ACCESS_KEY"),
@@ -225,6 +234,11 @@ func (k *KubeOrchestrator) SpawnWorker(ctx context.Context, taskID string, jobID
 									MountPath: "/tls",
 									ReadOnly:  true,
 								},
+								{
+									Name:      "worker-secrets",
+									MountPath: "/etc/worker-secrets",
+									ReadOnly:  true,
+								},
 							},
 						},
 					},
@@ -233,65 +247,51 @@ func (k *KubeOrchestrator) SpawnWorker(ctx context.Context, taskID string, jobID
 		},
 	}
 
-	_, err := k.clientset.BatchV1().Jobs(k.namespace).Create(ctx, job, metav1.CreateOptions{})
+	_, err := k.clientset.AppsV1().Deployments(k.namespace).Create(ctx, deployment, metav1.CreateOptions{})
 	if err == nil {
 		return nil
 	}
-	if !apierrors.IsAlreadyExists(err) {
+	if apierrors.IsAlreadyExists(err) {
+		_, err = k.clientset.AppsV1().Deployments(k.namespace).Update(ctx, deployment, metav1.UpdateOptions{})
+		return err
+	}
+	return err
+}
+
+// CancelJob deletes the worker pool Deployment for a job.
+func (k *KubeOrchestrator) CancelJob(ctx context.Context, jobID string) error {
+	sanitizedJobID := sanitizeForDNSLabel(jobID)
+	deploymentName := fmt.Sprintf("worker-pool-%s", sanitizedJobID)
+	policy := metav1.DeletePropagationBackground
+	err := k.clientset.AppsV1().Deployments(k.namespace).Delete(ctx, deploymentName, metav1.DeleteOptions{
+		PropagationPolicy: &policy,
+	})
+	if err != nil && !apierrors.IsNotFound(err) {
 		return err
 	}
 	return nil
 }
 
-// CancelJob deletes all K8s Jobs tagged with the job_id label.
-//
-// PropagationPolicy is set to Background to allow the API call to return quickly while
-// K8s cleans up the underlying pods asynchronously.
-func (k *KubeOrchestrator) CancelJob(ctx context.Context, jobID string) error {
-	sanitizedJobID := sanitizeForDNSLabel(jobID)
-	policy := metav1.DeletePropagationBackground
-	return k.clientset.BatchV1().Jobs(k.namespace).DeleteCollection(ctx,
-		metav1.DeleteOptions{PropagationPolicy: &policy},
-		metav1.ListOptions{LabelSelector: fmt.Sprintf("job_id=%s", sanitizedJobID)},
-	)
+func (k *KubeOrchestrator) SpawnWorker(ctx context.Context, taskID string, jobID string, attemptID string, managerAddr string) error {
+	return nil // Deprecated: use EnsureWorkerPool
 }
 
-// DeleteWorkerJob removes all K8s Jobs tagged with task_id=<taskID>, freeing the
-// pod slot before a new attempt is spawned. It lists matching jobs and deletes
-// each individually (rather than DeleteCollection) so unrelated jobs are never
-// affected and per-job errors can be reported precisely.
-// PropagationPolicy Background lets pods be reaped asynchronously.
-// NotFound on any individual job is silently ignored (idempotent).
 func (k *KubeOrchestrator) DeleteWorkerJob(ctx context.Context, taskID string) error {
-	sanitizedTaskID := sanitizeForDNSLabel(taskID)
-	jobs, err := k.clientset.BatchV1().Jobs(k.namespace).List(ctx, metav1.ListOptions{
-		LabelSelector: fmt.Sprintf("task_id=%s", sanitizedTaskID),
-	})
-	if err != nil {
-		if apierrors.IsNotFound(err) {
-			return nil
-		}
-		return fmt.Errorf("list jobs for task %s: %w", taskID, err)
-	}
-	policy := metav1.DeletePropagationBackground
-	for i := range jobs.Items {
-		delErr := k.clientset.BatchV1().Jobs(k.namespace).Delete(ctx, jobs.Items[i].Name,
-			metav1.DeleteOptions{PropagationPolicy: &policy})
-		if delErr != nil && !apierrors.IsNotFound(delErr) {
-			return fmt.Errorf("delete job %s: %w", jobs.Items[i].Name, delErr)
-		}
-	}
-	return nil
+	return nil // Deprecated: pool-based workers are managed via Deployment replicas
 }
 
 // MockOrchestrator is a no-op implementation for unit testing.
 type MockOrchestrator struct{}
 
-func (m *MockOrchestrator) SpawnWorker(ctx context.Context, taskID string, jobID string, attemptID string, managerAddr string) error {
+func (m *MockOrchestrator) EnsureWorkerPool(ctx context.Context, jobID string, numWorkers int, managerAddr string) error {
 	return nil
 }
 
 func (m *MockOrchestrator) CancelJob(ctx context.Context, jobID string) error {
+	return nil
+}
+
+func (m *MockOrchestrator) SpawnWorker(ctx context.Context, taskID string, jobID string, attemptID string, managerAddr string) error {
 	return nil
 }
 

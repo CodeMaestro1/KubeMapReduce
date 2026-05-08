@@ -10,7 +10,6 @@ import (
 	"testing"
 
 	"github.com/minio/minio-go/v7"
-	"google.golang.org/grpc"
 
 	pb "kubemapreduce/proto"
 )
@@ -98,45 +97,27 @@ func TestWorker_ReduceAcceptsCorrectShuffleChecksum(t *testing.T) {
 	chk0 := hex.EncodeToString(sum0[:])
 	chk1 := hex.EncodeToString(sum1[:])
 
-	var completedReq *pb.TaskCompleteRequest
-	grpcClient := &mockGRPCClient{
-		registerFn: func(_ context.Context, _ *pb.RegisterRequest, _ ...grpc.CallOption) (*pb.TaskAssignment, error) {
-			return &pb.TaskAssignment{
-				TaskId:       "task-2",
-				AttemptId:    "attempt-1",
-				JobId:        "job-1",
-				Type:         pb.TaskType_REDUCE,
-				LeaseId:      "lease-2",
-				CodeLocation: "s3://code/reducer.py",
-				DataLocations: []string{
-					"s3://mapreduce-staging/job-1/map-0/att-0/partition-0.jsonl#sha256=" + chk0,
-					"s3://mapreduce-staging/job-1/map-1/att-0/partition-0.jsonl#sha256=" + chk1,
-				},
-				PartitionId: 0,
-			}, nil
+	assignment := &pb.TaskAssignment{
+		TaskId:       "task-2",
+		AttemptId:    "attempt-1",
+		JobId:        "job-1",
+		Type:         pb.TaskType_REDUCE,
+		LeaseId:      "lease-2",
+		CodeLocation: "s3://code/reducer.py",
+		DataLocations: []string{
+			"s3://mapreduce-staging/job-1/map-0/att-0/partition-0.jsonl#sha256=" + chk0,
+			"s3://mapreduce-staging/job-1/map-1/att-0/partition-0.jsonl#sha256=" + chk1,
 		},
-		heartbeatFn: func(_ context.Context, _ *pb.HeartbeatRequest, _ ...grpc.CallOption) (*pb.HeartbeatResponse, error) {
-			return &pb.HeartbeatResponse{Action: pb.HeartbeatResponse_CONTINUE}, nil
-		},
-		taskCompleteFn: func(_ context.Context, req *pb.TaskCompleteRequest, _ ...grpc.CallOption) (*pb.Ack, error) {
-			completedReq = req
-			return &pb.Ack{Success: true}, nil
-		},
-		taskFailedFn: func(_ context.Context, req *pb.TaskFailedRequest, _ ...grpc.CallOption) (*pb.Ack, error) {
-			t.Errorf("unexpected TaskFailed: %s", req.ErrorMessage)
-			return &pb.Ack{}, nil
-		},
+		PartitionId: 0,
 	}
 
-	w := newTestWorker(t, grpcClient, store)
-	if err := w.Run(context.Background()); err != nil {
-		t.Fatalf("Run: %v", err)
+	w := newTestWorker(t, &mockGRPCClient{}, store)
+	outputURIs, _, err := w.runReduce(context.Background(), assignment)
+	if err != nil {
+		t.Fatalf("runReduce: %v", err)
 	}
-	if completedReq == nil {
-		t.Fatal("TaskComplete was not called")
-	}
-	if len(completedReq.OutputLocations) != 1 {
-		t.Errorf("want 1 output, got %d", len(completedReq.OutputLocations))
+	if len(outputURIs) != 1 {
+		t.Errorf("want 1 output, got %d", len(outputURIs))
 	}
 }
 
@@ -153,45 +134,27 @@ func TestWorker_ReduceRejectsBadShuffleChecksum(t *testing.T) {
 	sum0 := sha256.Sum256(part0)
 	chk0 := hex.EncodeToString(sum0[:])
 
-	var failedReq *pb.TaskFailedRequest
-	grpcClient := &mockGRPCClient{
-		registerFn: func(_ context.Context, _ *pb.RegisterRequest, _ ...grpc.CallOption) (*pb.TaskAssignment, error) {
-			return &pb.TaskAssignment{
-				TaskId:       "task-2",
-				AttemptId:    "attempt-1",
-				JobId:        "job-1",
-				Type:         pb.TaskType_REDUCE,
-				LeaseId:      "lease-2",
-				CodeLocation: "s3://code/reducer.py",
-				DataLocations: []string{
-					"s3://mapreduce-staging/job-1/map-0/att-0/partition-0.jsonl#sha256=" + chk0,
-					"s3://mapreduce-staging/job-1/map-1/att-0/partition-0.jsonl#sha256=deadbeefdeadbeef",
-				},
-				PartitionId: 0,
-			}, nil
+	assignment := &pb.TaskAssignment{
+		TaskId:       "task-2",
+		AttemptId:    "attempt-1",
+		JobId:        "job-1",
+		Type:         pb.TaskType_REDUCE,
+		LeaseId:      "lease-2",
+		CodeLocation: "s3://code/reducer.py",
+		DataLocations: []string{
+			"s3://mapreduce-staging/job-1/map-0/att-0/partition-0.jsonl#sha256=" + chk0,
+			"s3://mapreduce-staging/job-1/map-1/att-0/partition-0.jsonl#sha256=deadbeefdeadbeef",
 		},
-		heartbeatFn: func(_ context.Context, _ *pb.HeartbeatRequest, _ ...grpc.CallOption) (*pb.HeartbeatResponse, error) {
-			return &pb.HeartbeatResponse{Action: pb.HeartbeatResponse_CONTINUE}, nil
-		},
-		taskCompleteFn: func(_ context.Context, _ *pb.TaskCompleteRequest, _ ...grpc.CallOption) (*pb.Ack, error) {
-			t.Fatal("TaskComplete should not be called when shuffle checksum fails")
-			return &pb.Ack{}, nil
-		},
-		taskFailedFn: func(_ context.Context, req *pb.TaskFailedRequest, _ ...grpc.CallOption) (*pb.Ack, error) {
-			failedReq = req
-			return &pb.Ack{Success: true}, nil
-		},
+		PartitionId: 0,
 	}
 
-	w := newTestWorker(t, grpcClient, store)
-	if err := w.Run(context.Background()); err == nil {
+	w := newTestWorker(t, &mockGRPCClient{}, store)
+	_, _, err := w.runReduce(context.Background(), assignment)
+	if err == nil {
 		t.Fatal("expected error for bad shuffle checksum")
 	}
-	if failedReq == nil {
-		t.Fatal("TaskFailed was not called")
-	}
-	if !strings.Contains(failedReq.ErrorMessage, "checksum mismatch") {
-		t.Fatalf("expected checksum mismatch in error, got: %q", failedReq.ErrorMessage)
+	if !strings.Contains(err.Error(), "SHA-256 mismatch") && !strings.Contains(err.Error(), "checksum mismatch") {
+		t.Fatalf("expected checksum mismatch in error, got: %v", err)
 	}
 }
 
@@ -202,41 +165,23 @@ func TestWorker_ReduceNoChecksumStillSucceeds(t *testing.T) {
 	store.put("mapreduce-staging", "job-1/map-0/att-0/partition-0.jsonl", part0)
 	store.put("code", "reducer.py", []byte("# mock"))
 
-	var completedReq *pb.TaskCompleteRequest
-	grpcClient := &mockGRPCClient{
-		registerFn: func(_ context.Context, _ *pb.RegisterRequest, _ ...grpc.CallOption) (*pb.TaskAssignment, error) {
-			return &pb.TaskAssignment{
-				TaskId:       "task-2",
-				AttemptId:    "attempt-1",
-				JobId:        "job-1",
-				Type:         pb.TaskType_REDUCE,
-				LeaseId:      "lease-2",
-				CodeLocation: "s3://code/reducer.py",
-				DataLocations: []string{
-					"s3://mapreduce-staging/job-1/map-0/att-0/partition-0.jsonl",
-				},
-				PartitionId: 0,
-			}, nil
+	assignment := &pb.TaskAssignment{
+		TaskId:       "task-2",
+		AttemptId:    "attempt-1",
+		JobId:        "job-1",
+		Type:         pb.TaskType_REDUCE,
+		LeaseId:      "lease-2",
+		CodeLocation: "s3://code/reducer.py",
+		DataLocations: []string{
+			"s3://mapreduce-staging/job-1/map-0/att-0/partition-0.jsonl",
 		},
-		heartbeatFn: func(_ context.Context, _ *pb.HeartbeatRequest, _ ...grpc.CallOption) (*pb.HeartbeatResponse, error) {
-			return &pb.HeartbeatResponse{Action: pb.HeartbeatResponse_CONTINUE}, nil
-		},
-		taskCompleteFn: func(_ context.Context, req *pb.TaskCompleteRequest, _ ...grpc.CallOption) (*pb.Ack, error) {
-			completedReq = req
-			return &pb.Ack{Success: true}, nil
-		},
-		taskFailedFn: func(_ context.Context, req *pb.TaskFailedRequest, _ ...grpc.CallOption) (*pb.Ack, error) {
-			t.Errorf("unexpected TaskFailed: %s", req.ErrorMessage)
-			return &pb.Ack{}, nil
-		},
+		PartitionId: 0,
 	}
 
-	w := newTestWorker(t, grpcClient, store)
-	if err := w.Run(context.Background()); err != nil {
-		t.Fatalf("Run: %v", err)
-	}
-	if completedReq == nil {
-		t.Fatal("TaskComplete was not called")
+	w := newTestWorker(t, &mockGRPCClient{}, store)
+	_, _, err := w.runReduce(context.Background(), assignment)
+	if err != nil {
+		t.Fatalf("runReduce: %v", err)
 	}
 }
 
@@ -303,8 +248,8 @@ func TestRunReduce_GetObjectFailure(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected GetObject error, got nil")
 	}
-	if !strings.Contains(err.Error(), "GetObject") {
-		t.Errorf("expected 'GetObject' in error, got: %v", err)
+	if !strings.Contains(err.Error(), "download input") && !strings.Contains(err.Error(), "object not found") {
+		t.Errorf("expected download/object error, got: %v", err)
 	}
 }
 
@@ -322,8 +267,8 @@ func TestRunReduce_ChecksumMismatchOnShuffleInput(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected checksum mismatch error, got nil")
 	}
-	if !strings.Contains(err.Error(), "checksum mismatch") {
-		t.Errorf("expected 'checksum mismatch' in error, got: %v", err)
+	if !strings.Contains(err.Error(), "checksum mismatch") && !strings.Contains(err.Error(), "SHA-256 mismatch") {
+		t.Errorf("expected checksum mismatch in error, got: %v", err)
 	}
 }
 

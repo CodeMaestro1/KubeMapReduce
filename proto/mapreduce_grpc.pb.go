@@ -23,6 +23,7 @@ const (
 	WorkerService_Heartbeat_FullMethodName    = "/mapreduce.WorkerService/Heartbeat"
 	WorkerService_TaskComplete_FullMethodName = "/mapreduce.WorkerService/TaskComplete"
 	WorkerService_TaskFailed_FullMethodName   = "/mapreduce.WorkerService/TaskFailed"
+	WorkerService_TaskStream_FullMethodName   = "/mapreduce.WorkerService/TaskStream"
 )
 
 // WorkerServiceClient is the client API for WorkerService service.
@@ -33,6 +34,7 @@ type WorkerServiceClient interface {
 	Heartbeat(ctx context.Context, in *HeartbeatRequest, opts ...grpc.CallOption) (*HeartbeatResponse, error)
 	TaskComplete(ctx context.Context, in *TaskCompleteRequest, opts ...grpc.CallOption) (*Ack, error)
 	TaskFailed(ctx context.Context, in *TaskFailedRequest, opts ...grpc.CallOption) (*Ack, error)
+	TaskStream(ctx context.Context, opts ...grpc.CallOption) (grpc.BidiStreamingClient[StreamRequest, StreamResponse], error)
 }
 
 type workerServiceClient struct {
@@ -83,6 +85,19 @@ func (c *workerServiceClient) TaskFailed(ctx context.Context, in *TaskFailedRequ
 	return out, nil
 }
 
+func (c *workerServiceClient) TaskStream(ctx context.Context, opts ...grpc.CallOption) (grpc.BidiStreamingClient[StreamRequest, StreamResponse], error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	stream, err := c.cc.NewStream(ctx, &WorkerService_ServiceDesc.Streams[0], WorkerService_TaskStream_FullMethodName, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	x := &grpc.GenericClientStream[StreamRequest, StreamResponse]{ClientStream: stream}
+	return x, nil
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type WorkerService_TaskStreamClient = grpc.BidiStreamingClient[StreamRequest, StreamResponse]
+
 // WorkerServiceServer is the server API for WorkerService service.
 // All implementations must embed UnimplementedWorkerServiceServer
 // for forward compatibility.
@@ -91,6 +106,7 @@ type WorkerServiceServer interface {
 	Heartbeat(context.Context, *HeartbeatRequest) (*HeartbeatResponse, error)
 	TaskComplete(context.Context, *TaskCompleteRequest) (*Ack, error)
 	TaskFailed(context.Context, *TaskFailedRequest) (*Ack, error)
+	TaskStream(grpc.BidiStreamingServer[StreamRequest, StreamResponse]) error
 	mustEmbedUnimplementedWorkerServiceServer()
 }
 
@@ -112,6 +128,9 @@ func (UnimplementedWorkerServiceServer) TaskComplete(context.Context, *TaskCompl
 }
 func (UnimplementedWorkerServiceServer) TaskFailed(context.Context, *TaskFailedRequest) (*Ack, error) {
 	return nil, status.Error(codes.Unimplemented, "method TaskFailed not implemented")
+}
+func (UnimplementedWorkerServiceServer) TaskStream(grpc.BidiStreamingServer[StreamRequest, StreamResponse]) error {
+	return status.Error(codes.Unimplemented, "method TaskStream not implemented")
 }
 func (UnimplementedWorkerServiceServer) mustEmbedUnimplementedWorkerServiceServer() {}
 func (UnimplementedWorkerServiceServer) testEmbeddedByValue()                       {}
@@ -206,6 +225,13 @@ func _WorkerService_TaskFailed_Handler(srv interface{}, ctx context.Context, dec
 	return interceptor(ctx, in, info, handler)
 }
 
+func _WorkerService_TaskStream_Handler(srv interface{}, stream grpc.ServerStream) error {
+	return srv.(WorkerServiceServer).TaskStream(&grpc.GenericServerStream[StreamRequest, StreamResponse]{ServerStream: stream})
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type WorkerService_TaskStreamServer = grpc.BidiStreamingServer[StreamRequest, StreamResponse]
+
 // WorkerService_ServiceDesc is the grpc.ServiceDesc for WorkerService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -230,6 +256,149 @@ var WorkerService_ServiceDesc = grpc.ServiceDesc{
 			Handler:    _WorkerService_TaskFailed_Handler,
 		},
 	},
-	Streams:  []grpc.StreamDesc{},
+	Streams: []grpc.StreamDesc{
+		{
+			StreamName:    "TaskStream",
+			Handler:       _WorkerService_TaskStream_Handler,
+			ServerStreams: true,
+			ClientStreams: true,
+		},
+	},
+	Metadata: "proto/mapreduce.proto",
+}
+
+const (
+	ShuffleService_PushShuffleData_FullMethodName = "/mapreduce.ShuffleService/PushShuffleData"
+	ShuffleService_GetShuffleData_FullMethodName  = "/mapreduce.ShuffleService/GetShuffleData"
+)
+
+// ShuffleServiceClient is the client API for ShuffleService service.
+//
+// For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
+type ShuffleServiceClient interface {
+	PushShuffleData(ctx context.Context, opts ...grpc.CallOption) (grpc.ClientStreamingClient[ShuffleDataChunk, Ack], error)
+	GetShuffleData(ctx context.Context, in *ShuffleDataRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[ShuffleDataChunk], error)
+}
+
+type shuffleServiceClient struct {
+	cc grpc.ClientConnInterface
+}
+
+func NewShuffleServiceClient(cc grpc.ClientConnInterface) ShuffleServiceClient {
+	return &shuffleServiceClient{cc}
+}
+
+func (c *shuffleServiceClient) PushShuffleData(ctx context.Context, opts ...grpc.CallOption) (grpc.ClientStreamingClient[ShuffleDataChunk, Ack], error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	stream, err := c.cc.NewStream(ctx, &ShuffleService_ServiceDesc.Streams[0], ShuffleService_PushShuffleData_FullMethodName, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	x := &grpc.GenericClientStream[ShuffleDataChunk, Ack]{ClientStream: stream}
+	return x, nil
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type ShuffleService_PushShuffleDataClient = grpc.ClientStreamingClient[ShuffleDataChunk, Ack]
+
+func (c *shuffleServiceClient) GetShuffleData(ctx context.Context, in *ShuffleDataRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[ShuffleDataChunk], error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	stream, err := c.cc.NewStream(ctx, &ShuffleService_ServiceDesc.Streams[1], ShuffleService_GetShuffleData_FullMethodName, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	x := &grpc.GenericClientStream[ShuffleDataRequest, ShuffleDataChunk]{ClientStream: stream}
+	if err := x.ClientStream.SendMsg(in); err != nil {
+		return nil, err
+	}
+	if err := x.ClientStream.CloseSend(); err != nil {
+		return nil, err
+	}
+	return x, nil
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type ShuffleService_GetShuffleDataClient = grpc.ServerStreamingClient[ShuffleDataChunk]
+
+// ShuffleServiceServer is the server API for ShuffleService service.
+// All implementations must embed UnimplementedShuffleServiceServer
+// for forward compatibility.
+type ShuffleServiceServer interface {
+	PushShuffleData(grpc.ClientStreamingServer[ShuffleDataChunk, Ack]) error
+	GetShuffleData(*ShuffleDataRequest, grpc.ServerStreamingServer[ShuffleDataChunk]) error
+	mustEmbedUnimplementedShuffleServiceServer()
+}
+
+// UnimplementedShuffleServiceServer must be embedded to have
+// forward compatible implementations.
+//
+// NOTE: this should be embedded by value instead of pointer to avoid a nil
+// pointer dereference when methods are called.
+type UnimplementedShuffleServiceServer struct{}
+
+func (UnimplementedShuffleServiceServer) PushShuffleData(grpc.ClientStreamingServer[ShuffleDataChunk, Ack]) error {
+	return status.Error(codes.Unimplemented, "method PushShuffleData not implemented")
+}
+func (UnimplementedShuffleServiceServer) GetShuffleData(*ShuffleDataRequest, grpc.ServerStreamingServer[ShuffleDataChunk]) error {
+	return status.Error(codes.Unimplemented, "method GetShuffleData not implemented")
+}
+func (UnimplementedShuffleServiceServer) mustEmbedUnimplementedShuffleServiceServer() {}
+func (UnimplementedShuffleServiceServer) testEmbeddedByValue()                        {}
+
+// UnsafeShuffleServiceServer may be embedded to opt out of forward compatibility for this service.
+// Use of this interface is not recommended, as added methods to ShuffleServiceServer will
+// result in compilation errors.
+type UnsafeShuffleServiceServer interface {
+	mustEmbedUnimplementedShuffleServiceServer()
+}
+
+func RegisterShuffleServiceServer(s grpc.ServiceRegistrar, srv ShuffleServiceServer) {
+	// If the following call panics, it indicates UnimplementedShuffleServiceServer was
+	// embedded by pointer and is nil.  This will cause panics if an
+	// unimplemented method is ever invoked, so we test this at initialization
+	// time to prevent it from happening at runtime later due to I/O.
+	if t, ok := srv.(interface{ testEmbeddedByValue() }); ok {
+		t.testEmbeddedByValue()
+	}
+	s.RegisterService(&ShuffleService_ServiceDesc, srv)
+}
+
+func _ShuffleService_PushShuffleData_Handler(srv interface{}, stream grpc.ServerStream) error {
+	return srv.(ShuffleServiceServer).PushShuffleData(&grpc.GenericServerStream[ShuffleDataChunk, Ack]{ServerStream: stream})
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type ShuffleService_PushShuffleDataServer = grpc.ClientStreamingServer[ShuffleDataChunk, Ack]
+
+func _ShuffleService_GetShuffleData_Handler(srv interface{}, stream grpc.ServerStream) error {
+	m := new(ShuffleDataRequest)
+	if err := stream.RecvMsg(m); err != nil {
+		return err
+	}
+	return srv.(ShuffleServiceServer).GetShuffleData(m, &grpc.GenericServerStream[ShuffleDataRequest, ShuffleDataChunk]{ServerStream: stream})
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type ShuffleService_GetShuffleDataServer = grpc.ServerStreamingServer[ShuffleDataChunk]
+
+// ShuffleService_ServiceDesc is the grpc.ServiceDesc for ShuffleService service.
+// It's only intended for direct use with grpc.RegisterService,
+// and not to be introspected or modified (even as a copy)
+var ShuffleService_ServiceDesc = grpc.ServiceDesc{
+	ServiceName: "mapreduce.ShuffleService",
+	HandlerType: (*ShuffleServiceServer)(nil),
+	Methods:     []grpc.MethodDesc{},
+	Streams: []grpc.StreamDesc{
+		{
+			StreamName:    "PushShuffleData",
+			Handler:       _ShuffleService_PushShuffleData_Handler,
+			ClientStreams: true,
+		},
+		{
+			StreamName:    "GetShuffleData",
+			Handler:       _ShuffleService_GetShuffleData_Handler,
+			ServerStreams: true,
+		},
+	},
 	Metadata: "proto/mapreduce.proto",
 }

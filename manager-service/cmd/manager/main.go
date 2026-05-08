@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/subtle"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -122,10 +123,15 @@ func main() {
 		}
 	}
 
-	scheduler, err := manager.NewScheduler(db, replicaIndex, cfg.TotalReplicas, orchestrator, managerAddr, cfg.LeaseTTL, stagingCleaner)
+	// 3. Initialize servers
+	workerServer := mgrpc.NewWorkerServer(nil, nil, cfg.ManifestThresholdBytes)
+	shuffleServer := mgrpc.NewShuffleServer()
+
+	scheduler, err := manager.NewScheduler(db, replicaIndex, cfg.TotalReplicas, orchestrator, workerServer, managerAddr, cfg.LeaseTTL, stagingCleaner)
 	if err != nil {
 		log.Fatalf("failed to create scheduler: %v", err)
 	}
+	workerServer.SetScheduler(scheduler)
 
 	if err := scheduler.Recover(context.Background()); err != nil {
 		log.Fatalf("failed to recover scheduler tasks: %v", err)
@@ -161,21 +167,25 @@ func main() {
 		log.Fatalf("failed to listen on gRPC address %s: %v", cfg.GRPCAddr, err)
 	}
 
-	var minioClient *minio.Client
 	if cfg.MinioEndpoint != "" && cfg.MinioAccessKey != "" && cfg.MinioSecretKey != "" {
-		minioClient, err = minio.New(cfg.MinioEndpoint, &minio.Options{
+		mc, mcErr := minio.New(cfg.MinioEndpoint, &minio.Options{
 			Creds:  credentials.NewStaticV4(cfg.MinioAccessKey, cfg.MinioSecretKey, ""),
 			Secure: cfg.MinioUseSSL,
 		})
-		if err != nil {
-			log.Printf("failed to initialize minio client: %v", err)
+		if mcErr != nil {
+			log.Printf("failed to initialize minio client: %v", mcErr)
+		} else {
+			workerServer.SetMinioClient(mc)
 		}
-	} else if cfg.MinioEndpoint != "" {
-		log.Printf("minio endpoint configured without credentials; manifest fallback disabled")
 	}
 
 	grpcOpts := []grpc.ServerOption{
-		grpc.UnaryInterceptor(workerAuthUnaryInterceptor(cfg.WorkerRPCToken)),
+		grpc.ChainUnaryInterceptor(
+			workerAuthUnaryInterceptor(cfg.WorkerRPCToken),
+		),
+		grpc.ChainStreamInterceptor(
+			workerAuthStreamInterceptor(cfg.WorkerRPCToken),
+		),
 		grpc.MaxRecvMsgSize(4 << 20),
 		grpc.MaxSendMsgSize(16 << 20),
 	}
@@ -197,8 +207,8 @@ func main() {
 	}
 
 	grpcServer := grpc.NewServer(grpcOpts...)
-	workerServer := mgrpc.NewWorkerServer(scheduler, minioClient, cfg.ManifestThresholdBytes)
 	pb.RegisterWorkerServiceServer(grpcServer, workerServer)
+	pb.RegisterShuffleServiceServer(grpcServer, shuffleServer)
 	if cfg.EnableGRPCReflection {
 		if os.Getenv("DEBUG_MODE") != "true" {
 			slog.Warn("gRPC reflection requested but DEBUG_MODE is not set; skipping")
@@ -316,7 +326,17 @@ func isAuthorizedWorkerRPC(ctx context.Context, expectedToken string) bool {
 	if len(values) == 0 {
 		return false
 	}
-	return values[0] == expectedToken
+	return subtle.ConstantTimeCompare([]byte(values[0]), []byte(expectedToken)) == 1
+}
+
+func workerAuthStreamInterceptor(expectedToken string) grpc.StreamServerInterceptor {
+	expectedToken = strings.TrimSpace(expectedToken)
+	return func(srv any, ss grpc.ServerStream, info *grpc.StreamServerInfo, handler grpc.StreamHandler) error {
+		if expectedToken != "" && !isAuthorizedWorkerRPC(ss.Context(), expectedToken) {
+			return status.Error(codes.Unauthenticated, "missing or invalid worker rpc token")
+		}
+		return handler(srv, ss)
+	}
 }
 
 func validateWorkerRPCSecurityConfig(cfg *config.Config) error {

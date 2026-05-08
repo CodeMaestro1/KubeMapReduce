@@ -9,6 +9,45 @@ service WorkerService {
   rpc Heartbeat (HeartbeatRequest) returns (HeartbeatResponse);
   rpc TaskComplete (TaskCompleteRequest) returns (Ack);
   rpc TaskFailed (TaskFailedRequest) returns (Ack);
+  rpc TaskStream (stream StreamRequest) returns (stream StreamResponse);
+}
+
+service ShuffleService {
+  rpc PushShuffleData (stream ShuffleDataChunk) returns (Ack);
+  rpc GetShuffleData (ShuffleDataRequest) returns (stream ShuffleDataChunk);
+}
+
+message ShuffleDataChunk {
+  string job_id = 1;
+  int32 partition_id = 2;
+  bytes data = 3;
+}
+
+message ShuffleDataRequest {
+  string job_id = 1;
+  int32 partition_id = 2;
+}
+
+message StreamRequest {
+  string worker_id = 1;
+  oneof payload {
+    ReadyForTaskRequest ready = 2;
+    HeartbeatRequest heartbeat = 3;
+    TaskCompleteRequest complete = 4;
+    TaskFailedRequest failed = 5;
+  }
+}
+
+message StreamResponse {
+  oneof payload {
+    TaskAssignment assignment = 1;
+    HeartbeatResponse heartbeat_ack = 2;
+    Ack ack = 3;
+  }
+}
+
+message ReadyForTaskRequest {
+  string job_id = 1;
 }
 
 enum TaskType {

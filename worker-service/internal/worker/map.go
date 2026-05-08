@@ -8,7 +8,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"hash/fnv"
+
 	"io"
 	"log"
 
@@ -122,14 +122,49 @@ func (w *Worker) runMap(ctx context.Context, a *pb.TaskAssignment) (outputURIs, 
 		return nil, nil, fmt.Errorf("read sorted stream: %w", err)
 	}
 
-	// Upload each partition to staging.
+	// Upload each partition — prefer ShuffleService, fall back to object storage.
 	for i, part := range partitions {
-		uri, chk, upErr := uploadStagingPartition(ctx, w.storage, a.JobId, a.TaskId, a.AttemptId, i, part)
-		if upErr != nil {
-			return nil, nil, fmt.Errorf("upload partition %d: %w", i, upErr)
+		if len(part) == 0 {
+			continue
 		}
-		outputURIs = append(outputURIs, uri)
-		outputChecksums = append(outputChecksums, chk)
+
+		var buf bytes.Buffer
+		for _, rec := range part {
+			b, _ := json.Marshal(rec)
+			buf.Write(b)
+			buf.WriteByte('\n')
+		}
+		data := buf.Bytes()
+		h := sha256.Sum256(data)
+		checksum := hex.EncodeToString(h[:])
+
+		if w.shuffleClient != nil {
+			stream, err := w.shuffleClient.PushShuffleData(ctx)
+			if err != nil {
+				return nil, nil, fmt.Errorf("open shuffle stream: %w", err)
+			}
+			if err := stream.Send(&pb.ShuffleDataChunk{
+				JobId:       a.JobId,
+				PartitionId: int32(i),
+				Data:        data,
+			}); err != nil {
+				return nil, nil, fmt.Errorf("send shuffle data %d: %w", i, err)
+			}
+			if _, err := stream.CloseAndRecv(); err != nil {
+				return nil, nil, fmt.Errorf("close shuffle stream %d: %w", i, err)
+			}
+			outputURIs = append(outputURIs, fmt.Sprintf("shuffle://%s/%d", a.JobId, i))
+			outputChecksums = append(outputChecksums, checksum)
+		} else {
+			// Legacy / test fallback: write to object storage.
+			objKey := fmt.Sprintf("%s/%s/partition-%d.jsonl", a.JobId, a.TaskId, i)
+			_, err := w.storage.PutObject(ctx, stagingBucket, objKey, bytes.NewReader(data), int64(len(data)), minio.PutObjectOptions{ContentType: "application/jsonl"})
+			if err != nil {
+				return nil, nil, fmt.Errorf("upload partition %d: %w", i, err)
+			}
+			outputURIs = append(outputURIs, fmt.Sprintf("s3://%s/%s", stagingBucket, objKey))
+			outputChecksums = append(outputChecksums, checksum)
+		}
 	}
 
 	log.Printf("[map] done task=%s records=%d partitions=%d", a.TaskId, totalRecords, R)
@@ -207,9 +242,12 @@ func taskInputSplits(a *pb.TaskAssignment) []taskInputSplit {
 
 // hashPartition assigns a record key to partition [0, R) using FNV-32a.
 func hashPartition(key string, R int) int {
-	h := fnv.New32a()
-	h.Write([]byte(key))
-	return int(h.Sum32()&0x7FFFFFFF) % R
+	var h uint32 = 2166136261
+	for i := 0; i < len(key); i++ {
+		h ^= uint32(key[i])
+		h *= 16777619
+	}
+	return int(h&0x7FFFFFFF) % R
 }
 
 // parseJSONLRecords decodes newline-delimited JSON objects into shuffle.Record values.
