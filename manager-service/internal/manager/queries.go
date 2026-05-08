@@ -124,10 +124,10 @@ const QueryInsertOutputBulkBase = `INSERT INTO TASK_OUTPUTS (task_id, partition_
 
 // QueryCheckLeaseValid validates both the fence token and expiry against the DB clock.
 // This keeps commit/renew/fail lease checks aligned with stale-task reaping.
-// Adds 5-second tolerance for clock skew between Manager and PostgreSQL server.
+// $3 is the clock-skew tolerance in seconds (configurable via Scheduler.leaseClockSkewSeconds).
 const QueryCheckLeaseValid = `
 	SELECT lease_id = $2
-	   AND last_renewed_at + lease_ttl * INTERVAL '1 second' + INTERVAL '5 seconds' >= NOW() AS lease_valid
+	   AND last_renewed_at + (lease_ttl + $3) * INTERVAL '1 second' >= NOW() AS lease_valid
 	FROM TASK_ATTEMPTS
 	WHERE attempt_id = $1`
 
@@ -174,11 +174,13 @@ const QuerySelectStaleTasks = `
 	FOR UPDATE OF t SKIP LOCKED`
 
 // QuerySelectRecoverableAttempts returns active attempts that belong to this manager replica.
-// Recovery uses these rows to re-spawn workers with the existing attempt_id fence token.
+// Recovery uses these rows to re-spawn workers and warm the in-memory heartbeat map so the
+// reaper does not immediately evict tasks that were live before the Manager restarted.
 const QuerySelectRecoverableAttempts = `
-	SELECT t.task_id, t.current_attempt_id, t.job_id
+	SELECT t.task_id, t.current_attempt_id, t.job_id, a.last_renewed_at
 	FROM TASKS t
 	JOIN JOBS j ON t.job_id = j.job_id
+	JOIN TASK_ATTEMPTS a ON t.current_attempt_id = a.attempt_id
 	WHERE t.status = 'In-Progress' AND j.replica_index = $1
 	  AND t.current_attempt_id IS NOT NULL`
 

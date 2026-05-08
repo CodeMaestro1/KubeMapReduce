@@ -155,6 +155,9 @@ func (s *WorkerServer) TaskComplete(ctx context.Context, req *pb.TaskCompleteReq
 
 	err := s.scheduler.CompleteTask(ctx, req.TaskId, req.AttemptId, req.LeaseId, req.OutputLocations, req.OutputChecksums)
 	if err != nil {
+		if errors.Is(err, manager.ErrJobCancelling) {
+			return nil, status.Errorf(codes.Aborted, "job cancelled: %v", err)
+		}
 		if errors.Is(err, manager.ErrStaleAttempt) || errors.Is(err, manager.ErrExpiredLease) || errors.Is(err, manager.ErrInvalidStateTransition) {
 			return nil, status.Errorf(codes.PermissionDenied, "commit rejected: %v", err)
 		}

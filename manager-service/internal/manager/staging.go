@@ -40,7 +40,11 @@ func (m *minioStagingCleaner) DeleteStagingObjects(ctx context.Context, jobID st
 			if obj.Err != nil {
 				return
 			}
-			objectsCh <- obj
+			select {
+			case objectsCh <- obj:
+			case <-ctx.Done():
+				return
+			}
 		}
 	}()
 

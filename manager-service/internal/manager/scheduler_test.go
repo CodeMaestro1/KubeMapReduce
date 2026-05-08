@@ -144,7 +144,7 @@ func (d *deadlineRecordingOrchestrator) DeleteWorkerJob(ctx context.Context, tas
 
 func expectLeaseValidation(mock sqlmock.Sqlmock, attemptID string, leaseID string, leaseValid bool) {
 	mock.ExpectQuery(regexp.QuoteMeta(QueryCheckLeaseValid)).
-		WithArgs(attemptID, leaseID).
+		WithArgs(attemptID, leaseID, 5).
 		WillReturnRows(sqlmock.NewRows([]string{"lease_valid"}).AddRow(leaseValid))
 }
 
@@ -774,8 +774,8 @@ func TestScheduler_Recover_SpawnsRecoverableAttempts(t *testing.T) {
 	attemptID := uuid.New().String()
 	mock.ExpectQuery(regexp.QuoteMeta(QuerySelectRecoverableAttempts)).
 		WithArgs(0).
-		WillReturnRows(sqlmock.NewRows([]string{"task_id", "current_attempt_id", "job_id"}).
-			AddRow(taskID, attemptID, "job-123"))
+		WillReturnRows(sqlmock.NewRows([]string{"task_id", "current_attempt_id", "job_id", "last_renewed_at"}).
+			AddRow(taskID, attemptID, "job-123", time.Now()))
 
 	// Recover will call GetTaskByID -> DispatchTask for each recovered attempt.
 	// GetTaskByID issues a query; we mock it here.
@@ -796,7 +796,7 @@ func TestScheduler_Recover_NoRecoverableAttempts_NoSpawn(t *testing.T) {
 
 	mock.ExpectQuery(regexp.QuoteMeta(QuerySelectRecoverableAttempts)).
 		WithArgs(0).
-		WillReturnRows(sqlmock.NewRows([]string{"task_id", "current_attempt_id", "job_id"}))
+		WillReturnRows(sqlmock.NewRows([]string{"task_id", "current_attempt_id", "job_id", "last_renewed_at"}))
 
 	if err := scheduler.Recover(context.Background()); err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -813,9 +813,9 @@ func TestScheduler_Recover_PartialSpawnFailure_DoesNotReturnError(t *testing.T) 
 
 	mock.ExpectQuery(regexp.QuoteMeta(QuerySelectRecoverableAttempts)).
 		WithArgs(0).
-		WillReturnRows(sqlmock.NewRows([]string{"task_id", "current_attempt_id", "job_id"}).
-			AddRow(uuid.NewString(), uuid.NewString(), uuid.NewString()).
-			AddRow(uuid.NewString(), uuid.NewString(), uuid.NewString()))
+		WillReturnRows(sqlmock.NewRows([]string{"task_id", "current_attempt_id", "job_id", "last_renewed_at"}).
+			AddRow(uuid.NewString(), uuid.NewString(), uuid.NewString(), time.Now()).
+			AddRow(uuid.NewString(), uuid.NewString(), uuid.NewString(), time.Now()))
 
 	if err := scheduler.Recover(context.Background()); err != nil {
 		t.Fatalf("expected recover to continue after partial spawn failures, got %v", err)

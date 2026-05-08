@@ -4,6 +4,11 @@ package mapreduce;
 
 option go_package = "kubemapreduce/proto";
 
+// WorkerService is the gRPC API used by worker pods to communicate with the Manager.
+// Authentication: all RPCs must include the worker token in gRPC metadata:
+//   "x-worker-token": <value of MANAGER_WORKER_RPC_TOKEN secret>
+// The Manager enforces this via a server-side unary/stream interceptor.
+// Omitting the token results in codes.Unauthenticated.
 service WorkerService {
   rpc Register (RegisterRequest) returns (TaskAssignment);
   rpc Heartbeat (HeartbeatRequest) returns (HeartbeatResponse);
@@ -12,6 +17,8 @@ service WorkerService {
   rpc TaskStream (stream StreamRequest) returns (stream StreamResponse);
 }
 
+// ShuffleService handles intermediate MapReduce shuffle data exchange between workers.
+// Authentication: same "x-worker-token" metadata requirement as WorkerService.
 service ShuffleService {
   rpc PushShuffleData (stream ShuffleDataChunk) returns (Ack);
   rpc GetShuffleData (ShuffleDataRequest) returns (stream ShuffleDataChunk);

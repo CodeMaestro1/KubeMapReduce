@@ -167,6 +167,7 @@ func (w *Worker) executeTask(ctx context.Context, stream pb.WorkerService_TaskSt
 		sendMu.Unlock()
 		if sendErr != nil {
 			log.Printf("[worker] failed to report TaskFailed via stream: %v", sendErr)
+			return fmt.Errorf("task error: %w; also failed to report failure: %v", err, sendErr)
 		}
 		return err
 	}

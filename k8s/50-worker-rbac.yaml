@@ -4,7 +4,7 @@
 # manager ServiceAccount, scoped to a Role that grants only the verbs
 # strictly required by that workflow:
 #
-#   - jobs        : create / get / list / watch / delete
+#   - jobs        : create / get / list / watch / delete (not deletecollection)
 #   - pods        : get / list / watch / delete (Active Reaper fences zombies)
 #   - configmaps  : get (worker job templates / per-job parameters)
 #
@@ -29,7 +29,7 @@ rules:
   # Worker Job lifecycle.
   - apiGroups: ["batch"]
     resources: ["jobs"]
-    verbs: ["create", "get", "list", "watch", "delete", "deletecollection"]
+    verbs: ["create", "get", "list", "watch", "delete"]
   # Active Reaper directly deletes zombie pods after 3 missed heartbeats.
   - apiGroups: [""]
     resources: ["pods"]

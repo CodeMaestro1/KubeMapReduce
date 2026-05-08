@@ -6,6 +6,7 @@ import (
 	"regexp"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/google/uuid"
@@ -162,7 +163,7 @@ func TestE2E_ZombieFencing(t *testing.T) {
 	expectJobLockQuery(mock, taskID, uuid.New().String(), "Running")
 	mock.ExpectQuery(regexp.QuoteMeta(QuerySelectTaskForUpdate)).WithArgs(taskID).WillReturnRows(sqlmock.NewRows([]string{"status", "current_attempt_id"}).AddRow("Idle", uuid.New().String()))
 	// validateLeaseTx fails because attempt is not current
-	mock.ExpectQuery(regexp.QuoteMeta(QueryCheckLeaseValid)).WithArgs(attemptID1, leaseID1).WillReturnRows(sqlmock.NewRows([]string{"valid"}).AddRow(false))
+	mock.ExpectQuery(regexp.QuoteMeta(QueryCheckLeaseValid)).WithArgs(attemptID1, leaseID1, 5).WillReturnRows(sqlmock.NewRows([]string{"valid"}).AddRow(false))
 	mock.ExpectRollback()
 
 	err := s.CompleteTask(context.Background(), taskID, attemptID1, leaseID1, []string{"u1"}, []string{"c1"})
@@ -254,7 +255,7 @@ func TestE2E_ManagerRestartRecovery(t *testing.T) {
 	attemptID := uuid.New().String()
 
 	mock.ExpectQuery(regexp.QuoteMeta(QuerySelectRecoverableAttempts)).WithArgs(s.replicaIndex).WillReturnRows(
-		sqlmock.NewRows([]string{"task_id", "current_attempt_id", "job_id"}).AddRow(taskID, attemptID, jobID))
+		sqlmock.NewRows([]string{"task_id", "current_attempt_id", "job_id", "last_renewed_at"}).AddRow(taskID, attemptID, jobID, time.Now()))
 
 	// Recover calls GetTaskByID -> DispatchTask for re-dispatching
 	mock.ExpectQuery(`SELECT task_id, job_id, task_type, status, current_attempt_id, replica_index FROM TASKS`).

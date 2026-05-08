@@ -12,9 +12,13 @@ metadata:
   name: keycloak-creds
   namespace: mapreduce
 type: Opaque
+# Do not store passwords in version control. Create this Secret before deploying:
+#   kubectl -n mapreduce create secret generic keycloak-creds \
+#     --from-literal=KEYCLOAK_ADMIN=admin \
+#     --from-literal=KEYCLOAK_ADMIN_PASSWORD=<strong-password>
 stringData:
   KEYCLOAK_ADMIN: admin
-  KEYCLOAK_ADMIN_PASSWORD: change-me-in-production
+  KEYCLOAK_ADMIN_PASSWORD: ""
 ---
 apiVersion: v1
 kind: Service
@@ -48,6 +52,10 @@ spec:
       labels:
         app.kubernetes.io/name: keycloak
     spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
       containers:
         - name: keycloak
           image: quay.io/keycloak/keycloak:23.0.6

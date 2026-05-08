@@ -34,6 +34,7 @@ var (
 	ErrJobCompleted           = errors.New("all tasks completed, job is done")
 	ErrTaskNotFound           = errors.New("task not found")
 	ErrInvalidStateTransition = errors.New("invalid state transition")
+	ErrJobCancelling          = errors.New("job is being cancelled; worker output discarded")
 	ErrEmptyJobID             = errors.New("jobID cannot be empty")
 	ErrEmptyWorkerID          = errors.New("workerID cannot be empty")
 	ErrStaleAttempt           = errors.New("stale commit attempt rejected to prevent split-brain")
@@ -53,17 +54,18 @@ type TaskDispatcher interface {
 // fencing. The Scheduler uses a Distributed Data Store (DDS) to maintain consistency
 // across multiple Manager replicas.
 type Scheduler struct {
-	db             *sql.DB
-	replicaIndex   int
-	totalReplicas  int
-	orchestrator   WorkerOrchestrator
-	dispatcher     TaskDispatcher
-	managerAddr    string
-	leaseTTL       int
-	staging        StagingCleaner
-	cleanupMu      sync.Mutex
-	pendingCleanup map[string]string
-	heartbeats     sync.Map
+	db                    *sql.DB
+	replicaIndex          int
+	totalReplicas         int
+	orchestrator          WorkerOrchestrator
+	dispatcher            TaskDispatcher
+	managerAddr           string
+	leaseTTL              int
+	leaseClockSkewSeconds int
+	staging               StagingCleaner
+	cleanupMu             sync.Mutex
+	pendingCleanup        map[string]string
+	heartbeats            sync.Map
 }
 
 type taskMetadataQuerier interface {
@@ -93,16 +95,17 @@ func NewScheduler(db *sql.DB, replicaIndex int, totalReplicas int, orchestrator 
 		leaseTTL = 30
 	}
 	return &Scheduler{
-		db:             db,
-		replicaIndex:   replicaIndex,
-		totalReplicas:  totalReplicas,
-		orchestrator:   orchestrator,
-		dispatcher:     dispatcher,
-		managerAddr:    managerAddr,
-		leaseTTL:       leaseTTL,
-		staging:        staging,
-		pendingCleanup: make(map[string]string),
-		heartbeats:     sync.Map{},
+		db:                    db,
+		replicaIndex:          replicaIndex,
+		totalReplicas:         totalReplicas,
+		orchestrator:          orchestrator,
+		dispatcher:            dispatcher,
+		managerAddr:           managerAddr,
+		leaseTTL:              leaseTTL,
+		leaseClockSkewSeconds: 5,
+		staging:               staging,
+		pendingCleanup:        make(map[string]string),
+		heartbeats:            sync.Map{},
 	}, nil
 }
 
@@ -120,20 +123,27 @@ func (s *Scheduler) Recover(ctx context.Context) error {
 	defer rows.Close()
 
 	type recoverableAttempt struct {
-		taskID    string
-		attemptID string
-		jobID     string
+		taskID        string
+		attemptID     string
+		jobID         string
+		lastRenewedAt time.Time
 	}
 	var attemptsToSpawn []recoverableAttempt
 	for rows.Next() {
 		var rec recoverableAttempt
-		if err := rows.Scan(&rec.taskID, &rec.attemptID, &rec.jobID); err != nil {
+		if err := rows.Scan(&rec.taskID, &rec.attemptID, &rec.jobID, &rec.lastRenewedAt); err != nil {
 			return fmt.Errorf("failed to scan recoverable attempt during recovery: %w", err)
 		}
 		attemptsToSpawn = append(attemptsToSpawn, rec)
 	}
 	if err := rows.Err(); err != nil {
 		return fmt.Errorf("row error during recovery: %w", err)
+	}
+
+	// Warm the heartbeat map from DB so the reaper does not immediately evict
+	// tasks that were alive before this Manager restart.
+	for _, rec := range attemptsToSpawn {
+		s.heartbeats.Store(rec.attemptID, rec.lastRenewedAt)
 	}
 
 	const recoverSpawnTimeout = 20 * time.Second
@@ -704,7 +714,7 @@ func (s *Scheduler) applyJobTransitionTx(ctx context.Context, tx *sql.Tx, jobID 
 
 func (s *Scheduler) validateLeaseTx(ctx context.Context, tx *sql.Tx, attemptID string, leaseID string) error {
 	var leaseValid bool
-	err := tx.QueryRowContext(ctx, QueryCheckLeaseValid, attemptID, leaseID).Scan(&leaseValid)
+	err := tx.QueryRowContext(ctx, QueryCheckLeaseValid, attemptID, leaseID, s.leaseClockSkewSeconds).Scan(&leaseValid)
 	if err != nil {
 		return err
 	}
@@ -747,6 +757,10 @@ func (s *Scheduler) CompleteTask(ctx context.Context, taskID string, attemptID s
 			return ErrTaskNotFound
 		}
 		return err
+	}
+	if jobStatus == "Cleaning" {
+		// Job is being cancelled. Discard this output; staging cleanup handles MinIO objects.
+		return ErrJobCancelling
 	}
 	if jobStatus != "Running" && jobStatus != "Pending" {
 		return ErrInvalidStateTransition
@@ -1002,7 +1016,12 @@ func (s *Scheduler) FailTask(ctx context.Context, taskID string, attemptID strin
 		defer cancel()
 
 		// Ensure worker pool is healthy (idempotent)
-		_ = s.orchestrator.EnsureWorkerPool(spawnCtx, jobID, 4, s.managerAddr)
+		if err := s.orchestrator.EnsureWorkerPool(spawnCtx, jobID, 4, s.managerAddr); err != nil {
+			slog.WarnContext(ctx, "failed to ensure worker pool after task failure; reaper will retry",
+				slog.String("job_id", jobID),
+				slog.Any("err", err),
+			)
+		}
 
 		// Redispatch for pull-based workers
 		task, err := s.GetTaskByID(spawnCtx, taskID)
@@ -1434,9 +1453,15 @@ func (s *Scheduler) StartCleanupReconciler(ctx context.Context, interval time.Du
 
 				sem := make(chan struct{}, cleanupReconcileWorkers)
 				var wg sync.WaitGroup
+			launched:
 				for jobID, terminalState := range jobs {
 					wg.Add(1)
-					sem <- struct{}{}
+					select {
+					case sem <- struct{}{}:
+					case <-ctx.Done():
+						wg.Done()
+						break launched
+					}
 					go func(jobID, terminalState string) {
 						defer wg.Done()
 						defer func() { <-sem }()
