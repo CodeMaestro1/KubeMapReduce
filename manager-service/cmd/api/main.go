@@ -96,7 +96,7 @@ func main() {
 		}
 	}
 
-	store := api.NewPostgresJobStore(db)
+	store := api.NewPostgresJobStore(db, cfg.TotalReplicas)
 	handlers := api.NewHandlers(adminClient, store, minioClient, cfg.ManagerAddr, cfg.InternalAPIKey)
 
 	// Register Prometheus collectors and mount the /metrics endpoint

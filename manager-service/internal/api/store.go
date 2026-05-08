@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+
+	"kubemapreduce/manager-service/internal/manager"
 )
 
 // JobRecord holds the persisted state for a single job, mapping to the JOBS
@@ -65,8 +67,8 @@ type JobStore interface {
 
 const (
 	queryInsertAPIJob = `
-		INSERT INTO JOBS (job_id, user_id, status, created_at, updated_at)
-		VALUES ($1, $2, 'Pending', $3, $4)`
+		INSERT INTO JOBS (job_id, user_id, status, created_at, updated_at, replica_index)
+		VALUES ($1, $2, 'Pending', $3, $4, $5)`
 
 	queryInsertAPIJobConfig = `
 		INSERT INTO JOB_CONFIGS (job_id, input_uri, mapper_uri, reducer_uri, combiner_uri, m_tasks, r_tasks, input_checksum)
@@ -126,12 +128,20 @@ func parseUserUUID(userID string) (uuid.UUID, error) {
 // It is the primary production implementation, ensuring that all API instances
 // share a consistent view of job statuses.
 type PostgresJobStore struct {
-	db *sql.DB
+	db            *sql.DB
+	totalReplicas int
 }
 
-// NewPostgresJobStore returns a PostgreSQL-backed JobStore.
-func NewPostgresJobStore(db *sql.DB) *PostgresJobStore {
-	return &PostgresJobStore{db: db}
+// NewPostgresJobStore returns a PostgreSQL-backed JobStore. totalReplicas is
+// the manager StatefulSet replica count; it is used to compute the hash-based
+// replica_index persisted on JOBS so the manager's authoritative routing
+// (scheduler.go) and the API's job insert agree on which replica owns the job.
+// Must be > 0; values <= 0 are clamped to 1.
+func NewPostgresJobStore(db *sql.DB, totalReplicas int) *PostgresJobStore {
+	if totalReplicas <= 0 {
+		totalReplicas = 1
+	}
+	return &PostgresJobStore{db: db, totalReplicas: totalReplicas}
 }
 
 // Ping verifies that the underlying database connection is healthy.
@@ -164,7 +174,11 @@ func (s *PostgresJobStore) CreateJob(ctx context.Context, rec JobRecord) error {
 	if err != nil {
 		return err
 	}
-	if _, err := tx.ExecContext(ctx, queryInsertAPIJob, jobUUID, userUUID, now, now); err != nil {
+	replicaIndex, err := manager.ComputeReplicaIndex(rec.JobID, s.totalReplicas)
+	if err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, queryInsertAPIJob, jobUUID, userUUID, now, now, replicaIndex); err != nil {
 		return err
 	}
 	if _, err := tx.ExecContext(ctx, queryInsertAPIJobConfig, jobUUID, rec.Filename, rec.MapperURI, rec.ReducerURI, rec.CombinerURI, rec.MTasks, rec.Reducers, rec.InputChecksum); err != nil {
