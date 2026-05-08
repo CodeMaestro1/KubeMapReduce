@@ -237,7 +237,7 @@ func TestCmdJobsSubmit_UploadFlow(t *testing.T) {
 		if !strings.HasPrefix(payload.Reducer.Artifact, "s3://") {
 			t.Errorf("reducer artifact not a MinIO URI: %q", payload.Reducer.Artifact)
 		}
-		// Input filename is still the basename (server constructs full URI).
+		// Input filename is the basename (key is temp/<userID>/basename).
 		if strings.HasPrefix(payload.Filename, "s3://") {
 			t.Errorf("filename should be basename, got: %q", payload.Filename)
 		}
@@ -268,9 +268,9 @@ func TestCmdJobsSubmit_UploadFlow(t *testing.T) {
 	if !strings.Contains(uploads[0].key, "user-42") {
 		t.Errorf("mapper key should contain user ID, got %q", uploads[0].key)
 	}
-	// input upload key is just the basename
-	if uploads[2].key != "input.jsonl" {
-		t.Errorf("input key should be basename, got %q", uploads[2].key)
+	// input upload key uses temp/<userID>/ prefix (same as code files)
+	if !strings.Contains(uploads[2].key, "user-42") || !strings.HasSuffix(uploads[2].key, "input.jsonl") {
+		t.Errorf("input key should be temp/<userID>/input.jsonl, got %q", uploads[2].key)
 	}
 }
 

@@ -234,7 +234,7 @@ func uploadJobFilesAndBuildPayload(token, serverURL, mapperPath, reducerPath, co
 		log.Fatalf("upload reducer: %v", err)
 	}
 
-	_, inputChecksum, err := jobsSubmitUploadFile(token, serverURL, inputBucket, filepath.Base(inputFile), inputFile)
+	_, inputChecksum, err := jobsSubmitUploadFile(token, serverURL, inputBucket, codeKey(userID, inputFile), inputFile)
 	if err != nil {
 		log.Fatalf("upload input: %v", err)
 	}
