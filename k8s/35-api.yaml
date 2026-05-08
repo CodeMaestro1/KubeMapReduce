@@ -117,9 +117,11 @@ metadata:
   labels:
     app.kubernetes.io/name: api
 spec:
+  type: NodePort
   selector:
     app.kubernetes.io/name: api
   ports:
     - name: http
       port: 8081
       targetPort: 8081
+      nodePort: 30081

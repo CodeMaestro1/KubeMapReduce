@@ -18,6 +18,13 @@ data:
   KEYCLOAK_BASE_URL: "http://keycloak.mapreduce.svc.cluster.local:8080"
   KEYCLOAK_REALM: "mapreduce"
   KEYCLOAK_AUDIENCE: "mapreduce-api"
+  # JWKS fetched from internal cluster DNS — fast, no external round-trip.
+  KEYCLOAK_JWKS_URL: "http://keycloak.mapreduce.svc.cluster.local:8080/realms/mapreduce/protocol/openid-connect/certs"
+  # Issuer must match KC_HOSTNAME_URL in 25-keycloak.yaml and the URL
+  # the CLI uses to reach Keycloak. Override this per environment.
+  # Minikube: http://<minikube-ip>:30080/realms/mapreduce
+  # Production: https://keycloak.yourdomain.com/realms/mapreduce
+  KEYCLOAK_ISSUER: "http://keycloak.mapreduce.svc.cluster.local:8080/realms/mapreduce"
   STATEFULSET_REPLICAS: "3"
   HEARTBEAT_INTERVAL_SEC: "10"
   MAX_MISSED_HEARTBEATS: "3"
