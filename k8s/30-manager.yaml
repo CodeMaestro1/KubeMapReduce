@@ -125,8 +125,6 @@ spec:
             # service can hash-route directly to it.
             - name: MANAGER_ADDR
               value: "$(POD_NAME).manager-headless.mapreduce.svc.cluster.local:8081"
-            - name: DATABASE_DSN
-              value: "postgres://$(POSTGRES_USER):$(POSTGRES_PASSWORD)@postgres.mapreduce.svc.cluster.local:5432/$(POSTGRES_DB)?sslmode=prefer"
             - name: POSTGRES_USER
               valueFrom:
                 secretKeyRef:
@@ -142,6 +140,8 @@ spec:
                 secretKeyRef:
                   name: postgres-creds
                   key: POSTGRES_DB
+            - name: DATABASE_DSN
+              value: "postgres://$(POSTGRES_USER):$(POSTGRES_PASSWORD)@postgres.mapreduce.svc.cluster.local:5432/$(POSTGRES_DB)?sslmode=prefer"
             - name: MINIO_ENDPOINT
               valueFrom:
                 secretKeyRef:
