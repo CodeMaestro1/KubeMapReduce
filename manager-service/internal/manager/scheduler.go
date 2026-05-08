@@ -173,7 +173,7 @@ func (s *Scheduler) Recover(ctx context.Context) error {
 	spawnFailures := 0
 	for jobID := range uniqueJobs {
 		spawnCtx, cancel := context.WithTimeout(ctx, recoverSpawnTimeout)
-		err := s.orchestrator.EnsureWorkerPool(spawnCtx, jobID, 4, s.authoritativeManagerAddr(jobID))
+		err := s.orchestrator.EnsureWorkerPool(spawnCtx, jobID, 4, s.managerAddr)
 		cancel()
 		if err != nil {
 			slog.ErrorContext(ctx, "failed to ensure worker pool during recovery",
@@ -1032,7 +1032,7 @@ func (s *Scheduler) FailTask(ctx context.Context, taskID string, attemptID strin
 		defer cancel()
 
 		// Ensure worker pool is healthy (idempotent)
-		if err := s.orchestrator.EnsureWorkerPool(spawnCtx, jobID, 4, s.authoritativeManagerAddr(jobID)); err != nil {
+		if err := s.orchestrator.EnsureWorkerPool(spawnCtx, jobID, 4, s.managerAddr); err != nil {
 			slog.WarnContext(ctx, "failed to ensure worker pool after task failure; reaper will retry",
 				slog.String("job_id", jobID),
 				slog.Any("err", err),
@@ -1159,7 +1159,7 @@ func (s *Scheduler) FailStaleTasks(ctx context.Context) (int, error) {
 	}
 	for jobID := range uniqueRespawnJobs {
 		spawnCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-		if err := s.orchestrator.EnsureWorkerPool(spawnCtx, jobID, 4, s.authoritativeManagerAddr(jobID)); err != nil {
+		if err := s.orchestrator.EnsureWorkerPool(spawnCtx, jobID, 4, s.managerAddr); err != nil {
 			slog.ErrorContext(ctx, "failed to ensure worker pool during reaper retry",
 				slog.String("job_id", jobID),
 				slog.Any("err", err),
