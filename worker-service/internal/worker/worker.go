@@ -76,6 +76,11 @@ func (w *Worker) Run(ctx context.Context) error {
 			},
 		})
 		if err != nil {
+			if err == io.EOF {
+				if _, recvErr := stream.Recv(); recvErr != nil {
+					return fmt.Errorf("send ready (server closed stream): %w", recvErr)
+				}
+			}
 			return fmt.Errorf("send ready: %w", err)
 		}
 
