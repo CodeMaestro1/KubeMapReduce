@@ -11,7 +11,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
-	"path/filepath"
+	"path"
 	"regexp"
 	"sort"
 	"strconv"
@@ -1152,8 +1152,8 @@ func validateUploadKey(key, userID string) error {
 		return fmt.Errorf("key filename contains invalid characters or pattern")
 	}
 
-	cleanPath := filepath.Clean(key)
-	if !strings.HasPrefix(cleanPath, expectedPrefix) || filepath.ToSlash(cleanPath) != key {
+	cleanPath := path.Clean(key)
+	if !strings.HasPrefix(cleanPath, expectedPrefix) || cleanPath != key {
 		return fmt.Errorf("key contains path traversal")
 	}
 
@@ -1189,8 +1189,8 @@ func validateDownloadKey(key string) (jobID string, err error) {
 		}
 	}
 
-	cleanPath := filepath.Clean(key)
-	if filepath.ToSlash(cleanPath) != key {
+	cleanPath := path.Clean(key)
+	if cleanPath != key {
 		return "", fmt.Errorf("key contains path traversal")
 	}
 
