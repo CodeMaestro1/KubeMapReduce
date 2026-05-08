@@ -150,7 +150,8 @@ kubectl apply -f https://github.com/kubernetes-sigs/gateway-api/releases/downloa
 
 ```bash
 kubectl apply -f k8s/00-namespace.yaml
-bash scripts/create-secrets.sh
+NODE_IP=$(kubectl get nodes -o jsonpath='{.items[0].status.addresses[?(@.type=="InternalIP")].address}')
+NODE_IP=$NODE_IP bash scripts/create-secrets.sh
 ```
 
 The script generates random credentials for all services and a self-signed gRPC TLS cert. Safe to re-run — uses `--dry-run=client | kubectl apply` to avoid overwriting existing secrets.

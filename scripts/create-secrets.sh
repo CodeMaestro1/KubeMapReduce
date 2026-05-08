@@ -2,11 +2,28 @@
 # Creates all Kubernetes secrets required by KubeMapReduce.
 # Run once before the first deploy, or after wiping the namespace.
 # Safe to re-run — uses --dry-run=client | kubectl apply to avoid conflicts.
+#
+# Usage:
+#   bash scripts/create-secrets.sh
+#   NODE_IP=<ip> bash scripts/create-secrets.sh   # use external MinIO endpoint
+#
+# NODE_IP controls the S3_ENDPOINT in minio-creds. MinIO presigned URLs are
+# generated with this address, so the CLI must be able to reach it.
+# Defaults to the internal cluster DNS (only works if CLI runs inside cluster).
 set -euo pipefail
 
 NAMESPACE="${NAMESPACE:-mapreduce}"
+NODE_IP="${NODE_IP:-}"
+
+if [[ -z "$NODE_IP" ]]; then
+  NODE_IP=$(kubectl get nodes -o jsonpath='{.items[0].status.addresses[?(@.type=="InternalIP")].address}' 2>/dev/null || true)
+fi
+
+S3_ENDPOINT="${NODE_IP:+$NODE_IP:30900}"
+S3_ENDPOINT="${S3_ENDPOINT:-minio.mapreduce.svc.cluster.local:9000}"
 
 echo "Creating secrets in namespace: $NAMESPACE"
+echo "MinIO S3 endpoint: $S3_ENDPOINT"
 
 kubectl -n "$NAMESPACE" create secret generic postgres-creds \
   --from-literal=POSTGRES_USER=mapreduce \
@@ -14,12 +31,13 @@ kubectl -n "$NAMESPACE" create secret generic postgres-creds \
   --from-literal=POSTGRES_DB=mapreduce \
   --dry-run=client -o yaml | kubectl apply -f -
 
+MINIO_PASSWORD="$(openssl rand -hex 32)"
 kubectl -n "$NAMESPACE" create secret generic minio-creds \
   --from-literal=MINIO_ROOT_USER=mapreduce \
-  --from-literal=MINIO_ROOT_PASSWORD="$(openssl rand -hex 32)" \
+  --from-literal=MINIO_ROOT_PASSWORD="$MINIO_PASSWORD" \
   --from-literal=S3_ACCESS_KEY=mapreduce \
-  --from-literal=S3_SECRET_KEY="$(openssl rand -hex 32)" \
-  --from-literal=S3_ENDPOINT=minio.mapreduce.svc.cluster.local:9000 \
+  --from-literal=S3_SECRET_KEY="$MINIO_PASSWORD" \
+  --from-literal=S3_ENDPOINT="$S3_ENDPOINT" \
   --dry-run=client -o yaml | kubectl apply -f -
 
 kubectl -n "$NAMESPACE" create secret generic manager-secrets \
