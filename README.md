@@ -167,6 +167,12 @@ kubectl -n mapreduce rollout status statefulset/postgres
 kubectl -n mapreduce rollout status statefulset/minio
 kubectl -n mapreduce rollout status deployment/keycloak
 kubectl -n mapreduce rollout status statefulset/manager
+
+# Run DB migrations (required on first deploy or after wiping the PVC)
+for f in migrations/*.sql; do
+  echo "Applying $f..."
+  kubectl exec -i postgres-0 -n mapreduce -- psql -U mapreduce -d mapreduce < "$f"
+done
 ```
 
 ### Submit a job
