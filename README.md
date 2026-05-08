@@ -147,30 +147,10 @@ kubectl apply -f https://github.com/kubernetes-sigs/gateway-api/releases/downloa
 
 ```bash
 kubectl apply -f k8s/00-namespace.yaml
-
-kubectl -n mapreduce create secret generic postgres-creds \
-  --from-literal=POSTGRES_USER=mapreduce \
-  --from-literal=POSTGRES_PASSWORD="$(openssl rand -hex 16)" \
-  --from-literal=POSTGRES_DB=mapreduce
-
-kubectl -n mapreduce create secret generic minio-creds \
-  --from-literal=MINIO_ROOT_USER=mapreduce \
-  --from-literal=MINIO_ROOT_PASSWORD="$(openssl rand -hex 32)" \
-  --from-literal=S3_ACCESS_KEY=mapreduce \
-  --from-literal=S3_SECRET_KEY="$(openssl rand -hex 32)" \
-  --from-literal=S3_ENDPOINT=minio.mapreduce.svc.cluster.local:9000
-
-kubectl -n mapreduce create secret generic manager-secrets \
-  --from-literal=MANAGER_INTERNAL_API_KEY="$(openssl rand -hex 16)" \
-  --from-literal=MANAGER_WORKER_RPC_TOKEN="$(openssl rand -hex 16)"
-
-# TLS cert for gRPC (self-signed for testing)
-openssl req -x509 -newkey rsa:2048 -nodes -days 365 \
-  -keyout tls.key -out tls.crt \
-  -subj "/CN=manager" \
-  -addext "subjectAltName=DNS:*.manager-headless.mapreduce.svc.cluster.local"
-kubectl -n mapreduce create secret tls grpc-tls --cert=tls.crt --key=tls.key
+bash scripts/create-secrets.sh
 ```
+
+The script generates random credentials for all services and a self-signed gRPC TLS cert. Safe to re-run — uses `--dry-run=client | kubectl apply` to avoid overwriting existing secrets.
 
 ### Deploy
 
