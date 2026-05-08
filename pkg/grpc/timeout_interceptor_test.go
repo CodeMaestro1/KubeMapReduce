@@ -21,6 +21,7 @@ func TestNewDefaultTimeoutConfig(t *testing.T) {
 		"/proto.WorkerService/Register":     5 * time.Second,
 		"/proto.WorkerService/TaskComplete": 10 * time.Second,
 		"/proto.WorkerService/TaskFailed":   10 * time.Second,
+		"/proto.WorkerService/TaskStream":   4 * time.Hour,
 	}
 
 	for method, expectedTimeout := range expectedMethods {
@@ -223,6 +224,7 @@ func TestTimeoutValues(t *testing.T) {
 		{"/proto.WorkerService/Register", 5 * time.Second},
 		{"/proto.WorkerService/TaskComplete", 10 * time.Second},
 		{"/proto.WorkerService/TaskFailed", 10 * time.Second},
+		{"/proto.WorkerService/TaskStream", 4 * time.Hour},
 	}
 
 	for _, tt := range tests {

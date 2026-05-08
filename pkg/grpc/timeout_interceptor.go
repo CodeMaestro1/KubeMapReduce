@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"sync"
 	"time"
 
 	grpc "google.golang.org/grpc"
@@ -31,6 +32,7 @@ type TimeoutInterceptorConfig struct {
 //   - Heartbeat: 2s (frequent, critical path; must fail-fast if manager unavailable)
 //   - Register: 5s (infrequent startup operation; allows connection pool overhead)
 //   - TaskComplete/TaskFailed: 10s (critical state transitions; serialize atomically)
+//   - TaskStream: 4h (long-lived bidirectional stream; bounded by job duration)
 func NewDefaultTimeoutConfig() *TimeoutInterceptorConfig {
 	return &TimeoutInterceptorConfig{
 		DefaultTimeout: 10 * time.Second,
@@ -39,6 +41,7 @@ func NewDefaultTimeoutConfig() *TimeoutInterceptorConfig {
 			"/proto.WorkerService/Register":     5 * time.Second,
 			"/proto.WorkerService/TaskComplete": 10 * time.Second,
 			"/proto.WorkerService/TaskFailed":   10 * time.Second,
+			"/proto.WorkerService/TaskStream":   4 * time.Hour,
 		},
 	}
 }
@@ -184,6 +187,11 @@ func (c *TimeoutInterceptorConfig) ClientUnaryInterceptor() grpc.UnaryClientInte
 }
 
 // ClientStreamInterceptor returns a gRPC stream client interceptor that enforces per-method timeouts.
+//
+// The timeout context is tied to the stream lifetime via cancelOnCloseClientStream:
+// cancel() is called when the stream ends (RecvMsg error / CloseSend), not when
+// this interceptor function returns. Using defer cancel() here would cancel the
+// stream context immediately after the stream is opened.
 func (c *TimeoutInterceptorConfig) ClientStreamInterceptor() grpc.StreamClientInterceptor {
 	return func(
 		ctx context.Context,
@@ -193,34 +201,50 @@ func (c *TimeoutInterceptorConfig) ClientStreamInterceptor() grpc.StreamClientIn
 		streamer grpc.Streamer,
 		opts ...grpc.CallOption,
 	) (grpc.ClientStream, error) {
-		// Look up the timeout for this method; use default if not configured
 		timeout := c.DefaultTimeout
 		if methodTimeout, ok := c.MethodTimeouts[method]; ok {
 			timeout = methodTimeout
 		}
 
-		// Create a new context with the timeout deadline
 		timeoutCtx, cancel := context.WithTimeout(ctx, timeout)
-		defer cancel()
 
-		// Create the stream with the timeout context
 		stream, err := streamer(timeoutCtx, desc, cc, method, opts...)
-
-		// Log timeout events for observability
 		if err != nil {
+			cancel()
 			if status.Code(err) == codes.DeadlineExceeded {
-				slog.WarnContext(
-					ctx,
-					"gRPC client stream timeout",
+				slog.WarnContext(ctx, "gRPC client stream timeout",
 					slog.String("method", method),
 					slog.Duration("timeout", timeout),
 					slog.String("component", "grpc_client"),
 				)
 			}
+			return nil, err
 		}
 
-		return stream, err
+		return &cancelOnCloseClientStream{ClientStream: stream, cancel: cancel}, nil
 	}
+}
+
+// cancelOnCloseClientStream wraps a ClientStream and calls cancel when the stream ends,
+// ensuring the timeout context is cleaned up without canceling the stream prematurely.
+type cancelOnCloseClientStream struct {
+	grpc.ClientStream
+	cancel context.CancelFunc
+	once   sync.Once
+}
+
+func (s *cancelOnCloseClientStream) RecvMsg(m interface{}) error {
+	err := s.ClientStream.RecvMsg(m)
+	if err != nil {
+		s.once.Do(s.cancel)
+	}
+	return err
+}
+
+func (s *cancelOnCloseClientStream) CloseSend() error {
+	err := s.ClientStream.CloseSend()
+	s.once.Do(s.cancel)
+	return err
 }
 
 // ValidateConfig checks that timeouts are positive and reasonable.
