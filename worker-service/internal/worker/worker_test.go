@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/minio/minio-go/v7"
+	"github.com/minio/minio-go/v7/pkg/credentials"
 	"google.golang.org/grpc"
 
 	pb "kubemapreduce/proto"
@@ -774,3 +775,59 @@ func (s *lineScanner) Scan() bool {
 }
 
 func (s *lineScanner) Bytes() []byte { return s.line }
+
+func TestNew(t *testing.T) {
+	cfg := &config.Config{
+		TaskID:    "task-123",
+		AttemptID: "attempt-456",
+	}
+	client := &mockGRPCClient{}
+
+	t.Run("with minio client", func(t *testing.T) {
+		minioClient, err := minio.New("localhost:9000", &minio.Options{
+			Creds:  credentials.NewStaticV4("user", "pass", ""),
+			Secure: false,
+		})
+		if err != nil {
+			t.Fatalf("failed to create minio client: %v", err)
+		}
+
+		w := New(cfg, client, nil, minioClient)
+
+		if w.cfg != cfg {
+			t.Errorf("expected config %p, got %p", cfg, w.cfg)
+		}
+		if w.client != client {
+			t.Errorf("expected client %p, got %p", client, w.client)
+		}
+		if _, ok := w.storage.(*minioStorage); !ok {
+			t.Errorf("expected storage to be *minioStorage, got %T", w.storage)
+		}
+		if w.prepareCode == nil {
+			t.Error("expected prepareCode to be set")
+		}
+		if w.execCode == nil {
+			t.Error("expected execCode to be set")
+		}
+	})
+
+	t.Run("without minio client", func(t *testing.T) {
+		w := New(cfg, client, nil, nil)
+
+		if w.cfg != cfg {
+			t.Errorf("expected config %p, got %p", cfg, w.cfg)
+		}
+		if w.client != client {
+			t.Errorf("expected client %p, got %p", client, w.client)
+		}
+		if _, ok := w.storage.(*unavailableStorage); !ok {
+			t.Errorf("expected storage to be *unavailableStorage, got %T", w.storage)
+		}
+		if w.prepareCode == nil {
+			t.Error("expected prepareCode to be set")
+		}
+		if w.execCode == nil {
+			t.Error("expected execCode to be set")
+		}
+	})
+}

@@ -22,6 +22,7 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
 	"github.com/minio/minio-go/v7"
+	"github.com/minio/minio-go/v7/pkg/credentials"
 )
 
 func newTestHandlers() *Handlers {
@@ -37,6 +38,9 @@ type fakeObjectCopier struct {
 }
 
 func (f *fakeObjectCopier) CopyObject(_ context.Context, dst minio.CopyDestOptions, src minio.CopySrcOptions) (minio.UploadInfo, error) {
+	if f.err != nil || dst.Bucket == "" || src.Bucket == "" {
+		return minio.UploadInfo{}, errors.New("copy failed")
+	}
 	f.copies = append(f.copies, struct{ srcBucket, srcKey, dstBucket, dstKey string }{src.Bucket, src.Object, dst.Bucket, dst.Object})
 	return minio.UploadInfo{}, f.err
 }
@@ -1838,4 +1842,276 @@ func (s *shortReadObjectClient) GetObject(_ context.Context, _, _ string, _ mini
 
 func (s *shortReadObjectClient) ListObjects(context.Context, string, string, bool) ([]scheduleObjectInfo, error) {
 	return nil, errors.New("not implemented")
+}
+
+func TestMinioScheduleObjectClient_GetObject(t *testing.T) {
+	expectedData := []byte("hello minio object")
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/mybucket/myobject" {
+			w.Header().Set("Accept-Ranges", "bytes")
+			w.Header().Set("Content-Length", fmt.Sprintf("%d", len(expectedData)))
+			w.Header().Set("Content-Type", "application/octet-stream")
+			w.Header().Set("ETag", `"d41d8cd98f00b204e9800998ecf8427e"`)
+			w.Header().Set("Last-Modified", "Wed, 21 Oct 2015 07:28:00 GMT")
+			_, _ = w.Write(expectedData)
+		} else {
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer ts.Close()
+
+	endpoint := strings.TrimPrefix(ts.URL, "http://")
+
+	client, err := minio.New(endpoint, &minio.Options{
+		Creds:  credentials.NewStaticV4("test", "test", ""),
+		Secure: false,
+		Region: "us-east-1",
+	})
+	if err != nil {
+		t.Fatalf("failed to create minio client: %v", err)
+	}
+
+	sc := newScheduleObjectClient(client)
+
+	// Test successful GetObject
+	obj, err := sc.GetObject(context.Background(), "mybucket", "myobject", minio.GetObjectOptions{})
+	if err != nil {
+		t.Fatalf("failed to GetObject: %v", err)
+	}
+	defer obj.Close()
+
+	data, err := io.ReadAll(obj)
+	if err != nil {
+		t.Fatalf("failed to read object data: %v", err)
+	}
+
+	if string(data) != string(expectedData) {
+		t.Errorf("expected %q, got %q", expectedData, data)
+	}
+
+	// Test GetObject failure
+	objFail, err := sc.GetObject(context.Background(), "mybucket", "not-exist", minio.GetObjectOptions{})
+	if err != nil {
+		t.Fatalf("failed to call GetObject: %v", err)
+	}
+	defer objFail.Close()
+
+	_, err = io.ReadAll(objFail)
+	if err == nil {
+		t.Fatalf("expected error reading non-existent object, got nil")
+	}
+}
+
+func TestNewHandlers(t *testing.T) {
+	var adminClient *auth.KeycloakAdminClient
+	var store JobStore
+	var minioClient *minio.Client
+	managerAddr := "localhost:8081"
+	internalAPIKey := "secret"
+
+	handlers := NewHandlers(adminClient, store, minioClient, managerAddr, internalAPIKey)
+
+	if handlers.adminClient != adminClient {
+		t.Errorf("expected adminClient %v, got %v", adminClient, handlers.adminClient)
+	}
+	if handlers.store != store {
+		t.Errorf("expected store %v, got %v", store, handlers.store)
+	}
+	if handlers.minioClient != minioClient {
+		t.Errorf("expected minioClient %v, got %v", minioClient, handlers.minioClient)
+	}
+	if handlers.managerAddr != managerAddr {
+		t.Errorf("expected managerAddr %v, got %v", managerAddr, handlers.managerAddr)
+	}
+	if handlers.internalAPIKey != internalAPIKey {
+		t.Errorf("expected internalAPIKey %v, got %v", internalAPIKey, handlers.internalAPIKey)
+	}
+	if handlers.copier != nil {
+		t.Errorf("expected copier to be nil, got %v", handlers.copier)
+	}
+	if handlers.httpClient == nil {
+		t.Errorf("expected httpClient to be initialized, got nil")
+	}
+	if handlers.now == nil {
+		t.Errorf("expected now to be initialized, got nil")
+	}
+}
+
+func TestMinioScheduleObjectClient_StatObject(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodHead && r.URL.Path == "/mybucket/myobject" {
+			w.Header().Set("Content-Length", "1024")
+			w.Header().Set("ETag", "\"some-etag\"")
+			w.Header().Set("Last-Modified", "Wed, 21 Oct 2015 07:28:00 GMT")
+			w.Header().Set("Content-Type", "application/octet-stream")
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer ts.Close()
+
+	endpoint := ts.URL[7:] // remove http://
+	client, err := minio.New(endpoint, &minio.Options{
+		Creds:  credentials.NewStaticV4("test", "testtest", ""),
+		Secure: false,
+		Region: "us-east-1",
+	})
+	if err != nil {
+		t.Fatalf("failed to create minio client: %v", err)
+	}
+
+	scheduleClient := newScheduleObjectClient(client)
+
+	info, err := scheduleClient.StatObject(context.Background(), "mybucket", "myobject", minio.StatObjectOptions{})
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+
+	if info.Size != 1024 {
+		t.Errorf("expected size 1024, got %d", info.Size)
+	}
+	if info.Key != "myobject" {
+		t.Errorf("expected key myobject, got %s", info.Key)
+	}
+}
+
+func TestMinioScheduleObjectClient_StatObject_NotFound(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer ts.Close()
+
+	endpoint := ts.URL[7:] // remove http://
+	client, err := minio.New(endpoint, &minio.Options{
+		Creds:  credentials.NewStaticV4("test", "testtest", ""),
+		Secure: false,
+		Region: "us-east-1",
+	})
+	if err != nil {
+		t.Fatalf("failed to create minio client: %v", err)
+	}
+
+	scheduleClient := newScheduleObjectClient(client)
+
+	_, err = scheduleClient.StatObject(context.Background(), "mybucket", "myobject", minio.StatObjectOptions{})
+	if err == nil {
+		t.Fatalf("expected error, got nil")
+	}
+
+	errResp := minio.ToErrorResponse(err)
+	if errResp.StatusCode != http.StatusNotFound {
+		t.Errorf("expected status code 404, got %d", errResp.StatusCode)
+	}
+}
+
+func TestHandleRoot_OK(t *testing.T) {
+	h := newTestHandlers()
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	rec := httptest.NewRecorder()
+
+	h.HandleRoot(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d", http.StatusOK, rec.Code)
+	}
+
+	if !strings.Contains(rec.Body.String(), `"name":"KubeMapReduce API"`) {
+		t.Fatalf("expected body to contain name, got %q", rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"status":"running"`) {
+		t.Fatalf("expected body to contain status running, got %q", rec.Body.String())
+	}
+}
+
+func TestHandleRoot_NotFound(t *testing.T) {
+	h := newTestHandlers()
+
+	req := httptest.NewRequest(http.MethodGet, "/subpath", nil)
+	rec := httptest.NewRecorder()
+
+	h.HandleRoot(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("expected status %d, got %d", http.StatusNotFound, rec.Code)
+	}
+}
+
+func TestHandleRoot_MethodNotAllowed(t *testing.T) {
+	h := newTestHandlers()
+
+	req := httptest.NewRequest(http.MethodPost, "/", nil)
+	rec := httptest.NewRecorder()
+
+	h.HandleRoot(rec, req)
+
+	if rec.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("expected status %d, got %d", http.StatusMethodNotAllowed, rec.Code)
+	}
+}
+
+func TestValidateUploadKey(t *testing.T) {
+	tests := []struct {
+		key     string
+		userID  string
+		wantErr bool
+	}{
+		{"temp/user-1/file.txt", "user-1", false},
+		{"", "user-1", true},
+		{"temp/user-2/file.txt", "user-1", true},
+		{"temp/user-1/dir/file.txt", "user-1", true},
+		{"temp/user-1/../file.txt", "user-1", true},
+		{"temp/user-1/file\x00.txt", "user-1", true},
+	}
+
+	for _, tt := range tests {
+		err := validateUploadKey(tt.key, tt.userID)
+		if (err != nil) != tt.wantErr {
+			t.Errorf("validateUploadKey(%q, %q) error = %v, wantErr %v", tt.key, tt.userID, err, tt.wantErr)
+		}
+	}
+}
+
+func TestValidateDownloadKey(t *testing.T) {
+	tests := []struct {
+		key     string
+		jobID   string
+		wantErr bool
+	}{
+		{"outputs/51de4a35-1a22-4912-8d7d-5c68b75e1f0e/output.txt", "51de4a35-1a22-4912-8d7d-5c68b75e1f0e", false},
+		{"", "", true},
+		{"outputs/job-1/../output.txt", "", true},
+		{"outputs/job-1/output\x00.txt", "", true},
+	}
+
+	for _, tt := range tests {
+		jobID, err := validateDownloadKey(tt.key)
+		if (err != nil) != tt.wantErr {
+			t.Errorf("validateDownloadKey(%q) error = %v, wantErr %v", tt.key, err, tt.wantErr)
+		}
+		if err == nil && jobID != tt.jobID {
+			t.Errorf("validateDownloadKey(%q) jobID = %q, want %q", tt.key, jobID, tt.jobID)
+		}
+	}
+}
+
+func TestHandlePresignUpload(t *testing.T) {
+	h := &Handlers{minioClient: nil}
+	reqBody := `{"key": "temp/test-user/file.txt"}`
+	req := httptest.NewRequest("POST", "/upload", bytes.NewBufferString(reqBody))
+	h.HandlePresignUpload(httptest.NewRecorder(), req)
+}
+
+func TestMinioCopier_CopyObject(t *testing.T) {
+	client, err := minio.New("localhost:9000", &minio.Options{})
+	if err != nil {
+		t.Fatalf("failed to create dummy minio client: %v", err)
+	}
+	copier := &minioCopier{client: client}
+	_, err = copier.CopyObject(context.Background(), minio.CopyDestOptions{}, minio.CopySrcOptions{})
+	if err == nil {
+		t.Fatalf("expected network error")
+	}
 }

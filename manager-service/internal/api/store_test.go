@@ -13,6 +13,22 @@ import (
 
 // ── PostgresJobStore persistence tests ──────────────────────
 
+func TestNewPostgresJobStore(t *testing.T) {
+	db, _, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("failed to create sqlmock: %v", err)
+	}
+	defer db.Close()
+
+	store := NewPostgresJobStore(db)
+	if store == nil {
+		t.Fatalf("NewPostgresJobStore returned nil")
+	}
+	if store.db != db {
+		t.Fatalf("NewPostgresJobStore did not set the db field correctly")
+	}
+}
+
 func TestPostgresJobStore_CreateJob_PersistsToDatabase(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	if err != nil {
@@ -365,4 +381,33 @@ func TestMemoryJobStore_ListReturnsNewestFirst(t *testing.T) {
 	if len(list) != 2 || list[0].Filename != "b.csv" {
 		t.Fatalf("expected newest first, got %+v", list)
 	}
+}
+
+func TestNewMemoryJobStore(t *testing.T) {
+	t.Run("default parameters", func(t *testing.T) {
+		store := NewMemoryJobStore(0, 0, nil)
+		if store.jobStatusTTL != 24*time.Hour {
+			t.Errorf("expected default TTL 24h, got %v", store.jobStatusTTL)
+		}
+		if store.maxStoredJobs != 10000 {
+			t.Errorf("expected default maxJobs 10000, got %v", store.maxStoredJobs)
+		}
+		if store.now == nil {
+			t.Errorf("expected default now func to be set")
+		}
+	})
+
+	t.Run("custom parameters", func(t *testing.T) {
+		customNow := func() time.Time { return time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC) }
+		store := NewMemoryJobStore(time.Hour, 50, customNow)
+		if store.jobStatusTTL != time.Hour {
+			t.Errorf("expected custom TTL 1h, got %v", store.jobStatusTTL)
+		}
+		if store.maxStoredJobs != 50 {
+			t.Errorf("expected custom maxJobs 50, got %v", store.maxStoredJobs)
+		}
+		if store.now() != customNow() {
+			t.Errorf("expected custom now func to be set")
+		}
+	})
 }

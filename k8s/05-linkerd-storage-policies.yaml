@@ -1,0 +1,157 @@
+# Linkerd Traffic Policy for Manager ↔ PostgreSQL
+#
+# PostgreSQL queries are not idempotent due to transactions, so we:
+# - Set a 30s timeout (generous for complex queries + network latency)
+# - Disable retries (application should handle transaction failures)
+# - Use exponential backoff on circuit breaker if connection pool saturates
+#
+# Note: Linkerd PolicyAPI requires explicit target service references.
+# This policy applies to outbound connections from Manager pods to the
+# postgres service.
+---
+# HTTPRoute for Manager → PostgreSQL traffic
+apiVersion: gateway.networking.k8s.io/v1beta1
+kind: HTTPRoute
+metadata:
+  name: manager-to-postgres
+  namespace: mapreduce
+spec:
+  parentRefs:
+    - group: policy.linkerd.io
+      kind: Policy
+      name: manager-to-postgres
+  hostnames:
+    - postgres.mapreduce.svc.cluster.local
+  rules:
+    - backendRefs:
+        - name: postgres
+          port: 5432
+---
+apiVersion: policy.linkerd.io/v1beta1
+kind: Policy
+metadata:
+  name: manager-to-postgres
+  namespace: mapreduce
+spec:
+  targetRef:
+    group: ""
+    kind: Service
+    name: postgres
+  http:
+    # All database queries: 30s timeout, no retries
+    - match: {}
+      timeouts:
+        request: 30s
+        backendRequest: 30s
+      retries:
+        limit: 0  # Database is not idempotent; retry at app level if needed
+      circuitBreaker:
+        maxRequests: 100
+        maxPendingRequests: 50
+        errorThresholdPercentage: 50
+        minRequestVolume: 10
+---
+# Linkerd Traffic Policy for Manager ↔ MinIO (S3)
+#
+# MinIO operations vary widely:
+# - Small uploads/downloads: 10-30s
+# - Large file transfers: 60-120s (network + storage latency)
+# - List operations: 5-10s
+#
+# We use a 60s default timeout to accommodate large transfers.
+# Retries use exponential backoff to avoid overwhelming MinIO on transient errors.
+---
+# HTTPRoute for Manager → MinIO traffic
+apiVersion: gateway.networking.k8s.io/v1beta1
+kind: HTTPRoute
+metadata:
+  name: manager-to-minio
+  namespace: mapreduce
+spec:
+  parentRefs:
+    - group: policy.linkerd.io
+      kind: Policy
+      name: manager-to-minio
+  hostnames:
+    - minio.mapreduce.svc.cluster.local
+  rules:
+    - backendRefs:
+        - name: minio
+          port: 9000
+---
+apiVersion: policy.linkerd.io/v1beta1
+kind: Policy
+metadata:
+  name: manager-to-minio
+  namespace: mapreduce
+spec:
+  targetRef:
+    group: ""
+    kind: Service
+    name: minio
+  http:
+    # S3 operations: 60s timeout with exponential backoff
+    - match: {}
+      timeouts:
+        request: 60s
+        backendRequest: 60s
+      retries:
+        limit: 3
+        backoff: exponential
+      circuitBreaker:
+        maxRequests: 50
+        maxPendingRequests: 25
+        errorThresholdPercentage: 50
+        minRequestVolume: 5
+---
+# Linkerd Traffic Policy for Worker ↔ MinIO (presigned URL downloads)
+#
+# Workers download:
+# - User code artifacts: 10-50KB (fast)
+# - Input data splits: up to 100MB (slow, network latency)
+# - Intermediate shuffle files: variable (depends on data volume)
+#
+# We use a 120s timeout to accommodate large input splits without timing out.
+---
+# HTTPRoute for Worker → MinIO traffic
+apiVersion: gateway.networking.k8s.io/v1beta1
+kind: HTTPRoute
+metadata:
+  name: worker-to-minio
+  namespace: mapreduce
+spec:
+  parentRefs:
+    - group: policy.linkerd.io
+      kind: Policy
+      name: worker-to-minio
+  hostnames:
+    - minio.mapreduce.svc.cluster.local
+  rules:
+    - backendRefs:
+        - name: minio
+          port: 9000
+---
+apiVersion: policy.linkerd.io/v1beta1
+kind: Policy
+metadata:
+  name: worker-to-minio
+  namespace: mapreduce
+spec:
+  targetRef:
+    group: ""
+    kind: Namespace
+    name: mapreduce
+  http:
+    # S3 presigned URL operations: 120s timeout (large file transfers)
+    - match: {}
+      timeouts:
+        request: 120s
+        backendRequest: 120s
+      retries:
+        limit: 2
+        backoff: exponential
+      circuitBreaker:
+        maxRequests: 20
+        maxPendingRequests: 10
+        errorThresholdPercentage: 50
+        minRequestVolume: 3

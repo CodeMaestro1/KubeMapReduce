@@ -17,6 +17,26 @@ import (
 
 const splitReadChunkSize int64 = 1 << 20
 
+// validateS3Key checks that an S3 object key does not contain path traversal
+// sequences like ".." or absolute paths. This prevents writes outside the
+// intended directory structure.
+func validateS3Key(key string) error {
+	// Check for ".." sequences
+	if strings.Contains(key, "..") {
+		return fmt.Errorf("S3 key contains path traversal sequence (..): %q", key)
+	}
+	// Check for absolute paths
+	if strings.HasPrefix(key, "/") {
+		return fmt.Errorf("S3 key contains absolute path: %q", key)
+	}
+	// Additional check: verify normalized path doesn't escape
+	clean := filepath.Clean(key)
+	if strings.HasPrefix(clean, "..") {
+		return fmt.Errorf("S3 key normalizes to path traversal: %q -> %q", key, clean)
+	}
+	return nil
+}
+
 // parseManifestURIFragment splits a manifest URI of the form
 // "s3://bucket/key#sha256=<hex>" into the bare URI and the expected
 // SHA-256 hex digest.  If no fragment is present, expectedDigest is "".
@@ -56,6 +76,10 @@ func parseS3URI(uri string) (bucket, key string, err error) {
 // backwards compatibility.
 func fetchManifest(ctx context.Context, storage objectStorage, manifestURI string) ([]string, error) {
 	uri, expectedDigest := parseManifestURIFragment(manifestURI)
+
+	if expectedDigest == "" {
+		return nil, fmt.Errorf("manifest missing mandatory digest: %s", manifestURI)
+	}
 
 	bucket, key, err := parseS3URI(uri)
 	if err != nil {
@@ -106,6 +130,11 @@ func downloadCode(ctx context.Context, storage objectStorage, codeURI, tempDir s
 		return "", func() {}, fmt.Errorf("disallowed code bucket: %q", bucket)
 	}
 
+	// Validate the S3 key to prevent path traversal attacks.
+	if err := validateS3Key(key); err != nil {
+		return "", func() {}, err
+	}
+
 	rc, err := storage.GetObject(ctx, bucket, key, minio.GetObjectOptions{})
 	if err != nil {
 		return "", func() {}, fmt.Errorf("GetObject code %s: %w", codeURI, err)
@@ -117,13 +146,33 @@ func downloadCode(ctx context.Context, storage objectStorage, codeURI, tempDir s
 		return "", func() {}, fmt.Errorf("read code: %w", err)
 	}
 
-	baseName := filepath.Base(key)
-	codePath := filepath.Join(tempDir, baseName)
-	if err := os.WriteFile(codePath, data, 0o755); err != nil {
+	ext := strings.ToLower(filepath.Ext(key))
+	codePath := filepath.Join(tempDir, "usercode"+ext)
+
+	// Create file with O_EXCL to prevent symlink attacks and race conditions.
+	// This ensures we create a new file, not overwrite an existing one.
+	f, err := os.OpenFile(codePath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o755)
+	if err != nil {
+		return "", func() {}, fmt.Errorf("create code file (check for symlinks): %w", err)
+	}
+	if _, err := f.Write(data); err != nil {
+		f.Close()
+		os.Remove(codePath)
 		return "", func() {}, fmt.Errorf("write code: %w", err)
 	}
+	f.Close()
 
-	ext := strings.ToLower(filepath.Ext(key))
+	// Verify the file is not a symlink (defense against TOCTOU attacks).
+	fi, err := os.Lstat(codePath)
+	if err != nil {
+		os.Remove(codePath)
+		return "", func() {}, fmt.Errorf("stat code file: %w", err)
+	}
+	if fi.Mode()&os.ModeSymlink != 0 {
+		os.Remove(codePath)
+		return "", func() {}, fmt.Errorf("code file is a symlink; rejecting")
+	}
+
 	switch ext {
 	case ".c":
 		outPath := strings.TrimSuffix(codePath, ext)

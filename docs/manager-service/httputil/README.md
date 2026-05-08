@@ -39,8 +39,8 @@ By appending `\n` to every JSON response, the utilities ensure that users runnin
 ### `WriteJSON(w http.ResponseWriter, status int, payload any) error`
 The workhorse function for the UI Service. It handles content negotiation (fixing it to JSON), status code setting, and serialization in one call.
 
-### `WriteError(w http.ResponseWriter, status int, message string)`
-A convenience wrapper for `http.Error` to keep code concise.
+### `WriteErrorJSON(w http.ResponseWriter, status int, message string)`
+Sends a structured JSON error response following the standard error contract `{"error": "...", "code": 400}`.
 
 ## Error Catalogue
 

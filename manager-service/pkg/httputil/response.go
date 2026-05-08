@@ -16,7 +16,7 @@ const contentTypeJSON = "application/json"
 func WriteJSON(w http.ResponseWriter, status int, payload any) error {
 	body, err := json.Marshal(payload)
 	if err != nil {
-		WriteError(w, http.StatusInternalServerError, "failed to encode response")
+		WriteErrorJSON(w, http.StatusInternalServerError, "failed to encode response")
 		return err
 	}
 
@@ -37,12 +37,4 @@ func WriteErrorJSON(w http.ResponseWriter, status int, message string) {
 		"error": message,
 		"code":  status,
 	})
-}
-
-// WriteError sends a plain-text error message with the specified HTTP status code.
-//
-// DEPRECATED: Use WriteErrorJSON for all new handler logic to ensure
-// API responses are consistently structured.
-func WriteError(w http.ResponseWriter, status int, message string) {
-	http.Error(w, message, status)
 }

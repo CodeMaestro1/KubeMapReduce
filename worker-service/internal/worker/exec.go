@@ -11,24 +11,24 @@ import (
 	"time"
 )
 
-// credentialEnvPrefixes lists env var prefixes that must never be visible to
-// user-supplied code. The check is case-insensitive so it covers both Linux
-// (upper-case) and Windows (mixed-case) conventions.
-var credentialEnvPrefixes = []string{
-	"S3_ACCESS_KEY",
-	"S3_SECRET_KEY",
-	"WORKER_RPC_TOKEN",
-	"MANAGER_ADDR",
-	"MANAGER_INTERNAL_API_KEY",
-	"MANAGER_WORKER_RPC_TOKEN",
-	"MINIO_ACCESS",
-	"MINIO_SECRET",
-	"POSTGRES_",
+// allowedEnvVars is a whitelist of environment variables that are safe to expose
+// to user-supplied code. All other variables are filtered out, including any
+// credentials, internal service addresses, or tokens.
+var allowedEnvVars = map[string]bool{
+	"PATH":    true, // Standard system path
+	"HOME":    true, // User home directory
+	"USER":    true, // Username
+	"LANG":    true, // Locale setting
+	"TMPDIR":  true, // Temporary directory
+	"TZ":      true, // Timezone
+	"TERM":    true, // Terminal type
+	"TASK_ID": true, // Task identifier (safe to expose)
+	"JOB_ID":  true, // Job identifier (safe to expose)
 }
 
-// sandboxedEnv returns os.Environ() with credential-bearing variables removed.
-// We strip only known-sensitive keys rather than using an allowlist so that
-// system paths, locale settings, and temp dirs remain intact across platforms.
+// sandboxedEnv returns a minimal, safe set of environment variables for
+// user-supplied code execution. Uses an allowlist approach to prevent
+// credential leakage through both explicit and implicit variable access.
 func sandboxedEnv() []string {
 	all := os.Environ()
 	out := make([]string, 0, len(all))
@@ -37,15 +37,8 @@ func sandboxedEnv() []string {
 		if i := strings.IndexByte(kv, '='); i >= 0 {
 			key = kv[:i]
 		}
-		upper := strings.ToUpper(key)
-		sensitive := false
-		for _, prefix := range credentialEnvPrefixes {
-			if strings.HasPrefix(upper, prefix) {
-				sensitive = true
-				break
-			}
-		}
-		if !sensitive {
+		// Only include variables explicitly in the allowlist.
+		if allowedEnvVars[key] {
 			out = append(out, kv)
 		}
 	}
@@ -54,6 +47,7 @@ func sandboxedEnv() []string {
 
 // buildCmd constructs the OS command for a user-provided code artifact.
 // Runtime is inferred from runtimeEnv first, then from the file extension.
+// Returns an error if the runtime is unsupported (fail-safe).
 func buildCmd(ctx context.Context, codePath, runtimeEnv string) (*exec.Cmd, error) {
 	rt := strings.ToLower(strings.TrimSpace(runtimeEnv))
 	ext := strings.ToLower(filepath.Ext(codePath))
@@ -63,42 +57,94 @@ func buildCmd(ctx context.Context, codePath, runtimeEnv string) (*exec.Cmd, erro
 		return exec.CommandContext(ctx, "python3", safePath), nil
 	case rt == "java" || ext == ".jar":
 		return exec.CommandContext(ctx, "java", "-jar", safePath), nil
-	case rt == "c" || rt == "cpp":
+	case rt == "c" || rt == "cpp" || ext == ".c" || ext == ".cpp" || ext == ".cc" || ext == ".cxx":
 		// Compiled binary: downloadCode already stripped the extension and set
 		// execute permissions; run the binary directly.
 		return exec.CommandContext(ctx, safePath), nil
+	case rt == "sh" || ext == ".sh":
+		// Shell script: run with sh interpreter
+		return exec.CommandContext(ctx, "sh", safePath), nil
+	case rt == "":
+		// No runtime specified and no recognized extension; treat as pre-compiled binary
+		// only if it has no extension (i.e., likely a compiled binary).
+		if ext == "" {
+			return exec.CommandContext(ctx, safePath), nil
+		}
+		fallthrough
 	default:
-		// Pre-compiled binary or arbitrary executable.
-		return exec.CommandContext(ctx, safePath), nil
+		// Unknown runtime or unsupported file extension.
+		return nil, fmt.Errorf("unsupported runtime %q or unknown file extension %q; supported: python3, java, c, cpp, sh", rt, ext)
 	}
 }
 
-// compileC compiles a C source file: gcc -O3 src -o out.
+// compileC compiles a C source file with hardening flags.
 // A 60-second timeout prevents a malicious or pathological source file from
 // holding the worker indefinitely.
 func compileC(ctx context.Context, srcPath, outPath string) error {
 	compileCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(compileCtx, "gcc", "-O3", ensureSafePath(srcPath), "-o", ensureSafePath(outPath))
+
+	// Hardening flags: PIE (position-independent executable), stack protector,
+	// fortify source, error on warnings.
+	cmd := exec.CommandContext(compileCtx, "gcc",
+		"-O3",
+		"-fPIE",
+		"-fstack-protector-strong",
+		"-Werror",
+		"-D_FORTIFY_SOURCE=2",
+		ensureSafePath(filepath.Base(srcPath)),
+		"-o", ensureSafePath(filepath.Base(outPath)))
 	cmd.Env = sandboxedEnv()
+	cmd.Dir = filepath.Dir(outPath)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("gcc: %w\n%s", err, out)
 	}
+
+	// Verify output binary is not a symlink (TOCTOU defense).
+	fi, err := os.Lstat(outPath)
+	if err != nil {
+		return fmt.Errorf("stat compiled binary: %w", err)
+	}
+	if fi.Mode()&os.ModeSymlink != 0 {
+		os.Remove(outPath)
+		return fmt.Errorf("compiled binary is a symlink; rejecting")
+	}
 	return nil
 }
 
-// compileCpp compiles a C++ source file: g++ -O3 src -o out.
+// compileCpp compiles a C++ source file with hardening flags.
 // A 60-second timeout prevents a malicious or pathological source file from
 // holding the worker indefinitely.
 func compileCpp(ctx context.Context, srcPath, outPath string) error {
 	compileCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(compileCtx, "g++", "-O3", ensureSafePath(srcPath), "-o", ensureSafePath(outPath))
+
+	// Hardening flags: PIE (position-independent executable), stack protector,
+	// fortify source, error on warnings.
+	cmd := exec.CommandContext(compileCtx, "g++",
+		"-O3",
+		"-fPIE",
+		"-fstack-protector-strong",
+		"-Werror",
+		"-D_FORTIFY_SOURCE=2",
+		ensureSafePath(filepath.Base(srcPath)),
+		"-o", ensureSafePath(filepath.Base(outPath)))
 	cmd.Env = sandboxedEnv()
+	cmd.Dir = filepath.Dir(outPath)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("g++: %w\n%s", err, out)
+	}
+
+	// Verify output binary is not a symlink (TOCTOU defense).
+	fi, err := os.Lstat(outPath)
+	if err != nil {
+		return fmt.Errorf("stat compiled binary: %w", err)
+	}
+	if fi.Mode()&os.ModeSymlink != 0 {
+		os.Remove(outPath)
+		return fmt.Errorf("compiled binary is a symlink; rejecting")
 	}
 	return nil
 }
@@ -108,7 +154,10 @@ func compileCpp(ctx context.Context, srcPath, outPath string) error {
 // it from being interpreted as a command-line flag or a response file (@file).
 func ensureSafePath(p string) string {
 	if filepath.IsAbs(p) {
-		return p
+		return "./" + filepath.Base(p)
+	}
+	if strings.HasPrefix(filepath.Clean(p), "..") {
+		return "./" + filepath.Base(p)
 	}
 	if strings.HasPrefix(p, "./") || strings.HasPrefix(p, "../") {
 		return p
@@ -120,13 +169,14 @@ func ensureSafePath(p string) string {
 // cmd.Env uses sandboxedEnv so user-supplied code cannot read credentials
 // (S3 keys, RPC tokens) from the worker's environment.
 func runUserCode(ctx context.Context, codePath, runtimeEnv string, stdin io.Reader) ([]byte, error) {
-	cmd, err := buildCmd(ctx, codePath, runtimeEnv)
+	cmd, err := buildCmd(ctx, filepath.Base(codePath), runtimeEnv)
 	if err != nil {
 		return nil, err
 	}
 	cmd.Env = sandboxedEnv()
 	cmd.Stdin = stdin
 	cmd.Stderr = os.Stderr
+	cmd.Dir = filepath.Dir(codePath)
 	out, err := cmd.Output()
 	if err != nil {
 		return nil, fmt.Errorf("user code %q: %w", codePath, err)

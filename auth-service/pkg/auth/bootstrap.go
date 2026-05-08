@@ -420,7 +420,11 @@ func (b *keycloakBootstrapper) ensureAudienceMapper(ctx context.Context) error {
 }
 
 func (b *keycloakBootstrapper) findClientUUID(ctx context.Context) (string, error) {
-	status, body, err := b.callJSON(ctx, http.MethodGet, "/admin/realms/"+b.realm+"/clients?clientId="+url.QueryEscape(b.clientID), nil)
+	q := url.Values{}
+	q.Set("clientId", b.clientID)
+	queryPath := "/admin/realms/" + b.realm + "/clients?" + q.Encode()
+
+	status, body, err := b.callJSON(ctx, http.MethodGet, queryPath, nil)
 	if err != nil {
 		return "", err
 	}

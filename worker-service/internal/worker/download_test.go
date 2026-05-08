@@ -137,12 +137,12 @@ func TestFetchManifest_NoDigestFragment(t *testing.T) {
 	store := &staticStorage{bucket: "manifests", key: "job1/manifest.json", payload: payload}
 	uri := "s3://manifests/job1/manifest.json" // no #sha256= fragment
 
-	got, err := fetchManifest(context.Background(), store, uri)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	_, err := fetchManifest(context.Background(), store, uri)
+	if err == nil {
+		t.Fatal("expected error, got nil")
 	}
-	if len(got) != 1 || got[0] != locs[0] {
-		t.Errorf("got %v, want %v", got, locs)
+	if !strings.Contains(err.Error(), "manifest missing mandatory digest") {
+		t.Errorf("expected error to mention mandatory digest, got: %v", err)
 	}
 }
 

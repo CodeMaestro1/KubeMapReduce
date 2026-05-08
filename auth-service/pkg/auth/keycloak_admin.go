@@ -333,8 +333,15 @@ func (c *KeycloakAdminClient) assignRealmRole(ctx context.Context, token string,
 
 // findUserID searches for a user ID by exact username match.
 func (c *KeycloakAdminClient) findUserID(ctx context.Context, token string, username string) (string, error) {
-	searchURL := fmt.Sprintf("%s/admin/realms/%s/users?username=%s&exact=true", c.baseURL, c.targetRealm, url.QueryEscape(username))
-	httpResp, err := c.doRequest(ctx, http.MethodGet, searchURL, token, "", nil)
+	searchURL, err := url.Parse(fmt.Sprintf("%s/admin/realms/%s/users", c.baseURL, c.targetRealm))
+	if err != nil {
+		return "", err
+	}
+	q := searchURL.Query()
+	q.Set("username", username)
+	q.Set("exact", "true")
+	searchURL.RawQuery = q.Encode()
+	httpResp, err := c.doRequest(ctx, http.MethodGet, searchURL.String(), token, "", nil)
 	if err != nil {
 		return "", err
 	}

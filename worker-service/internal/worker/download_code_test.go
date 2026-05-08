@@ -2,6 +2,8 @@ package worker
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -41,8 +43,8 @@ func TestDownloadCode_PythonReturnsPathAndCleanup(t *testing.T) {
 	}
 	defer cleanup()
 
-	if execPath != filepath.Join(tempDir, "mapper.py") {
-		t.Errorf("execPath = %q, want %q", execPath, filepath.Join(tempDir, "mapper.py"))
+	if execPath != filepath.Join(tempDir, "usercode.py") {
+		t.Errorf("execPath = %q, want %q", execPath, filepath.Join(tempDir, "usercode.py"))
 	}
 
 	got, err := os.ReadFile(execPath)
@@ -211,7 +213,8 @@ func TestFetchManifest_InvalidJSON(t *testing.T) {
 		payload: []byte("{not valid json"),
 	}
 
-	_, err := fetchManifest(context.Background(), store, "s3://manifests/job1/manifest.json")
+	digest := sha256.Sum256([]byte("{not valid json"))
+	_, err := fetchManifest(context.Background(), store, "s3://manifests/job1/manifest.json#sha256="+hex.EncodeToString(digest[:]))
 	if err == nil {
 		t.Fatal("expected JSON decode error")
 	}

@@ -1,0 +1,66 @@
+# Normalize line endings to LF (Unix style) for all text files
+# This prevents CRLF/LF conflicts when working across Windows/Linux/macOS
+
+# Git files
+.gitignore          text eol=lf
+.gitattributes      text eol=lf
+
+# Go source code (always LF for Go projects)
+*.go                text eol=lf
+go.mod              text eol=lf
+go.sum              text eol=lf
+
+# Protobuf
+*.proto             text eol=lf
+*.pb.go             text eol=lf
+
+# Shell scripts (always LF)
+*.sh                text eol=lf
+*.bash              text eol=lf
+
+# Kubernetes & deployment manifests (YAML, always LF)
+*.yaml              text eol=lf
+*.yml               text eol=lf
+
+# Configuration files
+*.json              text eol=lf
+*.toml              text eol=lf
+*.env               text eol=lf
+*.env.*             text eol=lf
+Dockerfile*         text eol=lf
+docker-compose.yml  text eol=lf
+docker-compose.yaml text eol=lf
+
+# Documentation
+*.md                text eol=lf
+*.txt               text eol=lf
+*.html              text eol=lf
+LICENSE             text eol=lf
+README              text eol=lf
+
+# SQL scripts
+*.sql               text eol=lf
+
+# Makefile (requires LF for tab indentation)
+Makefile            text eol=lf
+makefile            text eol=lf
+
+# Binary files (never convert)
+*.zip               binary
+*.tar               binary
+*.tar.gz            binary
+*.tgz               binary
+*.jar               binary
+*.class             binary
+*.exe               binary
+*.dll               binary
+*.so                binary
+*.dylib             binary
+*.png               binary
+*.jpg               binary
+*.jpeg              binary
+*.gif               binary
+*.pdf               binary
+
+# Default for everything else
+*                   text=auto eol=lf

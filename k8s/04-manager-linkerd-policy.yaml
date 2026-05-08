@@ -1,0 +1,172 @@
+# Linkerd Traffic Policies for Manager ↔ Worker gRPC Communication
+#
+# These policies enforce per-RPC method timeouts and retry behavior:
+# - Register: 5s timeout (task startup, infrequent)
+# - Heartbeat: 2s timeout (frequent, critical path - must fail fast)
+# - TaskComplete: 10s timeout (critical state transition)
+# - TaskFailed: 10s timeout (critical state transition)
+#
+# Retries use exponential backoff with jitter to prevent thundering herd
+# during transient failures.
+#
+# Note: Linkerd 2.15+ PolicyAPI v1beta1 requires HTTPRoute to route traffic
+# through policies. These HTTPRoutes specify which destinations match the policy.
+---
+# HTTPRoute for Manager gRPC inbound traffic (Worker → Manager)
+apiVersion: gateway.networking.k8s.io/v1beta1
+kind: HTTPRoute
+metadata:
+  name: manager-grpc-inbound
+  namespace: mapreduce
+spec:
+  parentRefs:
+    - group: policy.linkerd.io
+      kind: Policy
+      name: manager-grpc-inbound
+  hostnames:
+    - manager-headless.mapreduce.svc.cluster.local
+    - manager.mapreduce.svc.cluster.local
+  rules:
+    - matches:
+        - method: POST
+      backendRefs:
+        - name: manager-headless
+          port: 50051
+        - name: manager
+          port: 50051
+---
+# Policy for Manager's gRPC server
+# Inbound: Worker → Manager (pull-based)
+apiVersion: policy.linkerd.io/v1beta1
+kind: Policy
+metadata:
+  name: manager-grpc-inbound
+  namespace: mapreduce
+spec:
+  targetRef:
+    group: ""
+    kind: Service
+    name: manager-headless
+  http:
+    # Register RPC: 5s timeout (infrequent, allows task startup overhead)
+    - match:
+        method: POST
+        path: "/proto.WorkerService/Register"
+      timeouts:
+        request: 5s
+        backendRequest: 5s
+      retries:
+        limit: 3
+        backoff: exponential
+    # Heartbeat RPC: 2s timeout (frequent, must fail-fast)
+    # No retries on heartbeat - missing heartbeat triggers reaper immediately
+    - match:
+        method: POST
+        path: "/proto.WorkerService/Heartbeat"
+      timeouts:
+        request: 2s
+        backendRequest: 2s
+      retries:
+        limit: 0  # No retry; missed heartbeat is intentional signal
+    # TaskComplete RPC: 10s timeout (critical, serialize atomically)
+    - match:
+        method: POST
+        path: "/proto.WorkerService/TaskComplete"
+      timeouts:
+        request: 10s
+        backendRequest: 10s
+      retries:
+        limit: 2  # 2 retries on transient failure
+        backoff: exponential
+    # TaskFailed RPC: 10s timeout (critical state transition)
+    - match:
+        method: POST
+        path: "/proto.WorkerService/TaskFailed"
+      timeouts:
+        request: 10s
+        backendRequest: 10s
+      retries:
+        limit: 2
+        backoff: exponential
+    # Default for any other RPC: 10s timeout, 1 retry
+    - match: {}
+      timeouts:
+        request: 10s
+        backendRequest: 10s
+      retries:
+        limit: 1
+        backoff: exponential
+---
+# HTTPRoute for Worker gRPC outbound traffic (Worker → Manager)
+apiVersion: gateway.networking.k8s.io/v1beta1
+kind: HTTPRoute
+metadata:
+  name: worker-to-manager
+  namespace: mapreduce
+spec:
+  parentRefs:
+    - group: policy.linkerd.io
+      kind: Policy
+      name: worker-to-manager
+  hostnames:
+    - manager-headless.mapreduce.svc.cluster.local
+  rules:
+    - matches:
+        - method: POST
+      backendRefs:
+        - name: manager-headless
+          port: 50051
+---
+# Policy for Worker's gRPC client (outbound to Manager)
+# This policy applies to the worker pod's sidecar proxy when making
+# outbound calls to the manager.
+apiVersion: policy.linkerd.io/v1beta1
+kind: Policy
+metadata:
+  name: worker-to-manager
+  namespace: mapreduce
+spec:
+  targetRef:
+    group: ""
+    kind: Namespace
+    name: mapreduce
+  http:
+    # Register RPC: 5s timeout with 3 retries
+    - match:
+        method: POST
+        path: "/proto.WorkerService/Register"
+      timeouts:
+        request: 5s
+        backendRequest: 5s
+      retries:
+        limit: 3
+        backoff: exponential
+    # Heartbeat RPC: 2s timeout, no retries
+    - match:
+        method: POST
+        path: "/proto.WorkerService/Heartbeat"
+      timeouts:
+        request: 2s
+        backendRequest: 2s
+      retries:
+        limit: 0
+    # TaskComplete RPC: 10s timeout with 2 retries
+    - match:
+        method: POST
+        path: "/proto.WorkerService/TaskComplete"
+      timeouts:
+        request: 10s
+        backendRequest: 10s
+      retries:
+        limit: 2
+        backoff: exponential
+    # TaskFailed RPC: 10s timeout with 2 retries
+    - match:
+        method: POST
+        path: "/proto.WorkerService/TaskFailed"
+      timeouts:
+        request: 10s
+        backendRequest: 10s
+      retries:
+        limit: 2
+        backoff: exponential

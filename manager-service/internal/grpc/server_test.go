@@ -14,6 +14,7 @@ import (
 
 	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/google/uuid"
+	"github.com/minio/minio-go/v7"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
@@ -66,6 +67,92 @@ func (f *fakeManifestUploader) UploadManifest(ctx context.Context, bucketName, o
 		return f.uri, nil
 	}
 	return fmt.Sprintf("s3://%s/%s", bucketName, objectName), nil
+}
+
+func TestNewWorkerServer(t *testing.T) {
+	db, _, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("unexpected error creating sqlmock: %v", err)
+	}
+	defer db.Close()
+
+	scheduler, err := manager.NewScheduler(db, 0, 1, &manager.MockOrchestrator{}, &noOpDispatcher{}, "manager-0:50051", 30, nil)
+	if err != nil {
+		t.Fatalf("unexpected error creating scheduler: %v", err)
+	}
+
+	t.Run("without minioClient", func(t *testing.T) {
+		server := NewWorkerServer(scheduler, nil, 0)
+		if server == nil {
+			t.Fatal("expected non-nil server")
+		}
+		if server.scheduler != scheduler {
+			t.Errorf("expected scheduler %v, got %v", scheduler, server.scheduler)
+		}
+		if server.minioClient != nil {
+			t.Errorf("expected nil minioClient, got %v", server.minioClient)
+		}
+		if server.uploader != nil {
+			t.Errorf("expected nil uploader, got %v", server.uploader)
+		}
+		if server.manifestThresholdBytes != maxTaskAssignmentSizeBytes {
+			t.Errorf("expected default threshold %d, got %d", maxTaskAssignmentSizeBytes, server.manifestThresholdBytes)
+		}
+	})
+
+	t.Run("with minioClient and threshold", func(t *testing.T) {
+		dummyClient := &minio.Client{}
+		threshold := 1024
+
+		server := NewWorkerServer(scheduler, dummyClient, threshold)
+		if server == nil {
+			t.Fatal("expected non-nil server")
+		}
+		if server.minioClient != dummyClient {
+			t.Errorf("expected minioClient %v, got %v", dummyClient, server.minioClient)
+		}
+		if server.uploader == nil {
+			t.Fatal("expected non-nil uploader")
+		}
+		if _, ok := server.uploader.(*minioManifestUploader); !ok {
+			t.Errorf("expected uploader to be *minioManifestUploader, got %T", server.uploader)
+		}
+		if server.manifestThresholdBytes != threshold {
+			t.Errorf("expected threshold %d, got %d", threshold, server.manifestThresholdBytes)
+		}
+	})
+}
+
+func TestWorkerServer_Register_MissingArgs(t *testing.T) {
+	db, _, server := setupMockServer(t)
+	defer db.Close()
+
+	cases := []struct {
+		name string
+		req  *pb.RegisterRequest
+	}{
+		{
+			name: "missing task_id",
+			req:  &pb.RegisterRequest{AttemptId: "attempt-1"},
+		},
+		{
+			name: "missing attempt_id",
+			req:  &pb.RegisterRequest{TaskId: "task-1"},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := server.Register(context.Background(), tc.req)
+			if err == nil {
+				t.Fatalf("expected error, got nil")
+			}
+			st, ok := status.FromError(err)
+			if !ok || st.Code() != codes.InvalidArgument {
+				t.Fatalf("expected InvalidArgument, got %v", err)
+			}
+		})
+	}
 }
 
 func TestWorkerServer_Register_Success(t *testing.T) {
@@ -221,6 +308,106 @@ func TestWorkerServer_Register_PermissionDenied(t *testing.T) {
 	}
 	if strings.Contains(st.Message(), attemptID) {
 		t.Fatalf("permission denied message must not leak expected attempt_id")
+	}
+}
+
+func TestWorkerServer_Heartbeat_MissingArguments(t *testing.T) {
+	_, _, server := setupMockServer(t)
+
+	tests := []struct {
+		name      string
+		taskID    string
+		attemptID string
+		leaseID   string
+	}{
+		{"Missing TaskId", "", "attempt123", "lease123"},
+		{"Missing AttemptId", "task123", "", "lease123"},
+		{"Missing LeaseId", "task123", "attempt123", ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := &pb.HeartbeatRequest{
+				TaskId:    tt.taskID,
+				AttemptId: tt.attemptID,
+				LeaseId:   tt.leaseID,
+			}
+			_, err := server.Heartbeat(context.Background(), req)
+			if err == nil {
+				t.Fatalf("expected error, got nil")
+			}
+			st, ok := status.FromError(err)
+			if !ok {
+				t.Fatalf("expected gRPC status error, got: %v", err)
+			}
+			if st.Code() != codes.InvalidArgument {
+				t.Errorf("expected InvalidArgument, got %v", st.Code())
+			}
+		})
+	}
+}
+
+func TestWorkerServer_Heartbeat_TaskNotFound(t *testing.T) {
+	db, mock, server := setupMockServer(t)
+	defer db.Close()
+
+	taskID := uuid.New().String()
+	attemptID := uuid.New().String()
+	leaseID := "lease123"
+
+	mock.ExpectBegin()
+	mock.ExpectQuery(regexp.QuoteMeta(manager.QuerySelectTaskForUpdate)).
+		WithArgs(taskID).
+		WillReturnError(sql.ErrNoRows)
+
+	mock.ExpectRollback()
+
+	req := &pb.HeartbeatRequest{
+		TaskId:    taskID,
+		AttemptId: attemptID,
+		LeaseId:   leaseID,
+	}
+
+	resp, err := server.Heartbeat(context.Background(), req)
+	if err != nil {
+		t.Fatalf("unexpected error, should return TERMINATE cleanly: %v", err)
+	}
+	if resp.Action != pb.HeartbeatResponse_TERMINATE {
+		t.Errorf("expected TERMINATE, got %v", resp.Action)
+	}
+}
+
+func TestWorkerServer_Heartbeat_InternalError(t *testing.T) {
+	db, mock, server := setupMockServer(t)
+	defer db.Close()
+
+	taskID := uuid.New().String()
+	attemptID := uuid.New().String()
+	leaseID := "lease123"
+
+	mock.ExpectBegin()
+	mock.ExpectQuery(regexp.QuoteMeta(manager.QuerySelectTaskForUpdate)).
+		WithArgs(taskID).
+		WillReturnError(errors.New("db connection failed"))
+
+	mock.ExpectRollback()
+
+	req := &pb.HeartbeatRequest{
+		TaskId:    taskID,
+		AttemptId: attemptID,
+		LeaseId:   leaseID,
+	}
+
+	_, err := server.Heartbeat(context.Background(), req)
+	if err == nil {
+		t.Fatalf("expected error, got nil")
+	}
+	st, ok := status.FromError(err)
+	if !ok {
+		t.Fatalf("expected gRPC status error, got: %v", err)
+	}
+	if st.Code() != codes.Internal {
+		t.Errorf("expected Internal error, got %v", st.Code())
 	}
 }
 
@@ -545,6 +732,42 @@ func TestWorkerServer_Register_ManifestTooLargeReturnsResourceExhausted(t *testi
 	}
 }
 
+func TestWorkerServer_TaskComplete_MissingArgumentsReturnsInvalidArgument(t *testing.T) {
+	_, _, server := setupMockServer(t)
+
+	cases := []struct {
+		name      string
+		taskID    string
+		attemptID string
+		leaseID   string
+	}{
+		{"missing_task_id", "", "attempt123", "lease123"},
+		{"missing_attempt_id", "task123", "", "lease123"},
+		{"missing_lease_id", "task123", "attempt123", ""},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := server.TaskComplete(context.Background(), &pb.TaskCompleteRequest{
+				TaskId:          tc.taskID,
+				AttemptId:       tc.attemptID,
+				LeaseId:         tc.leaseID,
+				OutputLocations: []string{"s3://outputs/reduce-0.jsonl"},
+				OutputChecksums: []string{"sha256-output"},
+			})
+
+			if err == nil {
+				t.Fatalf("expected error for %s, got nil", tc.name)
+			}
+
+			st, ok := status.FromError(err)
+			if !ok || st.Code() != codes.InvalidArgument {
+				t.Fatalf("expected InvalidArgument for %s, got %v", tc.name, err)
+			}
+		})
+	}
+}
+
 func TestWorkerServer_TaskComplete_StaleAttemptReturnsPermissionDenied(t *testing.T) {
 	db, mock, server := setupMockServer(t)
 	defer db.Close()
@@ -636,6 +859,64 @@ func TestWorkerServer_TaskComplete_OutputMismatchReturnsInvalidArgument(t *testi
 	}
 }
 
+func TestWorkerServer_TaskComplete_TaskNotFoundReturnsNotFound(t *testing.T) {
+	db, mock, server := setupMockServer(t)
+	defer db.Close()
+
+	taskID := uuid.New().String()
+	attemptID := uuid.New().String()
+
+	mock.ExpectBegin()
+	mock.ExpectQuery(`SELECT t.job_id, j.status FROM TASKS t JOIN JOBS j`).
+		WithArgs(taskID).
+		WillReturnError(sql.ErrNoRows)
+	mock.ExpectRollback()
+
+	_, err := server.TaskComplete(context.Background(), &pb.TaskCompleteRequest{
+		TaskId:          taskID,
+		AttemptId:       attemptID,
+		LeaseId:         "lease123",
+		OutputLocations: []string{"s3://outputs/reduce-0.jsonl"},
+		OutputChecksums: []string{"sha256-output"},
+	})
+	if err == nil {
+		t.Fatalf("expected error, got nil")
+	}
+	st, ok := status.FromError(err)
+	if !ok || st.Code() != codes.NotFound {
+		t.Fatalf("expected NotFound, got %v", err)
+	}
+}
+
+func TestWorkerServer_TaskComplete_InternalErrorReturnsInternal(t *testing.T) {
+	db, mock, server := setupMockServer(t)
+	defer db.Close()
+
+	taskID := uuid.New().String()
+	attemptID := uuid.New().String()
+
+	mock.ExpectBegin()
+	mock.ExpectQuery(`SELECT t.job_id, j.status FROM TASKS t JOIN JOBS j`).
+		WithArgs(taskID).
+		WillReturnError(errors.New("db error"))
+	mock.ExpectRollback()
+
+	_, err := server.TaskComplete(context.Background(), &pb.TaskCompleteRequest{
+		TaskId:          taskID,
+		AttemptId:       attemptID,
+		LeaseId:         "lease123",
+		OutputLocations: []string{"s3://outputs/reduce-0.jsonl"},
+		OutputChecksums: []string{"sha256-output"},
+	})
+	if err == nil {
+		t.Fatalf("expected error, got nil")
+	}
+	st, ok := status.FromError(err)
+	if !ok || st.Code() != codes.Internal {
+		t.Fatalf("expected Internal, got %v", err)
+	}
+}
+
 func TestWorkerServer_TaskComplete_SuccessReturnsAck(t *testing.T) {
 	db, mock, server := setupMockServer(t)
 	defer db.Close()
@@ -684,6 +965,94 @@ func TestWorkerServer_TaskComplete_SuccessReturnsAck(t *testing.T) {
 	}
 }
 
+func TestWorkerServer_TaskFailed_MissingArgsReturnsInvalidArgument(t *testing.T) {
+	_, _, server := setupMockServer(t)
+
+	tests := []struct {
+		name      string
+		taskId    string
+		attemptId string
+		leaseId   string
+	}{
+		{"missing task_id", "", "attempt123", "lease123"},
+		{"missing attempt_id", "task123", "", "lease123"},
+		{"missing lease_id", "task123", "attempt123", ""},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := server.TaskFailed(context.Background(), &pb.TaskFailedRequest{
+				TaskId:       tc.taskId,
+				AttemptId:    tc.attemptId,
+				LeaseId:      tc.leaseId,
+				ErrorMessage: "worker crashed",
+			})
+			if err == nil {
+				t.Fatalf("expected error, got nil")
+			}
+			st, ok := status.FromError(err)
+			if !ok || st.Code() != codes.InvalidArgument {
+				t.Fatalf("expected InvalidArgument, got %v", err)
+			}
+		})
+	}
+}
+
+func TestWorkerServer_TaskFailed_TaskNotFoundReturnsNotFound(t *testing.T) {
+	db, mock, server := setupMockServer(t)
+	defer db.Close()
+
+	taskID := uuid.New().String()
+	attemptID := uuid.New().String()
+
+	mock.ExpectBegin()
+	mock.ExpectQuery(`SELECT t.job_id, j.status FROM TASKS t JOIN JOBS j`).
+		WithArgs(taskID).
+		WillReturnError(sql.ErrNoRows)
+	mock.ExpectRollback()
+
+	_, err := server.TaskFailed(context.Background(), &pb.TaskFailedRequest{
+		TaskId:       taskID,
+		AttemptId:    attemptID,
+		LeaseId:      "lease123",
+		ErrorMessage: "worker crashed",
+	})
+	if err == nil {
+		t.Fatalf("expected error, got nil")
+	}
+	st, ok := status.FromError(err)
+	if !ok || st.Code() != codes.NotFound {
+		t.Fatalf("expected NotFound, got %v", err)
+	}
+}
+
+func TestWorkerServer_TaskFailed_InternalErrorReturnsInternal(t *testing.T) {
+	db, mock, server := setupMockServer(t)
+	defer db.Close()
+
+	taskID := uuid.New().String()
+	attemptID := uuid.New().String()
+
+	mock.ExpectBegin()
+	mock.ExpectQuery(`SELECT t.job_id, j.status FROM TASKS t JOIN JOBS j`).
+		WithArgs(taskID).
+		WillReturnError(errors.New("database connection failed"))
+	mock.ExpectRollback()
+
+	_, err := server.TaskFailed(context.Background(), &pb.TaskFailedRequest{
+		TaskId:       taskID,
+		AttemptId:    attemptID,
+		LeaseId:      "lease123",
+		ErrorMessage: "worker crashed",
+	})
+	if err == nil {
+		t.Fatalf("expected error, got nil")
+	}
+	st, ok := status.FromError(err)
+	if !ok || st.Code() != codes.Internal {
+		t.Fatalf("expected Internal, got %v", err)
+	}
+}
 func TestWorkerServer_TaskFailed_StaleAttemptReturnsPermissionDenied(t *testing.T) {
 	db, mock, server := setupMockServer(t)
 	defer db.Close()

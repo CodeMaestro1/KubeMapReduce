@@ -53,8 +53,12 @@ type Config struct {
 	WorkerRPCToken                  string
 
 	// gRPC security and reflection settings.
-	GRPCTLSCertFile        string
-	GRPCTLSKeyFile         string
+	GRPCTLSCertFile string
+	GRPCTLSKeyFile  string
+	// EnableGRPCReflection enables service reflection on the gRPC server.
+	// SECURITY: Reflection exposes service definitions and is disabled by default.
+	// Only enable in development environments with explicit opt-in via ENABLE_GRPC_REFLECTION=true.
+	// Additionally requires DEBUG_MODE=true to prevent accidental production exposure.
 	EnableGRPCReflection   bool
 	AllowInsecureWorkerRPC bool
 

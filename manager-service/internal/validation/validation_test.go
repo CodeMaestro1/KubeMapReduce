@@ -295,6 +295,23 @@ func TestNormalizeRole(t *testing.T) {
 	}
 }
 
+func TestNewBadRequestError(t *testing.T) {
+	msg := "test error message"
+	err := NewBadRequestError(msg)
+
+	if err == nil {
+		t.Fatal("expected NewBadRequestError to return a non-nil error")
+	}
+
+	if err.message != msg {
+		t.Fatalf("expected error message %q, got %q", msg, err.message)
+	}
+
+	if err.Error() != msg {
+		t.Fatalf("expected Error() to return %q, got %q", msg, err.Error())
+	}
+}
+
 func TestBadRequestHelpers(t *testing.T) {
 	badReq := NewBadRequestError("bad input")
 	if !IsBadRequest(badReq) {

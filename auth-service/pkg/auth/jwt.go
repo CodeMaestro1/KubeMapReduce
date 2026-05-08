@@ -78,6 +78,7 @@ func (v *JWTValidator) Middleware(next http.Handler) http.Handler {
 			jwt.WithIssuer(v.issuer),
 			jwt.WithAudience(v.audience),
 			jwt.WithValidMethods([]string{"RS256"}),
+			jwt.WithLeeway(0), // Removed leeway to prevent slightly expired tokens from being accepted
 		)
 		if err != nil {
 			slog.Warn("JWT validation failed", "error", err)

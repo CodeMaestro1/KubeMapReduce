@@ -15,6 +15,7 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 
 	"kubemapreduce/manager-service/pkg/observability"
+	timeoutgrpc "kubemapreduce/pkg/grpc"
 	pb "kubemapreduce/proto"
 	"kubemapreduce/worker-service/internal/config"
 	"kubemapreduce/worker-service/internal/worker"
@@ -31,13 +32,17 @@ func main() {
 		log.Fatalf("config: %v", err)
 	}
 
-	dialOpts := []grpc.DialOption{transportOption(cfg)}
+	// Initialize timeout configuration for per-RPC method timeouts
+	timeoutCfg := timeoutgrpc.NewDefaultTimeoutConfig()
+	timeoutCfg.ValidateConfig()
+
+	dialOpts := []grpc.DialOption{
+		transportOption(cfg),
+		grpc.WithChainUnaryInterceptor(timeoutCfg.ClientUnaryInterceptor()),
+		grpc.WithChainStreamInterceptor(timeoutCfg.ClientStreamInterceptor()),
+	}
 	if cfg.WorkerRPCToken != "" {
-		if os.Getenv("GRPC_INSECURE") == "true" {
-			slog.Warn("GRPC_INSECURE=true: skipping per-RPC token auth; do not use in production")
-		} else {
-			dialOpts = append(dialOpts, grpc.WithPerRPCCredentials(rpcToken{cfg.WorkerRPCToken}))
-		}
+		dialOpts = append(dialOpts, grpc.WithPerRPCCredentials(rpcToken{cfg.WorkerRPCToken}))
 	}
 
 	conn, err := grpc.NewClient(cfg.ManagerAddr, dialOpts...)
@@ -79,7 +84,7 @@ func (r rpcToken) GetRequestMetadata(_ context.Context, _ ...string) (map[string
 	return map[string]string{"x-worker-token": r.token}, nil
 }
 
-func (r rpcToken) RequireTransportSecurity() bool { return true }
+func (r rpcToken) RequireTransportSecurity() bool { return false }
 
 // loggerWriter bridges legacy log.Print* calls to the structured slog
 // pipeline so every line emitted by the standard logger is routed through
@@ -102,6 +107,9 @@ func buildMinioClient(cfg *config.Config) (*minio.Client, error) {
 	if cfg.MinioEndpoint == "" {
 		return nil, nil
 	}
+
+	// The minio-go client will use the context passed to its methods for timeout control.
+	// Callers must pass a context with timeout when using GetObject/PutObject.
 	return minio.New(cfg.MinioEndpoint, &minio.Options{
 		Creds:  miniocreds.NewStaticV4(cfg.MinioAccessKey, cfg.MinioSecretKey, ""),
 		Secure: cfg.MinioUseSSL,

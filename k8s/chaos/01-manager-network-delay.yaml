@@ -1,0 +1,16 @@
+apiVersion: chaos-mesh.org/v1alpha1
+kind: NetworkChaos
+metadata:
+  name: manager-network-delay
+  namespace: mapreduce
+spec:
+  action: delay
+  mode: all
+  selector:
+    labelSelectors:
+      app: kubemapreduce-manager
+  delay:
+    latency: "500ms"
+    correlation: "100"
+    jitter: "0ms"
+  duration: "30s"

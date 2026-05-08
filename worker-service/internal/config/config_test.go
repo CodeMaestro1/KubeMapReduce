@@ -171,3 +171,28 @@ func TestLoad_TempDirRelative(t *testing.T) {
 		t.Fatal("expected error for relative TempDir")
 	}
 }
+
+func TestLoad_FileBasedSecrets_FallsBackToEnvWhenFilesMissing(t *testing.T) {
+	t.Setenv("TASK_ID", "t1")
+	t.Setenv("ATTEMPT_ID", "a1")
+	t.Setenv("MANAGER_ADDR", "manager:50051")
+	t.Setenv("S3_ENDPOINT", "s3:9000")
+	t.Setenv("S3_ACCESS_KEY", "ak")
+	t.Setenv("S3_SECRET_KEY", "sk")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Should fall back to env vars when files don't exist at /etc/worker-secrets
+	if cfg.MinioEndpoint != "s3:9000" {
+		t.Errorf("MinioEndpoint = %q, want %q", cfg.MinioEndpoint, "s3:9000")
+	}
+	if cfg.MinioAccessKey != "ak" {
+		t.Errorf("MinioAccessKey = %q, want %q", cfg.MinioAccessKey, "ak")
+	}
+	if cfg.MinioSecretKey != "sk" {
+		t.Errorf("MinioSecretKey = %q, want %q", cfg.MinioSecretKey, "sk")
+	}
+}
