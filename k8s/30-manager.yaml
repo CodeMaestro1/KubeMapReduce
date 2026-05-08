@@ -10,16 +10,6 @@
 # minio-creds, manager-secrets). No credentials are inlined.
 ---
 apiVersion: v1
-kind: Secret
-metadata:
-  name: manager-secrets
-  namespace: mapreduce
-type: Opaque
-stringData:
-  MANAGER_INTERNAL_API_KEY: change-me-internal-api-key
-  MANAGER_WORKER_RPC_TOKEN: change-me-worker-rpc-token
----
-apiVersion: v1
 kind: ConfigMap
 metadata:
   name: manager-config

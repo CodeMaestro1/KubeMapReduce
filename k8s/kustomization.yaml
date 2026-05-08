@@ -12,7 +12,6 @@ resources:
   - 20-minio.yaml
   - 25-keycloak.yaml
   - 30-manager.yaml
-  - 40-ui.yaml
   - 50-worker-rbac.yaml
   - 55-tls.yaml
   - 60-gateway.yaml

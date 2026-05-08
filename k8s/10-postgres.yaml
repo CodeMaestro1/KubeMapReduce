@@ -7,22 +7,6 @@
 # /docker-entrypoint-initdb.d on first boot.
 ---
 apiVersion: v1
-kind: Secret
-metadata:
-  name: postgres-creds
-  namespace: mapreduce
-type: Opaque
-# Do not store passwords in version control. Create this Secret before deploying:
-#   kubectl -n mapreduce create secret generic postgres-creds \
-#     --from-literal=POSTGRES_USER=mapreduce \
-#     --from-literal=POSTGRES_PASSWORD=<strong-password> \
-#     --from-literal=POSTGRES_DB=mapreduce
-stringData:
-  POSTGRES_USER: mapreduce
-  POSTGRES_PASSWORD: ""
-  POSTGRES_DB: mapreduce
----
-apiVersion: v1
 kind: ConfigMap
 metadata:
   name: postgres-init

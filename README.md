@@ -235,7 +235,6 @@ kubectl apply -f k8s/05-linkerd-storage-policies.yaml
 
 # 6. Re-roll pods to inject Linkerd sidecar proxies
 kubectl -n mapreduce rollout restart statefulset/manager
-kubectl -n mapreduce rollout restart deployment/ui
 ```
 
 This enables:

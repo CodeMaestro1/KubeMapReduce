@@ -7,20 +7,6 @@
 # postgres StatefulSet by adding KC_DB=postgres + KC_DB_URL env vars.
 ---
 apiVersion: v1
-kind: Secret
-metadata:
-  name: keycloak-creds
-  namespace: mapreduce
-type: Opaque
-# Do not store passwords in version control. Create this Secret before deploying:
-#   kubectl -n mapreduce create secret generic keycloak-creds \
-#     --from-literal=KEYCLOAK_ADMIN=admin \
-#     --from-literal=KEYCLOAK_ADMIN_PASSWORD=<strong-password>
-stringData:
-  KEYCLOAK_ADMIN: admin
-  KEYCLOAK_ADMIN_PASSWORD: ""
----
-apiVersion: v1
 kind: Service
 metadata:
   name: keycloak

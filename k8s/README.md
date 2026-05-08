@@ -32,7 +32,6 @@ kubectl -n mapreduce rollout status statefulset/postgres
 kubectl -n mapreduce rollout status statefulset/minio
 kubectl -n mapreduce rollout status deployment/keycloak
 kubectl -n mapreduce rollout status statefulset/manager
-kubectl -n mapreduce rollout status deployment/ui
 ```
 
 ## Secrets
