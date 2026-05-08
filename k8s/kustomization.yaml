@@ -17,6 +17,5 @@ resources:
   - 55-tls.yaml
   - 60-gateway.yaml
 
-labels:
-  - pairs:
-      app.kubernetes.io/part-of: kubemapreduce
+commonLabels:
+  app.kubernetes.io/part-of: kubemapreduce
