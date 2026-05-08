@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/minio/minio-go/v7"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -23,9 +24,10 @@ const finalizationRPCTimeout = 5 * time.Second
 
 // Worker executes a single MapReduce task on behalf of the Manager.
 type Worker struct {
-	cfg     *config.Config
-	client  pb.WorkerServiceClient
-	storage objectStorage
+	cfg           *config.Config
+	client        pb.WorkerServiceClient
+	shuffleClient pb.ShuffleServiceClient
+	storage       objectStorage
 
 	// prepareCode downloads user code and returns (execPath, cleanup, err).
 	// Swappable in tests to avoid real MinIO and compiler calls.
@@ -37,7 +39,7 @@ type Worker struct {
 }
 
 // New creates a production Worker wired to the given gRPC client and MinIO instance.
-func New(cfg *config.Config, client pb.WorkerServiceClient, minioClient *minio.Client) *Worker {
+func New(cfg *config.Config, client pb.WorkerServiceClient, shuffleClient pb.ShuffleServiceClient, minioClient *minio.Client) *Worker {
 	var s objectStorage
 	if minioClient != nil {
 		s = newMinioStorage(minioClient)
@@ -45,63 +47,97 @@ func New(cfg *config.Config, client pb.WorkerServiceClient, minioClient *minio.C
 		s = newUnavailableStorage(fmt.Errorf("object storage is not configured"))
 	}
 	return &Worker{
-		cfg:         cfg,
-		client:      client,
-		storage:     s,
-		prepareCode: downloadCode,
-		execCode:    runUserCode,
+		cfg:           cfg,
+		client:        client,
+		shuffleClient: shuffleClient,
+		storage:       s,
+		prepareCode:   downloadCode,
+		execCode:      runUserCode,
 	}
 }
 
-// Run is the top-level entry point. It registers with the Manager, executes
-// the assigned task, and reports the result. Cancelling ctx (e.g. SIGTERM)
-// triggers a TaskFailed RPC before returning.
+// Run establishes a persistent connection to the Manager via TaskStream and
+// executes tasks as they are assigned.
 func (w *Worker) Run(ctx context.Context) error {
-	assignment, err := w.client.Register(ctx, &pb.RegisterRequest{
-		TaskId:    w.cfg.TaskID,
-		AttemptId: w.cfg.AttemptID,
-	})
+	stream, err := w.client.TaskStream(ctx)
 	if err != nil {
-		return fmt.Errorf("register: %w", err)
+		return fmt.Errorf("open task stream: %w", err)
 	}
-	log.Printf("[worker] registered task=%s attempt=%s type=%s", assignment.TaskId, assignment.AttemptId, assignment.Type)
 
+	workerID := fmt.Sprintf("worker-%s-%s", w.cfg.JobID, uuid.NewString()[:8])
+	log.Printf("[worker] pool started id=%s job=%s", workerID, w.cfg.JobID)
+
+	for {
+		// 1. Signal ready for next task
+		err = stream.Send(&pb.StreamRequest{
+			WorkerId: workerID,
+			Payload: &pb.StreamRequest_Ready{
+				Ready: &pb.ReadyForTaskRequest{JobId: w.cfg.JobID},
+			},
+		})
+		if err != nil {
+			return fmt.Errorf("send ready: %w", err)
+		}
+
+		// 2. Wait for assignment
+		resp, err := stream.Recv()
+		if err == io.EOF {
+			return nil
+		}
+		if err != nil {
+			return fmt.Errorf("receive assignment: %w", err)
+		}
+
+		assignment := resp.GetAssignment()
+		if assignment == nil {
+			// Not an assignment (maybe an ACK for a terminal request or error)
+			// If Success=false it means no tasks, wait and retry.
+			if ack := resp.GetAck(); ack != nil && !ack.Success {
+				time.Sleep(5 * time.Second)
+				continue
+			}
+			continue
+		}
+
+		log.Printf("[worker] assigned task=%s type=%s", assignment.TaskId, assignment.Type)
+		if err := w.executeTask(ctx, stream, workerID, assignment); err != nil {
+			log.Printf("[worker] task %s failed: %v", assignment.TaskId, err)
+			// Continue to next task
+		}
+	}
+}
+
+func (w *Worker) executeTask(ctx context.Context, stream pb.WorkerService_TaskStreamClient, workerID string, assignment *pb.TaskAssignment) error {
 	if w.storage == nil {
-		err := fmt.Errorf("object storage is not configured")
-		_ = w.reportFailure(context.Background(), assignment, err.Error())
-		return err
+		return fmt.Errorf("object storage is not configured")
 	}
 
-	// Resolve manifest if is_manifest=true: DataLocations[0] is an s3:// URI
-	// that may carry a "#sha256=<hex>" fragment. fetchManifest validates the
-	// digest when present, and returns an error on mismatch.
+	// Resolve manifest if needed
 	if assignment.IsManifest {
 		if len(assignment.DataLocations) == 0 {
-			err := fmt.Errorf("manifest assignment missing data locations")
-			_ = w.reportFailure(context.Background(), assignment, err.Error())
-			return err
+			return fmt.Errorf("manifest assignment requires at least one data location URI")
 		}
 		manifestURI := assignment.DataLocations[0]
-		log.Printf("[worker] fetching manifest task=%s uri=%s", assignment.TaskId, manifestURI)
-		locs, fetchErr := fetchManifest(ctx, w.storage, manifestURI)
-		if fetchErr != nil {
-			_ = w.reportFailure(context.Background(), assignment, fmt.Sprintf("manifest fetch: %v", fetchErr))
-			return fetchErr
+		locs, err := fetchManifest(ctx, w.storage, manifestURI)
+		if err != nil {
+			return fmt.Errorf("fetch manifest: %w", err)
 		}
-		log.Printf("[worker] manifest resolved task=%s locations=%d", assignment.TaskId, len(locs))
 		assignment.DataLocations = locs
 	}
 
-	// Derive a task context that the heartbeat goroutine can cancel on TERMINATE/SIGTERM.
 	taskCtx, taskCancel := context.WithCancel(ctx)
-	defer taskCancel()
+	sendMu := &sync.Mutex{}
 
 	// terminated receives the reason string when the task must abort.
 	terminated := make(chan string, 1)
-	reporter := &failureReporter{}
-	go w.heartbeatLoop(ctx, assignment, taskCancel, terminated, reporter)
+	heartbeatDone := make(chan struct{})
+	go func() {
+		defer close(heartbeatDone)
+		w.streamHeartbeatLoop(taskCtx, stream, workerID, assignment, terminated, taskCancel, sendMu)
+	}()
 
 	var outputURIs, outputChecksums []string
+	var err error
 	switch assignment.Type {
 	case pb.TaskType_MAP:
 		outputURIs, outputChecksums, err = w.runMap(taskCtx, assignment)
@@ -111,43 +147,96 @@ func (w *Worker) Run(ctx context.Context) error {
 		err = fmt.Errorf("unknown task type: %v", assignment.Type)
 	}
 
-	// Use a fresh, bounded context for terminal RPCs. taskCtx may already be
-	// cancelled, and an unbounded background context would let a slow or
-	// unreachable Manager hang the worker forever (issue #110).
-	reportCtx, reportCancel := context.WithTimeout(context.Background(), finalizationRPCTimeout)
-	defer reportCancel()
-
-	if reason, ok := terminationReason(terminated, ctx, taskCtx); ok {
-		reporter.start(w, assignment, reason)
-		reporter.wait(5 * time.Second)
-		return fmt.Errorf("terminated: %s", reason)
-	}
+	taskCancel()
+	<-heartbeatDone
 
 	if err != nil {
-		if ctx.Err() != nil || taskCtx.Err() != nil {
-			reason := "SIGTERM"
-			if ctx.Err() == nil {
-				reason = "manager TERMINATE"
-			}
-			if bufferedReason, ok := terminationReason(terminated, ctx, taskCtx); ok {
-				reason = bufferedReason
-			}
-			reporter.start(w, assignment, reason)
-			reporter.wait(5 * time.Second)
-			return fmt.Errorf("terminated: %s", reason)
+		// Report failure via stream
+		sendMu.Lock()
+		sendErr := stream.Send(&pb.StreamRequest{
+			WorkerId: workerID,
+			Payload: &pb.StreamRequest_Failed{
+				Failed: &pb.TaskFailedRequest{
+					TaskId:       assignment.TaskId,
+					AttemptId:    assignment.AttemptId,
+					LeaseId:      assignment.LeaseId,
+					ErrorMessage: err.Error(),
+				},
+			},
+		})
+		sendMu.Unlock()
+		if sendErr != nil {
+			log.Printf("[worker] failed to report TaskFailed via stream: %v", sendErr)
 		}
-		_ = w.reportFailure(reportCtx, assignment, err.Error())
 		return err
 	}
 
-	_, rpcErr := w.client.TaskComplete(reportCtx, &pb.TaskCompleteRequest{
-		TaskId:          assignment.TaskId,
-		AttemptId:       assignment.AttemptId,
-		LeaseId:         assignment.LeaseId,
-		OutputLocations: outputURIs,
-		OutputChecksums: outputChecksums,
+	// Report success via stream
+	sendMu.Lock()
+	err = stream.Send(&pb.StreamRequest{
+		WorkerId: workerID,
+		Payload: &pb.StreamRequest_Complete{
+			Complete: &pb.TaskCompleteRequest{
+				TaskId:          assignment.TaskId,
+				AttemptId:       assignment.AttemptId,
+				LeaseId:         assignment.LeaseId,
+				OutputLocations: outputURIs,
+				OutputChecksums: outputChecksums,
+			},
+		},
 	})
-	return rpcErr
+	sendMu.Unlock()
+	return err
+}
+
+func (w *Worker) streamHeartbeatLoop(
+	ctx context.Context,
+	stream pb.WorkerService_TaskStreamClient,
+	workerID string,
+	a *pb.TaskAssignment,
+	terminated chan<- string,
+	taskCancel context.CancelFunc,
+	sendMu *sync.Mutex,
+) {
+	ticker := time.NewTicker(time.Duration(w.cfg.HeartbeatIntervalSec) * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			sendMu.Lock()
+			err := stream.Send(&pb.StreamRequest{
+				WorkerId: workerID,
+				Payload: &pb.StreamRequest_Heartbeat{
+					Heartbeat: &pb.HeartbeatRequest{
+						TaskId:    a.TaskId,
+						AttemptId: a.AttemptId,
+						LeaseId:   a.LeaseId,
+					},
+				},
+			})
+			sendMu.Unlock()
+			if err != nil {
+				log.Printf("[worker] heartbeat send error: %v", err)
+				return
+			}
+			resp, err := stream.Recv()
+			if err != nil {
+				log.Printf("[worker] heartbeat recv error: %v", err)
+				return
+			}
+			if hb := resp.GetHeartbeatAck(); hb != nil && hb.Action == pb.HeartbeatResponse_TERMINATE {
+				select {
+				case terminated <- "manager TERMINATE":
+				default:
+				}
+				taskCancel()
+				return
+			}
+		}
+	}
 }
 
 // heartbeatLoop sends periodic Heartbeat RPCs.

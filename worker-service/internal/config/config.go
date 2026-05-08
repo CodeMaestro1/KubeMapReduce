@@ -17,6 +17,7 @@ import (
 //
 // The file-based approach is preferred in production to prevent credential exposure.
 type Config struct {
+	JobID     string
 	TaskID    string
 	AttemptID string
 
@@ -70,6 +71,9 @@ func readSecretFile(path string) (string, error) {
 }
 
 func Load() (*Config, error) {
+	jobID := strings.TrimSpace(os.Getenv("JOB_ID"))
+	// jobID might be empty for older tests, but required for pull-based workers.
+
 	taskID := strings.TrimSpace(os.Getenv("TASK_ID"))
 	if taskID == "" {
 		return nil, fmt.Errorf("TASK_ID is required")
@@ -139,6 +143,7 @@ func Load() (*Config, error) {
 	}
 
 	return &Config{
+		JobID:                   jobID,
 		TaskID:                  taskID,
 		AttemptID:               attemptID,
 		ManagerAddr:             managerAddr,

@@ -33,7 +33,6 @@ import (
 	mgrpc "kubemapreduce/manager-service/internal/grpc"
 	"kubemapreduce/manager-service/internal/manager"
 	"kubemapreduce/manager-service/pkg/observability"
-	timeoutgrpc "kubemapreduce/pkg/grpc"
 	pb "kubemapreduce/proto"
 )
 
@@ -124,10 +123,15 @@ func main() {
 		}
 	}
 
-	scheduler, err := manager.NewScheduler(db, replicaIndex, cfg.TotalReplicas, orchestrator, managerAddr, cfg.LeaseTTL, stagingCleaner)
+	// 3. Initialize servers
+	workerServer := mgrpc.NewWorkerServer(nil, nil, cfg.ManifestThresholdBytes)
+	shuffleServer := mgrpc.NewShuffleServer()
+
+	scheduler, err := manager.NewScheduler(db, replicaIndex, cfg.TotalReplicas, orchestrator, workerServer, managerAddr, cfg.LeaseTTL, stagingCleaner)
 	if err != nil {
 		log.Fatalf("failed to create scheduler: %v", err)
 	}
+	workerServer.SetScheduler(scheduler)
 
 	if err := scheduler.Recover(context.Background()); err != nil {
 		log.Fatalf("failed to recover scheduler tasks: %v", err)
@@ -145,11 +149,10 @@ func main() {
 	httpSrv := &http.Server{
 		Addr:              cfg.ServerAddr,
 		Handler:           observability.RequestIDMiddleware(logger)(mux),
-		ReadHeaderTimeout: 10 * time.Second,
-		ReadTimeout:       30 * time.Second,
-		WriteTimeout:      45 * time.Second,
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       15 * time.Second,
+		WriteTimeout:      30 * time.Second,
 		IdleTimeout:       60 * time.Second,
-		MaxHeaderBytes:    16 * 1024, // 16 KB
 	}
 	go func() {
 		log.Printf("HTTP health server running on %s", cfg.ServerAddr)
@@ -164,31 +167,24 @@ func main() {
 		log.Fatalf("failed to listen on gRPC address %s: %v", cfg.GRPCAddr, err)
 	}
 
-	var minioClient *minio.Client
 	if cfg.MinioEndpoint != "" && cfg.MinioAccessKey != "" && cfg.MinioSecretKey != "" {
-		minioClient, err = minio.New(cfg.MinioEndpoint, &minio.Options{
+		mc, mcErr := minio.New(cfg.MinioEndpoint, &minio.Options{
 			Creds:  credentials.NewStaticV4(cfg.MinioAccessKey, cfg.MinioSecretKey, ""),
 			Secure: cfg.MinioUseSSL,
 		})
-		if err != nil {
-			log.Printf("failed to initialize minio client: %v", err)
+		if mcErr != nil {
+			log.Printf("failed to initialize minio client: %v", mcErr)
+		} else {
+			workerServer.SetMinioClient(mc)
 		}
-	} else if cfg.MinioEndpoint != "" {
-		log.Printf("minio endpoint configured without credentials; manifest fallback disabled")
 	}
 
-	// Initialize timeout configuration for per-RPC method timeouts
-	timeoutCfg := timeoutgrpc.NewDefaultTimeoutConfig()
-	timeoutCfg.ValidateConfig()
-
 	grpcOpts := []grpc.ServerOption{
-		// Chain auth and timeout interceptors
 		grpc.ChainUnaryInterceptor(
 			workerAuthUnaryInterceptor(cfg.WorkerRPCToken),
-			timeoutCfg.UnaryInterceptor(),
 		),
 		grpc.ChainStreamInterceptor(
-			timeoutCfg.StreamInterceptor(),
+			workerAuthStreamInterceptor(cfg.WorkerRPCToken),
 		),
 		grpc.MaxRecvMsgSize(4 << 20),
 		grpc.MaxSendMsgSize(16 << 20),
@@ -211,28 +207,12 @@ func main() {
 	}
 
 	grpcServer := grpc.NewServer(grpcOpts...)
-	workerServer := mgrpc.NewWorkerServer(scheduler, minioClient, cfg.ManifestThresholdBytes)
 	pb.RegisterWorkerServiceServer(grpcServer, workerServer)
-
-	// gRPC Reflection is disabled by default for security.
-	// Reflection exposes service definitions and allows clients to discover available RPC methods.
-	// Only enable in development environments with explicit opt-in via:
-	//   1. ENABLE_GRPC_REFLECTION=true environment variable
-	//   2. DEBUG_MODE=true environment variable (additional guard for production safety)
-	// In production, keep reflection disabled to reduce attack surface.
+	pb.RegisterShuffleServiceServer(grpcServer, shuffleServer)
 	if cfg.EnableGRPCReflection {
 		if os.Getenv("DEBUG_MODE") != "true" {
-			slog.Warn(
-				"gRPC reflection is requested but DEBUG_MODE=true is not set; reflection disabled for security",
-				slog.String("component", "grpc"),
-				slog.String("recommendation", "set DEBUG_MODE=true only in development environments"),
-			)
+			slog.Warn("gRPC reflection requested but DEBUG_MODE is not set; skipping")
 		} else {
-			slog.Warn(
-				"gRPC reflection is enabled; service definitions are exposed",
-				slog.String("component", "grpc"),
-				slog.String("security_note", "only enable in development environments"),
-			)
 			reflection.Register(grpcServer)
 		}
 	}
@@ -347,6 +327,16 @@ func isAuthorizedWorkerRPC(ctx context.Context, expectedToken string) bool {
 		return false
 	}
 	return subtle.ConstantTimeCompare([]byte(values[0]), []byte(expectedToken)) == 1
+}
+
+func workerAuthStreamInterceptor(expectedToken string) grpc.StreamServerInterceptor {
+	expectedToken = strings.TrimSpace(expectedToken)
+	return func(srv any, ss grpc.ServerStream, info *grpc.StreamServerInfo, handler grpc.StreamHandler) error {
+		if expectedToken != "" && !isAuthorizedWorkerRPC(ss.Context(), expectedToken) {
+			return status.Error(codes.Unauthenticated, "missing or invalid worker rpc token")
+		}
+		return handler(srv, ss)
+	}
 }
 
 func validateWorkerRPCSecurityConfig(cfg *config.Config) error {

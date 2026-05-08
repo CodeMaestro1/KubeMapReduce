@@ -8,9 +8,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"path"
 	"strings"
+	"sync"
 
 	"github.com/minio/minio-go/v7"
 	"google.golang.org/grpc/codes"
@@ -35,6 +37,8 @@ var (
 	manifestBucketName          = "mapreduce-manifests"
 )
 
+// WorkerServer implements the pb.WorkerServiceServer interface.
+//
 // It acts as the primary communication bridge between the central Manager and
 // the distributed Worker pods. It delegates all state transitions and business
 // logic to the [manager.Scheduler].
@@ -44,6 +48,10 @@ type WorkerServer struct {
 	minioClient            *minio.Client
 	uploader               manifestUploader
 	manifestThresholdBytes int
+
+	// taskQueues maps jobID -> channel of TaskAssignments for pull-based workers.
+	taskQueues   map[string]chan *pb.TaskAssignment
+	taskQueuesMu sync.RWMutex
 }
 
 // NewWorkerServer creates a new instance of the gRPC server.
@@ -218,6 +226,7 @@ func newWorkerServerWithManifestUploader(scheduler *manager.Scheduler, minioClie
 		minioClient:            minioClient,
 		uploader:               uploader,
 		manifestThresholdBytes: manifestThresholdBytes,
+		taskQueues:             make(map[string]chan *pb.TaskAssignment),
 	}
 }
 
@@ -368,4 +377,127 @@ func (s *WorkerServer) applyManifestFallback(ctx context.Context, task *manager.
 	}
 
 	return nil
+}
+
+// TaskStream handles the bidirectional stream for worker task pulling and lease management.
+func (s *WorkerServer) TaskStream(stream pb.WorkerService_TaskStreamServer) error {
+	ctx := stream.Context()
+	for {
+		req, err := stream.Recv()
+		if err == io.EOF {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+
+		if req.WorkerId == "" {
+			return status.Error(codes.InvalidArgument, "worker_id is required")
+		}
+
+		switch p := req.Payload.(type) {
+		case *pb.StreamRequest_Ready:
+			task, err := s.scheduler.GetNextTask(ctx, p.Ready.JobId, req.WorkerId)
+			if err != nil {
+				if errors.Is(err, manager.ErrNoIdleTasks) || errors.Is(err, manager.ErrJobCompleted) || errors.Is(err, manager.ErrJobFailed) {
+					if sendErr := stream.Send(&pb.StreamResponse{
+						Payload: &pb.StreamResponse_Ack{Ack: &pb.Ack{Success: false}},
+					}); sendErr != nil {
+						return sendErr
+					}
+					continue
+				}
+				return status.Errorf(codes.Internal, "failed to get next task for job %s: %v", p.Ready.JobId, err)
+			}
+			assignment := buildBaseAssignment(task)
+			populateTaskTypeSpecifics(task, assignment)
+			if err := s.applyManifestFallback(ctx, task, assignment); err != nil {
+				return err
+			}
+			if err := stream.Send(&pb.StreamResponse{
+				Payload: &pb.StreamResponse_Assignment{Assignment: assignment},
+			}); err != nil {
+				return err
+			}
+		case *pb.StreamRequest_Heartbeat:
+			resp, err := s.Heartbeat(ctx, p.Heartbeat)
+			if err != nil {
+				return err
+			}
+			if err := stream.Send(&pb.StreamResponse{
+				Payload: &pb.StreamResponse_HeartbeatAck{HeartbeatAck: resp},
+			}); err != nil {
+				return err
+			}
+
+		case *pb.StreamRequest_Complete:
+			ack, err := s.TaskComplete(ctx, p.Complete)
+			if err != nil {
+				return err
+			}
+			if err := stream.Send(&pb.StreamResponse{
+				Payload: &pb.StreamResponse_Ack{Ack: ack},
+			}); err != nil {
+				return err
+			}
+
+		case *pb.StreamRequest_Failed:
+			ack, err := s.TaskFailed(ctx, p.Failed)
+			if err != nil {
+				return err
+			}
+			if err := stream.Send(&pb.StreamResponse{
+				Payload: &pb.StreamResponse_Ack{Ack: ack},
+			}); err != nil {
+				return err
+			}
+		}
+	}
+}
+
+func (s *WorkerServer) getOrCreateTaskQueue(jobID string) chan *pb.TaskAssignment {
+	s.taskQueuesMu.Lock()
+	defer s.taskQueuesMu.Unlock()
+	if q, ok := s.taskQueues[jobID]; ok {
+		return q
+	}
+	// Buffer size 100 to allow some decoupling between scheduler and workers
+	q := make(chan *pb.TaskAssignment, 100)
+	s.taskQueues[jobID] = q
+	return q
+}
+
+// DispatchTask builds a gRPC task assignment and pushes it to the worker pool queue.
+func (s *WorkerServer) DispatchTask(ctx context.Context, task *manager.Task) error {
+	assignment := buildBaseAssignment(task)
+	populateTaskTypeSpecifics(task, assignment)
+	if err := s.applyManifestFallback(ctx, task, assignment); err != nil {
+		return err
+	}
+
+	queue := s.getOrCreateTaskQueue(task.JobID)
+	select {
+	case queue <- assignment:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
+		// Queue full - this shouldn't happen if workers are scaling with tasks.
+		return fmt.Errorf("task queue full for job %s", task.JobID)
+	}
+}
+
+// SetScheduler attaches a scheduler to the WorkerServer after both are initialized.
+// This is necessary to break the circular dependency between Scheduler (needs dispatcher)
+// and WorkerServer (needs scheduler to fetch tasks).
+func (s *WorkerServer) SetScheduler(scheduler *manager.Scheduler) {
+	s.scheduler = scheduler
+}
+
+// SetMinioClient attaches a minio client to the WorkerServer for manifest fallback.
+func (s *WorkerServer) SetMinioClient(mc *minio.Client) {
+	s.minioClient = mc
+	if mc != nil {
+		s.uploader = &minioManifestUploader{client: mc}
+	}
 }

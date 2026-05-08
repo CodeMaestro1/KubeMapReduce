@@ -10,9 +10,6 @@ import (
 	"strings"
 	"testing"
 
-	"google.golang.org/grpc"
-
-	pb "kubemapreduce/proto"
 	"kubemapreduce/worker-service/internal/shuffle"
 )
 
@@ -44,30 +41,16 @@ func TestWorker_MapSpillsLargeOutput(t *testing.T) {
 	store.put("mapreduce-inputs", "data.jsonl", inputBuf.Bytes())
 	store.put("code", "mapper.py", []byte("# mock"))
 
-	grpcClient := &mockGRPCClient{
-		registerFn: func(_ context.Context, _ *pb.RegisterRequest, _ ...grpc.CallOption) (*pb.TaskAssignment, error) {
-			a := mapAssignment("s3://mapreduce-inputs/data.jsonl")
-			a.TotalReducers = 4
-			return a, nil
-		},
-		heartbeatFn: func(_ context.Context, _ *pb.HeartbeatRequest, _ ...grpc.CallOption) (*pb.HeartbeatResponse, error) {
-			return &pb.HeartbeatResponse{Action: pb.HeartbeatResponse_CONTINUE}, nil
-		},
-		taskCompleteFn: func(_ context.Context, _ *pb.TaskCompleteRequest, _ ...grpc.CallOption) (*pb.Ack, error) {
-			return &pb.Ack{Success: true}, nil
-		},
-		taskFailedFn: func(_ context.Context, req *pb.TaskFailedRequest, _ ...grpc.CallOption) (*pb.Ack, error) {
-			t.Errorf("unexpected failure: %s", req.ErrorMessage)
-			return &pb.Ack{}, nil
-		},
-	}
-
-	w := newTestWorker(t, grpcClient, store)
+	w := newTestWorker(t, &mockGRPCClient{}, store)
 	// Force a 1 MiB threshold to ensure the spill path runs for this input.
 	w.cfg.MapSortSpillThresholdMB = 1
 
-	if err := w.Run(context.Background()); err != nil {
-		t.Fatalf("Run: %v", err)
+	assignment := mapAssignment("s3://mapreduce-inputs/data.jsonl")
+	assignment.TotalReducers = 4
+
+	_, _, err := w.runMap(context.Background(), assignment)
+	if err != nil {
+		t.Fatalf("runMap: %v", err)
 	}
 
 	// Walk every partition output, verifying:
@@ -128,28 +111,14 @@ func TestWorker_MapInMemoryFastPathStillWorks(t *testing.T) {
 	store.put("mapreduce-inputs", "data.jsonl", []byte(input))
 	store.put("code", "mapper.py", []byte("# mock"))
 
-	grpcClient := &mockGRPCClient{
-		registerFn: func(_ context.Context, _ *pb.RegisterRequest, _ ...grpc.CallOption) (*pb.TaskAssignment, error) {
-			a := mapAssignment("s3://mapreduce-inputs/data.jsonl")
-			a.TotalReducers = 1
-			return a, nil
-		},
-		heartbeatFn: func(_ context.Context, _ *pb.HeartbeatRequest, _ ...grpc.CallOption) (*pb.HeartbeatResponse, error) {
-			return &pb.HeartbeatResponse{Action: pb.HeartbeatResponse_CONTINUE}, nil
-		},
-		taskCompleteFn: func(_ context.Context, _ *pb.TaskCompleteRequest, _ ...grpc.CallOption) (*pb.Ack, error) {
-			return &pb.Ack{Success: true}, nil
-		},
-		taskFailedFn: func(_ context.Context, req *pb.TaskFailedRequest, _ ...grpc.CallOption) (*pb.Ack, error) {
-			t.Errorf("unexpected failure: %s", req.ErrorMessage)
-			return &pb.Ack{}, nil
-		},
-	}
-
-	w := newTestWorker(t, grpcClient, store)
+	w := newTestWorker(t, &mockGRPCClient{}, store)
 	// Default cfg.MapSortSpillThresholdMB == 0 -> defaultSpillThresholdBytes (256 MiB).
-	if err := w.Run(context.Background()); err != nil {
-		t.Fatalf("Run: %v", err)
+	assignment := mapAssignment("s3://mapreduce-inputs/data.jsonl")
+	assignment.TotalReducers = 1
+
+	_, _, err := w.runMap(context.Background(), assignment)
+	if err != nil {
+		t.Fatalf("runMap: %v", err)
 	}
 
 	var keys []string

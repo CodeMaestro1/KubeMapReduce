@@ -43,6 +43,10 @@ var (
 	ErrQuotaExceeded          = errors.New("global worker pod quota exceeded")
 )
 
+type TaskDispatcher interface {
+	DispatchTask(ctx context.Context, task *Task) error
+}
+
 // Scheduler manages the lifecycle of MapReduce jobs and their constituent tasks.
 //
 // It is the central authority for task assignment, state transitions, and lease-based
@@ -53,11 +57,13 @@ type Scheduler struct {
 	replicaIndex   int
 	totalReplicas  int
 	orchestrator   WorkerOrchestrator
+	dispatcher     TaskDispatcher
 	managerAddr    string
 	leaseTTL       int
 	staging        StagingCleaner
 	cleanupMu      sync.Mutex
 	pendingCleanup map[string]string
+	heartbeats     sync.Map
 }
 
 type taskMetadataQuerier interface {
@@ -70,7 +76,7 @@ type taskMetadataQuerier interface {
 // Callers must provide a valid *sql.DB connection and an implementation of WorkerOrchestrator.
 // The leaseTTL (in seconds) determines how long a worker can go without a heartbeat before
 // being considered stale by the Active Reaper. staging may be nil to disable MinIO cleanup.
-func NewScheduler(db *sql.DB, replicaIndex int, totalReplicas int, orchestrator WorkerOrchestrator, managerAddr string, leaseTTL int, staging StagingCleaner) (*Scheduler, error) {
+func NewScheduler(db *sql.DB, replicaIndex int, totalReplicas int, orchestrator WorkerOrchestrator, dispatcher TaskDispatcher, managerAddr string, leaseTTL int, staging StagingCleaner) (*Scheduler, error) {
 	if db == nil {
 		return nil, errors.New("db cannot be nil")
 	}
@@ -80,6 +86,9 @@ func NewScheduler(db *sql.DB, replicaIndex int, totalReplicas int, orchestrator 
 	if orchestrator == nil {
 		return nil, errors.New("orchestrator cannot be nil")
 	}
+	if dispatcher == nil {
+		return nil, errors.New("dispatcher cannot be nil")
+	}
 	if leaseTTL <= 0 {
 		leaseTTL = 30
 	}
@@ -88,10 +97,12 @@ func NewScheduler(db *sql.DB, replicaIndex int, totalReplicas int, orchestrator 
 		replicaIndex:   replicaIndex,
 		totalReplicas:  totalReplicas,
 		orchestrator:   orchestrator,
+		dispatcher:     dispatcher,
 		managerAddr:    managerAddr,
 		leaseTTL:       leaseTTL,
 		staging:        staging,
 		pendingCleanup: make(map[string]string),
+		heartbeats:     sync.Map{},
 	}, nil
 }
 
@@ -126,19 +137,41 @@ func (s *Scheduler) Recover(ctx context.Context) error {
 	}
 
 	const recoverSpawnTimeout = 20 * time.Second
-	spawnFailures := 0
+
+	// Deduplicate job IDs for worker pool ensuring
+	uniqueJobs := make(map[string]struct{})
 	for _, rec := range attemptsToSpawn {
+		uniqueJobs[rec.jobID] = struct{}{}
+	}
+
+	spawnFailures := 0
+	for jobID := range uniqueJobs {
 		spawnCtx, cancel := context.WithTimeout(ctx, recoverSpawnTimeout)
-		err := s.orchestrator.SpawnWorker(spawnCtx, rec.taskID, rec.jobID, rec.attemptID, s.managerAddr)
+		err := s.orchestrator.EnsureWorkerPool(spawnCtx, jobID, 4, s.managerAddr)
 		cancel()
 		if err != nil {
-			slog.ErrorContext(ctx, "failed to spawn worker for recovered task",
-				slog.String("task_id", rec.taskID),
-				slog.String("job_id", rec.jobID),
-				slog.String("attempt_id", rec.attemptID),
+			slog.ErrorContext(ctx, "failed to ensure worker pool during recovery",
+				slog.String("job_id", jobID),
 				slog.Any("err", err),
 			)
 			spawnFailures++
+		}
+	}
+
+	// Also need to re-populate the task queues for the WorkerServer (dispatcher)
+	// so workers can pull them.
+	for _, rec := range attemptsToSpawn {
+		spawnCtx, cancel := context.WithTimeout(ctx, recoverSpawnTimeout)
+		task, err := s.GetTaskByID(spawnCtx, rec.taskID)
+		if err == nil {
+			err = s.dispatcher.DispatchTask(spawnCtx, task)
+		}
+		cancel()
+		if err != nil {
+			slog.ErrorContext(ctx, "failed to redispatch recovered task",
+				slog.String("task_id", rec.taskID),
+				slog.Any("err", err),
+			)
 		}
 	}
 	if spawnFailures > 0 {
@@ -202,6 +235,16 @@ func (s *Scheduler) GetNextTask(ctx context.Context, jobID string, workerID stri
 	}
 	if failedCount > 0 {
 		return nil, ErrJobFailed
+	}
+
+	// 1b. Enforce Authoritative Routing
+	var assignedReplica int
+	err = tx.QueryRowContext(ctx, "SELECT replica_index FROM JOBS WHERE job_id = $1", jobID).Scan(&assignedReplica)
+	if err != nil {
+		return nil, err
+	}
+	if assignedReplica != s.replicaIndex {
+		return nil, fmt.Errorf("job assigned to replica %d, but this is replica %d", assignedReplica, s.replicaIndex)
 	}
 
 	// 2. Try to schedule Map tasks first
@@ -326,6 +369,8 @@ func (s *Scheduler) tryAssignTask(ctx context.Context, tx *sql.Tx, requestedJobI
 	if err != nil {
 		return nil, err
 	}
+
+	s.heartbeats.Store(attemptID.String(), time.Now())
 
 	return &t, nil
 }
@@ -516,7 +561,12 @@ func (s *Scheduler) ScheduleJob(ctx context.Context, req ScheduleJobRequest) err
 	}
 	defer tx.Rollback()
 
-	if _, err := tx.ExecContext(ctx, QueryInsertJob, jobID, userID); err != nil {
+	expectedReplicaIndex, err := ComputeReplicaIndex(req.JobID, s.totalReplicas)
+	if err != nil {
+		return fmt.Errorf("failed to compute replica index: %w", err)
+	}
+
+	if _, err := tx.ExecContext(ctx, QueryInsertJob, jobID, userID, expectedReplicaIndex); err != nil {
 		return err
 	}
 	if _, err := tx.ExecContext(ctx, QueryInsertJobConfig,
@@ -530,11 +580,6 @@ func (s *Scheduler) ScheduleJob(ctx context.Context, req ScheduleJobRequest) err
 		req.InputChecksum,
 	); err != nil {
 		return err
-	}
-
-	expectedReplicaIndex, err := ComputeReplicaIndex(req.JobID, s.totalReplicas)
-	if err != nil {
-		return fmt.Errorf("failed to compute replica index: %w", err)
 	}
 
 	var scheduledTasks []string
@@ -581,67 +626,16 @@ func (s *Scheduler) ScheduleJob(ctx context.Context, req ScheduleJobRequest) err
 		return err
 	}
 
-	// After tx.Commit(), spawn initial workers for Map tasks.
-	const initialSpawnTimeout = 20 * time.Second
-
-	// Collect Map task IDs for spawning.
-	mapTaskIDs := ExtractMapTaskIDs(req.Tasks)
-
-	// Read quota to determine how many workers we can spawn.
-	quotaTx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		slog.WarnContext(ctx, "failed to begin quota check tx for initial spawn; reaper will retry",
+	// After tx.Commit(), ensure worker pool is running.
+	// We use the worker_replicas from SYSTEM_CONFIG (default 1) or a reasonable pool size.
+	// For simplicity, let's fetch worker count from orchestrator/config provider.
+	// Using 4 as a default pool size per job for now.
+	if err := s.orchestrator.EnsureWorkerPool(ctx, req.JobID, 4, s.managerAddr); err != nil {
+		slog.ErrorContext(ctx, "failed to ensure worker pool",
 			slog.String("job_id", req.JobID), slog.Any("err", err))
-		return nil
+		// Note: we don't return error here because the job IS scheduled in DB.
+		// The reaper or subsequent calls will retry EnsureWorkerPool.
 	}
-	snap, quotaErr := s.readQuotaSnapshotTx(ctx, quotaTx)
-	_ = quotaTx.Rollback() // read-only, always rollback
-	if quotaErr != nil {
-		slog.WarnContext(ctx, "failed to read quota for initial spawn; reaper will retry",
-			slog.String("job_id", req.JobID), slog.Any("err", quotaErr))
-		return nil
-	}
-
-	spawned := 0
-	for _, taskID := range mapTaskIDs {
-		if spawned >= snap.Available {
-			slog.InfoContext(ctx, "quota exhausted during initial worker spawn; remaining tasks deferred",
-				slog.String("job_id", req.JobID), slog.Int("spawned", spawned),
-				slog.Int("remaining", len(mapTaskIDs)-spawned))
-			break
-		}
-
-		spawnTx, err := s.db.BeginTx(ctx, nil)
-		if err != nil {
-			slog.WarnContext(ctx, "failed to begin spawn tx", slog.String("task_id", taskID), slog.Any("err", err))
-			continue
-		}
-		attemptID, err := s.prepareRetryAttemptTx(ctx, spawnTx, taskID)
-		if err != nil {
-			_ = spawnTx.Rollback()
-			slog.WarnContext(ctx, "failed to prepare attempt for initial spawn",
-				slog.String("task_id", taskID), slog.Any("err", err))
-			continue
-		}
-		if err := spawnTx.Commit(); err != nil {
-			slog.WarnContext(ctx, "failed to commit spawn attempt",
-				slog.String("task_id", taskID), slog.Any("err", err))
-			continue
-		}
-
-		spawnCtx, cancel := context.WithTimeout(ctx, initialSpawnTimeout)
-		if err := s.orchestrator.SpawnWorker(spawnCtx, taskID, req.JobID, attemptID, s.managerAddr); err != nil {
-			slog.WarnContext(ctx, "failed to spawn initial worker; reaper will retry",
-				slog.String("task_id", taskID), slog.String("attempt_id", attemptID),
-				slog.Any("err", err))
-		}
-		cancel()
-		spawned++
-	}
-
-	slog.InfoContext(ctx, "initial worker spawn complete",
-		slog.String("job_id", req.JobID), slog.Int("spawned", spawned),
-		slog.Int("map_tasks", len(mapTaskIDs)))
 
 	return nil
 }
@@ -742,6 +736,22 @@ func (s *Scheduler) CompleteTask(ctx context.Context, taskID string, attemptID s
 	}
 	defer tx.Rollback()
 
+	// Lock the parent job row early to prevent split-brain race conditions.
+	// Two concurrent CompleteTask/FailTask calls for tasks in the same job
+	// must be serialized to avoid both committing terminal transitions.
+	// This intentionally trades some terminal-path throughput for correctness.
+	var lockedJobID string
+	var jobStatus string
+	if err := tx.QueryRowContext(ctx, "SELECT t.job_id, j.status FROM TASKS t JOIN JOBS j ON t.job_id = j.job_id WHERE t.task_id = $1 FOR UPDATE OF j", taskID).Scan(&lockedJobID, &jobStatus); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrTaskNotFound
+		}
+		return err
+	}
+	if jobStatus != "Running" && jobStatus != "Pending" {
+		return ErrInvalidStateTransition
+	}
+
 	var state string
 	var currAttempt sql.NullString
 	err = tx.QueryRowContext(ctx, QuerySelectTaskForUpdate, taskID).Scan(&state, &currAttempt)
@@ -788,10 +798,7 @@ func (s *Scheduler) CompleteTask(ctx context.Context, taskID string, attemptID s
 		}
 	}
 
-	var jobID string
-	if err := tx.QueryRowContext(ctx, QueryGetTaskJobID, taskID).Scan(&jobID); err != nil {
-		return err
-	}
+	jobID := lockedJobID
 	var pendingTasks int
 	if err := tx.QueryRowContext(ctx, QueryCountAllPendingTasks, jobID).Scan(&pendingTasks); err != nil {
 		return err
@@ -807,6 +814,8 @@ func (s *Scheduler) CompleteTask(ctx context.Context, taskID string, attemptID s
 	if err := tx.Commit(); err != nil {
 		return err
 	}
+
+	s.heartbeats.Delete(attemptID)
 
 	if m := observability.DefaultMetrics(); m != nil {
 		m.TasksCompleted.Inc()
@@ -851,12 +860,16 @@ func (s *Scheduler) RenewLease(ctx context.Context, taskID string, attemptID str
 		return err
 	}
 
-	_, err = tx.ExecContext(ctx, QueryRenewLease, attemptID)
-	if err != nil {
+	if _, err := tx.ExecContext(ctx, QueryRenewLease, attemptID); err != nil {
 		return err
 	}
 
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+
+	s.heartbeats.Store(attemptID, time.Now())
+	return nil
 }
 
 // CancelJob marks a job as "Cancelled" and terminates all associated worker processes.
@@ -904,6 +917,19 @@ func (s *Scheduler) FailTask(ctx context.Context, taskID string, attemptID strin
 	}
 	defer tx.Rollback()
 
+	// Lock the parent job row early to prevent split-brain race conditions.
+	var lockedJobID string
+	var jobStatus string
+	if err := tx.QueryRowContext(ctx, "SELECT t.job_id, j.status FROM TASKS t JOIN JOBS j ON t.job_id = j.job_id WHERE t.task_id = $1 FOR UPDATE OF j", taskID).Scan(&lockedJobID, &jobStatus); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrTaskNotFound
+		}
+		return err
+	}
+	if jobStatus != "Running" && jobStatus != "Pending" {
+		return ErrInvalidStateTransition
+	}
+
 	var state string
 	var currAttempt sql.NullString
 	err = tx.QueryRowContext(ctx, QuerySelectTaskForUpdate, taskID).Scan(&state, &currAttempt)
@@ -946,18 +972,14 @@ func (s *Scheduler) FailTask(ctx context.Context, taskID string, attemptID strin
 		return err
 	}
 
-	var jobID string
-	if err := tx.QueryRowContext(ctx, QueryGetTaskJobID, taskID).Scan(&jobID); err != nil {
-		return err
-	}
+	jobID := lockedJobID
 
-	var retryAttemptID string
 	if newState == "Failed" {
 		if err := s.updateJobStatusTx(ctx, tx, jobID, "Cleaning"); err != nil {
 			return err
 		}
 	} else {
-		retryAttemptID, err = s.prepareRetryAttemptTx(ctx, tx, taskID)
+		_, err = s.prepareRetryAttemptTx(ctx, tx, taskID)
 		if err != nil {
 			return err
 		}
@@ -966,6 +988,8 @@ func (s *Scheduler) FailTask(ctx context.Context, taskID string, attemptID strin
 	if err := tx.Commit(); err != nil {
 		return err
 	}
+
+	s.heartbeats.Delete(attemptID)
 
 	if m := observability.DefaultMetrics(); m != nil {
 		m.TasksFailed.Inc()
@@ -976,18 +1000,20 @@ func (s *Scheduler) FailTask(ctx context.Context, taskID string, attemptID strin
 	} else if newState == "Idle" {
 		spawnCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
 		defer cancel()
-		if err := s.orchestrator.DeleteWorkerJob(spawnCtx, taskID); err != nil {
-			slog.ErrorContext(ctx, "failed to delete stale K8s job before retry",
-				slog.String("task_id", taskID),
-				slog.String("job_id", jobID),
-				slog.Any("err", err),
-			)
+
+		// Ensure worker pool is healthy (idempotent)
+		_ = s.orchestrator.EnsureWorkerPool(spawnCtx, jobID, 4, s.managerAddr)
+
+		// Redispatch for pull-based workers
+		task, err := s.GetTaskByID(spawnCtx, taskID)
+		if err == nil {
+			err = s.dispatcher.DispatchTask(spawnCtx, task)
 		}
-		if err := s.orchestrator.SpawnWorker(spawnCtx, taskID, jobID, retryAttemptID, s.managerAddr); err != nil {
-			slog.ErrorContext(ctx, "failed to respawn worker for failed task",
+
+		if err != nil {
+			slog.ErrorContext(ctx, "failed to redispatch task after failure",
 				slog.String("task_id", taskID),
 				slog.String("job_id", jobID),
-				slog.String("attempt_id", retryAttemptID),
 				slog.Any("err", err),
 			)
 		}
@@ -1008,7 +1034,7 @@ func (s *Scheduler) FailStaleTasks(ctx context.Context) (int, error) {
 	}
 	defer tx.Rollback()
 
-	rows, err := tx.QueryContext(ctx, QuerySelectStaleTasks)
+	rows, err := tx.QueryContext(ctx, QuerySelectStaleTasks, s.replicaIndex)
 	if err != nil {
 		return 0, err
 	}
@@ -1043,6 +1069,15 @@ func (s *Scheduler) FailStaleTasks(ctx context.Context) (int, error) {
 	var failedTaskIDs []string
 	failedJobs := make(map[string]struct{})
 	for _, rec := range stales {
+		// IN-MEMORY FILTER: skip if heartbeat is fresh
+		if val, ok := s.heartbeats.Load(rec.attemptID); ok {
+			if last, ok := val.(time.Time); ok {
+				if time.Since(last) < time.Duration(s.leaseTTL)*time.Second {
+					continue
+				}
+			}
+		}
+
 		newState := "Idle"
 		if rec.attemptCount >= MaxTaskAttempts {
 			newState = "Failed"
@@ -1078,32 +1113,37 @@ func (s *Scheduler) FailStaleTasks(ctx context.Context) (int, error) {
 		return 0, err
 	}
 
-	for _, taskID := range failedTaskIDs {
-		evictCtx, evictCancel := context.WithTimeout(ctx, 30*time.Second)
-		if err := s.orchestrator.DeleteWorkerJob(evictCtx, taskID); err != nil {
-			slog.ErrorContext(ctx, "failed to delete zombie K8s job for stale task",
-				slog.String("task_id", taskID),
-				slog.Any("err", err),
-			)
-		}
-		evictCancel()
-	}
-
 	for jobID := range failedJobs {
 		s.enqueueCleanup(jobID, "Failed")
 	}
 
+	// Ensure worker pool for jobs that have tasks to respawn
+	uniqueRespawnJobs := make(map[string]struct{})
 	for _, rec := range respawnTasks {
+		uniqueRespawnJobs[rec.jobID] = struct{}{}
+	}
+	for jobID := range uniqueRespawnJobs {
 		spawnCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-		if err := s.orchestrator.DeleteWorkerJob(spawnCtx, rec.taskID); err != nil {
-			slog.ErrorContext(ctx, "failed to delete stale K8s job before reaper retry",
-				slog.String("task_id", rec.taskID),
-				slog.String("job_id", rec.jobID),
+		if err := s.orchestrator.EnsureWorkerPool(spawnCtx, jobID, 4, s.managerAddr); err != nil {
+			slog.ErrorContext(ctx, "failed to ensure worker pool during reaper retry",
+				slog.String("job_id", jobID),
 				slog.Any("err", err),
 			)
 		}
-		if err := s.orchestrator.SpawnWorker(spawnCtx, rec.taskID, rec.jobID, rec.attemptID, s.managerAddr); err != nil {
-			slog.ErrorContext(ctx, "failed to respawn worker for stale task",
+		cancel()
+	}
+
+	for _, rec := range respawnTasks {
+		spawnCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+
+		// Hydrate and Dispatch
+		task, err := s.GetTaskByID(spawnCtx, rec.taskID)
+		if err == nil {
+			err = s.dispatcher.DispatchTask(spawnCtx, task)
+		}
+
+		if err != nil {
+			slog.ErrorContext(ctx, "failed to redispatch stale task",
 				slog.String("task_id", rec.taskID),
 				slog.String("job_id", rec.jobID),
 				slog.String("attempt_id", rec.attemptID),

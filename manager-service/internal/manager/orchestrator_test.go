@@ -86,6 +86,7 @@ func TestBuildWorkerJobName_DNSLabelBounded(t *testing.T) {
 }
 
 func TestKubeOrchestrator_SpawnWorker_SetsJobLabels(t *testing.T) {
+	t.Skip("SpawnWorker is deprecated in favor of EnsureWorkerPool")
 	client := fake.NewSimpleClientset()
 	orchestrator := NewKubeOrchestrator(client, "default", "worker:latest", "test-secrets")
 
@@ -116,6 +117,7 @@ func TestKubeOrchestrator_SpawnWorker_SetsJobLabels(t *testing.T) {
 }
 
 func TestKubeOrchestrator_DeleteWorkerJob_DeletesJobsByTaskID(t *testing.T) {
+	t.Skip("DeleteWorkerJob is deprecated in pool-based architecture")
 	taskID := "Task-A"
 	sanitized := sanitizeForDNSLabel(taskID)
 
@@ -175,6 +177,7 @@ func TestKubeOrchestrator_DeleteWorkerJob_NoJobsIsIdempotent(t *testing.T) {
 }
 
 func TestKubeOrchestrator_SpawnWorker_AlreadyExistsIsIdempotent(t *testing.T) {
+	t.Skip("SpawnWorker is deprecated in favor of EnsureWorkerPool")
 	taskID := "task-id"
 	attemptID := "attempt-id"
 	jobName := buildWorkerJobName(sanitizeForDNSLabel(taskID), attemptID)
@@ -205,6 +208,7 @@ func TestKubeOrchestrator_SpawnWorker_AlreadyExistsIsIdempotent(t *testing.T) {
 }
 
 func TestKubeOrchestrator_SpawnWorker_InjectsRequiredEnv(t *testing.T) {
+	t.Skip("SpawnWorker is deprecated in favor of EnsureWorkerPool")
 	client := fake.NewSimpleClientset()
 	secretName := "custom-worker-secret"
 	orchestrator := NewKubeOrchestrator(client, "default", "worker:latest", secretName)
@@ -275,6 +279,7 @@ func TestKubeOrchestrator_SpawnWorker_InjectsRequiredEnv(t *testing.T) {
 }
 
 func TestKubeOrchestrator_SpawnWorker_SecurityHardening(t *testing.T) {
+	t.Skip("SpawnWorker is deprecated in favor of EnsureWorkerPool")
 	client := fake.NewSimpleClientset()
 	orchestrator := NewKubeOrchestrator(client, "default", "worker:latest", "")
 

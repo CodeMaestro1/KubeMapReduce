@@ -110,7 +110,383 @@ func (x HeartbeatResponse_Action) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use HeartbeatResponse_Action.Descriptor instead.
 func (HeartbeatResponse_Action) EnumDescriptor() ([]byte, []int) {
-	return file_proto_mapreduce_proto_rawDescGZIP(), []int{4, 0}
+	return file_proto_mapreduce_proto_rawDescGZIP(), []int{9, 0}
+}
+
+type ShuffleDataChunk struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	JobId         string                 `protobuf:"bytes,1,opt,name=job_id,json=jobId,proto3" json:"job_id,omitempty"`
+	PartitionId   int32                  `protobuf:"varint,2,opt,name=partition_id,json=partitionId,proto3" json:"partition_id,omitempty"`
+	Data          []byte                 `protobuf:"bytes,3,opt,name=data,proto3" json:"data,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ShuffleDataChunk) Reset() {
+	*x = ShuffleDataChunk{}
+	mi := &file_proto_mapreduce_proto_msgTypes[0]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ShuffleDataChunk) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ShuffleDataChunk) ProtoMessage() {}
+
+func (x *ShuffleDataChunk) ProtoReflect() protoreflect.Message {
+	mi := &file_proto_mapreduce_proto_msgTypes[0]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ShuffleDataChunk.ProtoReflect.Descriptor instead.
+func (*ShuffleDataChunk) Descriptor() ([]byte, []int) {
+	return file_proto_mapreduce_proto_rawDescGZIP(), []int{0}
+}
+
+func (x *ShuffleDataChunk) GetJobId() string {
+	if x != nil {
+		return x.JobId
+	}
+	return ""
+}
+
+func (x *ShuffleDataChunk) GetPartitionId() int32 {
+	if x != nil {
+		return x.PartitionId
+	}
+	return 0
+}
+
+func (x *ShuffleDataChunk) GetData() []byte {
+	if x != nil {
+		return x.Data
+	}
+	return nil
+}
+
+type ShuffleDataRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	JobId         string                 `protobuf:"bytes,1,opt,name=job_id,json=jobId,proto3" json:"job_id,omitempty"`
+	PartitionId   int32                  `protobuf:"varint,2,opt,name=partition_id,json=partitionId,proto3" json:"partition_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ShuffleDataRequest) Reset() {
+	*x = ShuffleDataRequest{}
+	mi := &file_proto_mapreduce_proto_msgTypes[1]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ShuffleDataRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ShuffleDataRequest) ProtoMessage() {}
+
+func (x *ShuffleDataRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_proto_mapreduce_proto_msgTypes[1]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ShuffleDataRequest.ProtoReflect.Descriptor instead.
+func (*ShuffleDataRequest) Descriptor() ([]byte, []int) {
+	return file_proto_mapreduce_proto_rawDescGZIP(), []int{1}
+}
+
+func (x *ShuffleDataRequest) GetJobId() string {
+	if x != nil {
+		return x.JobId
+	}
+	return ""
+}
+
+func (x *ShuffleDataRequest) GetPartitionId() int32 {
+	if x != nil {
+		return x.PartitionId
+	}
+	return 0
+}
+
+type StreamRequest struct {
+	state    protoimpl.MessageState `protogen:"open.v1"`
+	WorkerId string                 `protobuf:"bytes,1,opt,name=worker_id,json=workerId,proto3" json:"worker_id,omitempty"`
+	// Types that are valid to be assigned to Payload:
+	//
+	//	*StreamRequest_Ready
+	//	*StreamRequest_Heartbeat
+	//	*StreamRequest_Complete
+	//	*StreamRequest_Failed
+	Payload       isStreamRequest_Payload `protobuf_oneof:"payload"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *StreamRequest) Reset() {
+	*x = StreamRequest{}
+	mi := &file_proto_mapreduce_proto_msgTypes[2]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *StreamRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*StreamRequest) ProtoMessage() {}
+
+func (x *StreamRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_proto_mapreduce_proto_msgTypes[2]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use StreamRequest.ProtoReflect.Descriptor instead.
+func (*StreamRequest) Descriptor() ([]byte, []int) {
+	return file_proto_mapreduce_proto_rawDescGZIP(), []int{2}
+}
+
+func (x *StreamRequest) GetWorkerId() string {
+	if x != nil {
+		return x.WorkerId
+	}
+	return ""
+}
+
+func (x *StreamRequest) GetPayload() isStreamRequest_Payload {
+	if x != nil {
+		return x.Payload
+	}
+	return nil
+}
+
+func (x *StreamRequest) GetReady() *ReadyForTaskRequest {
+	if x != nil {
+		if x, ok := x.Payload.(*StreamRequest_Ready); ok {
+			return x.Ready
+		}
+	}
+	return nil
+}
+
+func (x *StreamRequest) GetHeartbeat() *HeartbeatRequest {
+	if x != nil {
+		if x, ok := x.Payload.(*StreamRequest_Heartbeat); ok {
+			return x.Heartbeat
+		}
+	}
+	return nil
+}
+
+func (x *StreamRequest) GetComplete() *TaskCompleteRequest {
+	if x != nil {
+		if x, ok := x.Payload.(*StreamRequest_Complete); ok {
+			return x.Complete
+		}
+	}
+	return nil
+}
+
+func (x *StreamRequest) GetFailed() *TaskFailedRequest {
+	if x != nil {
+		if x, ok := x.Payload.(*StreamRequest_Failed); ok {
+			return x.Failed
+		}
+	}
+	return nil
+}
+
+type isStreamRequest_Payload interface {
+	isStreamRequest_Payload()
+}
+
+type StreamRequest_Ready struct {
+	Ready *ReadyForTaskRequest `protobuf:"bytes,2,opt,name=ready,proto3,oneof"`
+}
+
+type StreamRequest_Heartbeat struct {
+	Heartbeat *HeartbeatRequest `protobuf:"bytes,3,opt,name=heartbeat,proto3,oneof"`
+}
+
+type StreamRequest_Complete struct {
+	Complete *TaskCompleteRequest `protobuf:"bytes,4,opt,name=complete,proto3,oneof"`
+}
+
+type StreamRequest_Failed struct {
+	Failed *TaskFailedRequest `protobuf:"bytes,5,opt,name=failed,proto3,oneof"`
+}
+
+func (*StreamRequest_Ready) isStreamRequest_Payload() {}
+
+func (*StreamRequest_Heartbeat) isStreamRequest_Payload() {}
+
+func (*StreamRequest_Complete) isStreamRequest_Payload() {}
+
+func (*StreamRequest_Failed) isStreamRequest_Payload() {}
+
+type StreamResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Types that are valid to be assigned to Payload:
+	//
+	//	*StreamResponse_Assignment
+	//	*StreamResponse_HeartbeatAck
+	//	*StreamResponse_Ack
+	Payload       isStreamResponse_Payload `protobuf_oneof:"payload"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *StreamResponse) Reset() {
+	*x = StreamResponse{}
+	mi := &file_proto_mapreduce_proto_msgTypes[3]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *StreamResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*StreamResponse) ProtoMessage() {}
+
+func (x *StreamResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_proto_mapreduce_proto_msgTypes[3]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use StreamResponse.ProtoReflect.Descriptor instead.
+func (*StreamResponse) Descriptor() ([]byte, []int) {
+	return file_proto_mapreduce_proto_rawDescGZIP(), []int{3}
+}
+
+func (x *StreamResponse) GetPayload() isStreamResponse_Payload {
+	if x != nil {
+		return x.Payload
+	}
+	return nil
+}
+
+func (x *StreamResponse) GetAssignment() *TaskAssignment {
+	if x != nil {
+		if x, ok := x.Payload.(*StreamResponse_Assignment); ok {
+			return x.Assignment
+		}
+	}
+	return nil
+}
+
+func (x *StreamResponse) GetHeartbeatAck() *HeartbeatResponse {
+	if x != nil {
+		if x, ok := x.Payload.(*StreamResponse_HeartbeatAck); ok {
+			return x.HeartbeatAck
+		}
+	}
+	return nil
+}
+
+func (x *StreamResponse) GetAck() *Ack {
+	if x != nil {
+		if x, ok := x.Payload.(*StreamResponse_Ack); ok {
+			return x.Ack
+		}
+	}
+	return nil
+}
+
+type isStreamResponse_Payload interface {
+	isStreamResponse_Payload()
+}
+
+type StreamResponse_Assignment struct {
+	Assignment *TaskAssignment `protobuf:"bytes,1,opt,name=assignment,proto3,oneof"`
+}
+
+type StreamResponse_HeartbeatAck struct {
+	HeartbeatAck *HeartbeatResponse `protobuf:"bytes,2,opt,name=heartbeat_ack,json=heartbeatAck,proto3,oneof"`
+}
+
+type StreamResponse_Ack struct {
+	Ack *Ack `protobuf:"bytes,3,opt,name=ack,proto3,oneof"`
+}
+
+func (*StreamResponse_Assignment) isStreamResponse_Payload() {}
+
+func (*StreamResponse_HeartbeatAck) isStreamResponse_Payload() {}
+
+func (*StreamResponse_Ack) isStreamResponse_Payload() {}
+
+type ReadyForTaskRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	JobId         string                 `protobuf:"bytes,1,opt,name=job_id,json=jobId,proto3" json:"job_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ReadyForTaskRequest) Reset() {
+	*x = ReadyForTaskRequest{}
+	mi := &file_proto_mapreduce_proto_msgTypes[4]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ReadyForTaskRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ReadyForTaskRequest) ProtoMessage() {}
+
+func (x *ReadyForTaskRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_proto_mapreduce_proto_msgTypes[4]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ReadyForTaskRequest.ProtoReflect.Descriptor instead.
+func (*ReadyForTaskRequest) Descriptor() ([]byte, []int) {
+	return file_proto_mapreduce_proto_rawDescGZIP(), []int{4}
+}
+
+func (x *ReadyForTaskRequest) GetJobId() string {
+	if x != nil {
+		return x.JobId
+	}
+	return ""
 }
 
 type RegisterRequest struct {
@@ -123,7 +499,7 @@ type RegisterRequest struct {
 
 func (x *RegisterRequest) Reset() {
 	*x = RegisterRequest{}
-	mi := &file_proto_mapreduce_proto_msgTypes[0]
+	mi := &file_proto_mapreduce_proto_msgTypes[5]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -135,7 +511,7 @@ func (x *RegisterRequest) String() string {
 func (*RegisterRequest) ProtoMessage() {}
 
 func (x *RegisterRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_mapreduce_proto_msgTypes[0]
+	mi := &file_proto_mapreduce_proto_msgTypes[5]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -148,7 +524,7 @@ func (x *RegisterRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RegisterRequest.ProtoReflect.Descriptor instead.
 func (*RegisterRequest) Descriptor() ([]byte, []int) {
-	return file_proto_mapreduce_proto_rawDescGZIP(), []int{0}
+	return file_proto_mapreduce_proto_rawDescGZIP(), []int{5}
 }
 
 func (x *RegisterRequest) GetTaskId() string {
@@ -189,7 +565,7 @@ type TaskAssignment struct {
 
 func (x *TaskAssignment) Reset() {
 	*x = TaskAssignment{}
-	mi := &file_proto_mapreduce_proto_msgTypes[1]
+	mi := &file_proto_mapreduce_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -201,7 +577,7 @@ func (x *TaskAssignment) String() string {
 func (*TaskAssignment) ProtoMessage() {}
 
 func (x *TaskAssignment) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_mapreduce_proto_msgTypes[1]
+	mi := &file_proto_mapreduce_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -214,7 +590,7 @@ func (x *TaskAssignment) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TaskAssignment.ProtoReflect.Descriptor instead.
 func (*TaskAssignment) Descriptor() ([]byte, []int) {
-	return file_proto_mapreduce_proto_rawDescGZIP(), []int{1}
+	return file_proto_mapreduce_proto_rawDescGZIP(), []int{6}
 }
 
 func (x *TaskAssignment) GetTaskId() string {
@@ -341,7 +717,7 @@ type InputSplit struct {
 
 func (x *InputSplit) Reset() {
 	*x = InputSplit{}
-	mi := &file_proto_mapreduce_proto_msgTypes[2]
+	mi := &file_proto_mapreduce_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -353,7 +729,7 @@ func (x *InputSplit) String() string {
 func (*InputSplit) ProtoMessage() {}
 
 func (x *InputSplit) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_mapreduce_proto_msgTypes[2]
+	mi := &file_proto_mapreduce_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -366,7 +742,7 @@ func (x *InputSplit) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use InputSplit.ProtoReflect.Descriptor instead.
 func (*InputSplit) Descriptor() ([]byte, []int) {
-	return file_proto_mapreduce_proto_rawDescGZIP(), []int{2}
+	return file_proto_mapreduce_proto_rawDescGZIP(), []int{7}
 }
 
 func (x *InputSplit) GetInputUri() string {
@@ -408,7 +784,7 @@ type HeartbeatRequest struct {
 
 func (x *HeartbeatRequest) Reset() {
 	*x = HeartbeatRequest{}
-	mi := &file_proto_mapreduce_proto_msgTypes[3]
+	mi := &file_proto_mapreduce_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -420,7 +796,7 @@ func (x *HeartbeatRequest) String() string {
 func (*HeartbeatRequest) ProtoMessage() {}
 
 func (x *HeartbeatRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_mapreduce_proto_msgTypes[3]
+	mi := &file_proto_mapreduce_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -433,7 +809,7 @@ func (x *HeartbeatRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use HeartbeatRequest.ProtoReflect.Descriptor instead.
 func (*HeartbeatRequest) Descriptor() ([]byte, []int) {
-	return file_proto_mapreduce_proto_rawDescGZIP(), []int{3}
+	return file_proto_mapreduce_proto_rawDescGZIP(), []int{8}
 }
 
 func (x *HeartbeatRequest) GetTaskId() string {
@@ -466,7 +842,7 @@ type HeartbeatResponse struct {
 
 func (x *HeartbeatResponse) Reset() {
 	*x = HeartbeatResponse{}
-	mi := &file_proto_mapreduce_proto_msgTypes[4]
+	mi := &file_proto_mapreduce_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -478,7 +854,7 @@ func (x *HeartbeatResponse) String() string {
 func (*HeartbeatResponse) ProtoMessage() {}
 
 func (x *HeartbeatResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_mapreduce_proto_msgTypes[4]
+	mi := &file_proto_mapreduce_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -491,7 +867,7 @@ func (x *HeartbeatResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use HeartbeatResponse.ProtoReflect.Descriptor instead.
 func (*HeartbeatResponse) Descriptor() ([]byte, []int) {
-	return file_proto_mapreduce_proto_rawDescGZIP(), []int{4}
+	return file_proto_mapreduce_proto_rawDescGZIP(), []int{9}
 }
 
 func (x *HeartbeatResponse) GetAction() HeartbeatResponse_Action {
@@ -514,7 +890,7 @@ type TaskCompleteRequest struct {
 
 func (x *TaskCompleteRequest) Reset() {
 	*x = TaskCompleteRequest{}
-	mi := &file_proto_mapreduce_proto_msgTypes[5]
+	mi := &file_proto_mapreduce_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -526,7 +902,7 @@ func (x *TaskCompleteRequest) String() string {
 func (*TaskCompleteRequest) ProtoMessage() {}
 
 func (x *TaskCompleteRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_mapreduce_proto_msgTypes[5]
+	mi := &file_proto_mapreduce_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -539,7 +915,7 @@ func (x *TaskCompleteRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TaskCompleteRequest.ProtoReflect.Descriptor instead.
 func (*TaskCompleteRequest) Descriptor() ([]byte, []int) {
-	return file_proto_mapreduce_proto_rawDescGZIP(), []int{5}
+	return file_proto_mapreduce_proto_rawDescGZIP(), []int{10}
 }
 
 func (x *TaskCompleteRequest) GetTaskId() string {
@@ -589,7 +965,7 @@ type TaskFailedRequest struct {
 
 func (x *TaskFailedRequest) Reset() {
 	*x = TaskFailedRequest{}
-	mi := &file_proto_mapreduce_proto_msgTypes[6]
+	mi := &file_proto_mapreduce_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -601,7 +977,7 @@ func (x *TaskFailedRequest) String() string {
 func (*TaskFailedRequest) ProtoMessage() {}
 
 func (x *TaskFailedRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_mapreduce_proto_msgTypes[6]
+	mi := &file_proto_mapreduce_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -614,7 +990,7 @@ func (x *TaskFailedRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TaskFailedRequest.ProtoReflect.Descriptor instead.
 func (*TaskFailedRequest) Descriptor() ([]byte, []int) {
-	return file_proto_mapreduce_proto_rawDescGZIP(), []int{6}
+	return file_proto_mapreduce_proto_rawDescGZIP(), []int{11}
 }
 
 func (x *TaskFailedRequest) GetTaskId() string {
@@ -654,7 +1030,7 @@ type Ack struct {
 
 func (x *Ack) Reset() {
 	*x = Ack{}
-	mi := &file_proto_mapreduce_proto_msgTypes[7]
+	mi := &file_proto_mapreduce_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -666,7 +1042,7 @@ func (x *Ack) String() string {
 func (*Ack) ProtoMessage() {}
 
 func (x *Ack) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_mapreduce_proto_msgTypes[7]
+	mi := &file_proto_mapreduce_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -679,7 +1055,7 @@ func (x *Ack) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Ack.ProtoReflect.Descriptor instead.
 func (*Ack) Descriptor() ([]byte, []int) {
-	return file_proto_mapreduce_proto_rawDescGZIP(), []int{7}
+	return file_proto_mapreduce_proto_rawDescGZIP(), []int{12}
 }
 
 func (x *Ack) GetSuccess() bool {
@@ -693,7 +1069,30 @@ var File_proto_mapreduce_proto protoreflect.FileDescriptor
 
 const file_proto_mapreduce_proto_rawDesc = "" +
 	"\n" +
-	"\x15proto/mapreduce.proto\x12\tmapreduce\"I\n" +
+	"\x15proto/mapreduce.proto\x12\tmapreduce\"`\n" +
+	"\x10ShuffleDataChunk\x12\x15\n" +
+	"\x06job_id\x18\x01 \x01(\tR\x05jobId\x12!\n" +
+	"\fpartition_id\x18\x02 \x01(\x05R\vpartitionId\x12\x12\n" +
+	"\x04data\x18\x03 \x01(\fR\x04data\"N\n" +
+	"\x12ShuffleDataRequest\x12\x15\n" +
+	"\x06job_id\x18\x01 \x01(\tR\x05jobId\x12!\n" +
+	"\fpartition_id\x18\x02 \x01(\x05R\vpartitionId\"\xa2\x02\n" +
+	"\rStreamRequest\x12\x1b\n" +
+	"\tworker_id\x18\x01 \x01(\tR\bworkerId\x126\n" +
+	"\x05ready\x18\x02 \x01(\v2\x1e.mapreduce.ReadyForTaskRequestH\x00R\x05ready\x12;\n" +
+	"\theartbeat\x18\x03 \x01(\v2\x1b.mapreduce.HeartbeatRequestH\x00R\theartbeat\x12<\n" +
+	"\bcomplete\x18\x04 \x01(\v2\x1e.mapreduce.TaskCompleteRequestH\x00R\bcomplete\x126\n" +
+	"\x06failed\x18\x05 \x01(\v2\x1c.mapreduce.TaskFailedRequestH\x00R\x06failedB\t\n" +
+	"\apayload\"\xc1\x01\n" +
+	"\x0eStreamResponse\x12;\n" +
+	"\n" +
+	"assignment\x18\x01 \x01(\v2\x19.mapreduce.TaskAssignmentH\x00R\n" +
+	"assignment\x12C\n" +
+	"\rheartbeat_ack\x18\x02 \x01(\v2\x1c.mapreduce.HeartbeatResponseH\x00R\fheartbeatAck\x12\"\n" +
+	"\x03ack\x18\x03 \x01(\v2\x0e.mapreduce.AckH\x00R\x03ackB\t\n" +
+	"\apayload\",\n" +
+	"\x13ReadyForTaskRequest\x12\x15\n" +
+	"\x06job_id\x18\x01 \x01(\tR\x05jobId\"I\n" +
 	"\x0fRegisterRequest\x12\x17\n" +
 	"\atask_id\x18\x01 \x01(\tR\x06taskId\x12\x1d\n" +
 	"\n" +
@@ -755,13 +1154,18 @@ const file_proto_mapreduce_proto_rawDesc = "" +
 	"\bTaskType\x12\a\n" +
 	"\x03MAP\x10\x00\x12\n" +
 	"\n" +
-	"\x06REDUCE\x10\x012\x96\x02\n" +
+	"\x06REDUCE\x10\x012\xdd\x02\n" +
 	"\rWorkerService\x12A\n" +
 	"\bRegister\x12\x1a.mapreduce.RegisterRequest\x1a\x19.mapreduce.TaskAssignment\x12F\n" +
 	"\tHeartbeat\x12\x1b.mapreduce.HeartbeatRequest\x1a\x1c.mapreduce.HeartbeatResponse\x12>\n" +
 	"\fTaskComplete\x12\x1e.mapreduce.TaskCompleteRequest\x1a\x0e.mapreduce.Ack\x12:\n" +
 	"\n" +
-	"TaskFailed\x12\x1c.mapreduce.TaskFailedRequest\x1a\x0e.mapreduce.AckB\x15Z\x13kubemapreduce/protob\x06proto3"
+	"TaskFailed\x12\x1c.mapreduce.TaskFailedRequest\x1a\x0e.mapreduce.Ack\x12E\n" +
+	"\n" +
+	"TaskStream\x12\x18.mapreduce.StreamRequest\x1a\x19.mapreduce.StreamResponse(\x010\x012\xa2\x01\n" +
+	"\x0eShuffleService\x12@\n" +
+	"\x0fPushShuffleData\x12\x1b.mapreduce.ShuffleDataChunk\x1a\x0e.mapreduce.Ack(\x01\x12N\n" +
+	"\x0eGetShuffleData\x12\x1d.mapreduce.ShuffleDataRequest\x1a\x1b.mapreduce.ShuffleDataChunk0\x01B\x15Z\x13kubemapreduce/protob\x06proto3"
 
 var (
 	file_proto_mapreduce_proto_rawDescOnce sync.Once
@@ -776,36 +1180,54 @@ func file_proto_mapreduce_proto_rawDescGZIP() []byte {
 }
 
 var file_proto_mapreduce_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
-var file_proto_mapreduce_proto_msgTypes = make([]protoimpl.MessageInfo, 8)
+var file_proto_mapreduce_proto_msgTypes = make([]protoimpl.MessageInfo, 13)
 var file_proto_mapreduce_proto_goTypes = []any{
 	(TaskType)(0),                 // 0: mapreduce.TaskType
 	(HeartbeatResponse_Action)(0), // 1: mapreduce.HeartbeatResponse.Action
-	(*RegisterRequest)(nil),       // 2: mapreduce.RegisterRequest
-	(*TaskAssignment)(nil),        // 3: mapreduce.TaskAssignment
-	(*InputSplit)(nil),            // 4: mapreduce.InputSplit
-	(*HeartbeatRequest)(nil),      // 5: mapreduce.HeartbeatRequest
-	(*HeartbeatResponse)(nil),     // 6: mapreduce.HeartbeatResponse
-	(*TaskCompleteRequest)(nil),   // 7: mapreduce.TaskCompleteRequest
-	(*TaskFailedRequest)(nil),     // 8: mapreduce.TaskFailedRequest
-	(*Ack)(nil),                   // 9: mapreduce.Ack
+	(*ShuffleDataChunk)(nil),      // 2: mapreduce.ShuffleDataChunk
+	(*ShuffleDataRequest)(nil),    // 3: mapreduce.ShuffleDataRequest
+	(*StreamRequest)(nil),         // 4: mapreduce.StreamRequest
+	(*StreamResponse)(nil),        // 5: mapreduce.StreamResponse
+	(*ReadyForTaskRequest)(nil),   // 6: mapreduce.ReadyForTaskRequest
+	(*RegisterRequest)(nil),       // 7: mapreduce.RegisterRequest
+	(*TaskAssignment)(nil),        // 8: mapreduce.TaskAssignment
+	(*InputSplit)(nil),            // 9: mapreduce.InputSplit
+	(*HeartbeatRequest)(nil),      // 10: mapreduce.HeartbeatRequest
+	(*HeartbeatResponse)(nil),     // 11: mapreduce.HeartbeatResponse
+	(*TaskCompleteRequest)(nil),   // 12: mapreduce.TaskCompleteRequest
+	(*TaskFailedRequest)(nil),     // 13: mapreduce.TaskFailedRequest
+	(*Ack)(nil),                   // 14: mapreduce.Ack
 }
 var file_proto_mapreduce_proto_depIdxs = []int32{
-	0, // 0: mapreduce.TaskAssignment.type:type_name -> mapreduce.TaskType
-	4, // 1: mapreduce.TaskAssignment.input_splits:type_name -> mapreduce.InputSplit
-	1, // 2: mapreduce.HeartbeatResponse.action:type_name -> mapreduce.HeartbeatResponse.Action
-	2, // 3: mapreduce.WorkerService.Register:input_type -> mapreduce.RegisterRequest
-	5, // 4: mapreduce.WorkerService.Heartbeat:input_type -> mapreduce.HeartbeatRequest
-	7, // 5: mapreduce.WorkerService.TaskComplete:input_type -> mapreduce.TaskCompleteRequest
-	8, // 6: mapreduce.WorkerService.TaskFailed:input_type -> mapreduce.TaskFailedRequest
-	3, // 7: mapreduce.WorkerService.Register:output_type -> mapreduce.TaskAssignment
-	6, // 8: mapreduce.WorkerService.Heartbeat:output_type -> mapreduce.HeartbeatResponse
-	9, // 9: mapreduce.WorkerService.TaskComplete:output_type -> mapreduce.Ack
-	9, // 10: mapreduce.WorkerService.TaskFailed:output_type -> mapreduce.Ack
-	7, // [7:11] is the sub-list for method output_type
-	3, // [3:7] is the sub-list for method input_type
-	3, // [3:3] is the sub-list for extension type_name
-	3, // [3:3] is the sub-list for extension extendee
-	0, // [0:3] is the sub-list for field type_name
+	6,  // 0: mapreduce.StreamRequest.ready:type_name -> mapreduce.ReadyForTaskRequest
+	10, // 1: mapreduce.StreamRequest.heartbeat:type_name -> mapreduce.HeartbeatRequest
+	12, // 2: mapreduce.StreamRequest.complete:type_name -> mapreduce.TaskCompleteRequest
+	13, // 3: mapreduce.StreamRequest.failed:type_name -> mapreduce.TaskFailedRequest
+	8,  // 4: mapreduce.StreamResponse.assignment:type_name -> mapreduce.TaskAssignment
+	11, // 5: mapreduce.StreamResponse.heartbeat_ack:type_name -> mapreduce.HeartbeatResponse
+	14, // 6: mapreduce.StreamResponse.ack:type_name -> mapreduce.Ack
+	0,  // 7: mapreduce.TaskAssignment.type:type_name -> mapreduce.TaskType
+	9,  // 8: mapreduce.TaskAssignment.input_splits:type_name -> mapreduce.InputSplit
+	1,  // 9: mapreduce.HeartbeatResponse.action:type_name -> mapreduce.HeartbeatResponse.Action
+	7,  // 10: mapreduce.WorkerService.Register:input_type -> mapreduce.RegisterRequest
+	10, // 11: mapreduce.WorkerService.Heartbeat:input_type -> mapreduce.HeartbeatRequest
+	12, // 12: mapreduce.WorkerService.TaskComplete:input_type -> mapreduce.TaskCompleteRequest
+	13, // 13: mapreduce.WorkerService.TaskFailed:input_type -> mapreduce.TaskFailedRequest
+	4,  // 14: mapreduce.WorkerService.TaskStream:input_type -> mapreduce.StreamRequest
+	2,  // 15: mapreduce.ShuffleService.PushShuffleData:input_type -> mapreduce.ShuffleDataChunk
+	3,  // 16: mapreduce.ShuffleService.GetShuffleData:input_type -> mapreduce.ShuffleDataRequest
+	8,  // 17: mapreduce.WorkerService.Register:output_type -> mapreduce.TaskAssignment
+	11, // 18: mapreduce.WorkerService.Heartbeat:output_type -> mapreduce.HeartbeatResponse
+	14, // 19: mapreduce.WorkerService.TaskComplete:output_type -> mapreduce.Ack
+	14, // 20: mapreduce.WorkerService.TaskFailed:output_type -> mapreduce.Ack
+	5,  // 21: mapreduce.WorkerService.TaskStream:output_type -> mapreduce.StreamResponse
+	14, // 22: mapreduce.ShuffleService.PushShuffleData:output_type -> mapreduce.Ack
+	2,  // 23: mapreduce.ShuffleService.GetShuffleData:output_type -> mapreduce.ShuffleDataChunk
+	17, // [17:24] is the sub-list for method output_type
+	10, // [10:17] is the sub-list for method input_type
+	10, // [10:10] is the sub-list for extension type_name
+	10, // [10:10] is the sub-list for extension extendee
+	0,  // [0:10] is the sub-list for field type_name
 }
 
 func init() { file_proto_mapreduce_proto_init() }
@@ -813,15 +1235,26 @@ func file_proto_mapreduce_proto_init() {
 	if File_proto_mapreduce_proto != nil {
 		return
 	}
+	file_proto_mapreduce_proto_msgTypes[2].OneofWrappers = []any{
+		(*StreamRequest_Ready)(nil),
+		(*StreamRequest_Heartbeat)(nil),
+		(*StreamRequest_Complete)(nil),
+		(*StreamRequest_Failed)(nil),
+	}
+	file_proto_mapreduce_proto_msgTypes[3].OneofWrappers = []any{
+		(*StreamResponse_Assignment)(nil),
+		(*StreamResponse_HeartbeatAck)(nil),
+		(*StreamResponse_Ack)(nil),
+	}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_proto_mapreduce_proto_rawDesc), len(file_proto_mapreduce_proto_rawDesc)),
 			NumEnums:      2,
-			NumMessages:   8,
+			NumMessages:   13,
 			NumExtensions: 0,
-			NumServices:   1,
+			NumServices:   2,
 		},
 		GoTypes:           file_proto_mapreduce_proto_goTypes,
 		DependencyIndexes: file_proto_mapreduce_proto_depIdxs,

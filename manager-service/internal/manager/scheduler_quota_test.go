@@ -34,7 +34,7 @@ func TestScheduler_ReadQuotaSnapshotTx_ConcurrentReadsConsistent(t *testing.T) {
 	defer db.Close()
 	mock.MatchExpectationsInOrder(false)
 
-	scheduler, err := NewScheduler(db, 0, 1, &MockOrchestrator{}, "manager-0:50051", 30, nil)
+	scheduler, err := NewScheduler(db, 0, 1, &MockOrchestrator{}, &MockDispatcher{}, "manager-0:50051", 30, nil)
 	if err != nil {
 		t.Fatalf("NewScheduler: %v", err)
 	}
@@ -179,6 +179,7 @@ func TestScheduler_GetNextTask_QuotaExceededLeavesTaskIdle(t *testing.T) {
 	mock.ExpectQuery(regexp.QuoteMeta(QueryCountFailedTasks)).
 		WithArgs(jobID).
 		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
+	expectReplicaCheck(mock, jobID, 0)
 	mock.ExpectQuery(regexp.QuoteMeta(QuerySelectIdleTask)).
 		WithArgs(jobID, 0, "Map").
 		WillReturnRows(sqlmock.NewRows([]string{"task_id", "job_id", "task_type", "replica_index"}).
@@ -232,6 +233,7 @@ func TestScheduler_GetNextTask_ReducePhaseStarvationGuard(t *testing.T) {
 	mock.ExpectQuery(regexp.QuoteMeta(QueryCountFailedTasks)).
 		WithArgs(jobID).
 		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
+	expectReplicaCheck(mock, jobID, 0)
 	mock.ExpectQuery(regexp.QuoteMeta(QuerySelectIdleTask)).
 		WithArgs(jobID, 0, "Map").
 		WillReturnError(sql.ErrNoRows)
@@ -268,6 +270,7 @@ func TestScheduler_GetNextTask_FifoStarvationFreedom(t *testing.T) {
 		mock.ExpectQuery(regexp.QuoteMeta(QueryCountFailedTasks)).
 			WithArgs(jobID).
 			WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
+		expectReplicaCheck(mock, jobID, 0)
 		mock.ExpectQuery(regexp.QuoteMeta(QuerySelectIdleTask)).
 			WithArgs(jobID, 0, "Map").
 			WillReturnRows(sqlmock.NewRows([]string{"task_id", "job_id", "task_type", "replica_index"}).
@@ -292,6 +295,7 @@ func TestScheduler_GetNextTask_FifoStarvationFreedom(t *testing.T) {
 	mock.ExpectQuery(regexp.QuoteMeta(QueryCountFailedTasks)).
 		WithArgs(jobID).
 		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
+	expectReplicaCheck(mock, jobID, 0)
 	mock.ExpectQuery(regexp.QuoteMeta(QuerySelectIdleTask)).
 		WithArgs(jobID, 0, "Map").
 		WillReturnError(sql.ErrNoRows)
@@ -342,6 +346,7 @@ func TestScheduler_GetNextTask_EmptySystemConfigFallback(t *testing.T) {
 	mock.ExpectQuery(regexp.QuoteMeta(QueryCountFailedTasks)).
 		WithArgs(jobID).
 		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
+	expectReplicaCheck(mock, jobID, 0)
 	mock.ExpectQuery(regexp.QuoteMeta(QuerySelectIdleTask)).
 		WithArgs(jobID, 0, "Map").
 		WillReturnRows(sqlmock.NewRows([]string{"task_id", "job_id", "task_type", "replica_index"}).

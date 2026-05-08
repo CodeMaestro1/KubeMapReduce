@@ -107,8 +107,7 @@ const QueryGetReduceTaskInputs = `
 
 // QuerySelectTaskForUpdate locks a task row for safe state transition.
 // Used by CompleteTask, FailTask, and RenewLease to enforce serializable access.
-// SKIP LOCKED prevents blocking when concurrent managers contend for tasks.
-const QuerySelectTaskForUpdate = `SELECT status, current_attempt_id FROM TASKS WHERE task_id = $1 FOR UPDATE SKIP LOCKED`
+const QuerySelectTaskForUpdate = `SELECT status, current_attempt_id FROM TASKS WHERE task_id = $1 FOR UPDATE`
 
 // QueryCompleteTask marks a task as Completed and clears the attempt binding.
 const QueryCompleteTask = `UPDATE TASKS SET status = 'Completed', current_attempt_id = NULL WHERE task_id = $1`
@@ -160,10 +159,8 @@ const QueryFailRunningAttemptsByJob = `
 	  AND t.job_id = $1
 	  AND a.status = 'Running'`
 
-// QuerySelectStaleTasks finds in-progress tasks whose lease has expired.
-// The Manager's Active Reaper uses this to reclaim zombie workers (Section 5.1).
-// Expiry is computed using lease_ttl so correctness does not depend on the caller's timeout value.
-// Subtracts 5-second tolerance to account for clock skew: marks stale 5 seconds earlier as safety margin.
+// QuerySelectStaleTasks finds all in-progress tasks belonging to this manager replica.
+// The Manager's Active Reaper uses this as a starting point, then filters by in-memory heartbeats.
 const QuerySelectStaleTasks = `
 	SELECT
 		t.task_id,
@@ -172,7 +169,8 @@ const QuerySelectStaleTasks = `
 		(SELECT COUNT(*) FROM TASK_ATTEMPTS WHERE task_id = t.task_id) as attempt_count
 	FROM TASKS t
 	JOIN TASK_ATTEMPTS a ON t.current_attempt_id = a.attempt_id
-	WHERE t.status = 'In-Progress' AND a.status = 'Running' AND a.last_renewed_at + a.lease_ttl * INTERVAL '1 second' - INTERVAL '5 seconds' < NOW()
+	JOIN JOBS j ON t.job_id = j.job_id
+	WHERE t.status = 'In-Progress' AND a.status = 'Running' AND j.replica_index = $1
 	FOR UPDATE OF t SKIP LOCKED`
 
 // QuerySelectRecoverableAttempts returns active attempts that belong to this manager replica.
@@ -180,15 +178,9 @@ const QuerySelectStaleTasks = `
 const QuerySelectRecoverableAttempts = `
 	SELECT t.task_id, t.current_attempt_id, t.job_id
 	FROM TASKS t
-	WHERE t.status = 'In-Progress'
-	  AND t.current_attempt_id IS NOT NULL
-	  AND EXISTS (
-	    SELECT 1
-	    FROM TASKS map_task
-	    WHERE map_task.job_id = t.job_id
-	      AND map_task.task_type = 'Map'
-	      AND map_task.replica_index = $1
-	  )`
+	JOIN JOBS j ON t.job_id = j.job_id
+	WHERE t.status = 'In-Progress' AND j.replica_index = $1
+	  AND t.current_attempt_id IS NOT NULL`
 
 // ---------------------------------------------------------------------------
 // Read-only output queries
@@ -237,8 +229,8 @@ const QueryCountPendingMapTasks = `SELECT COUNT(*) FROM TASKS WHERE job_id = $1 
 // QueryInsertJob creates a new job record, skipping if the job was already
 // inserted by the API layer (idempotent when called from ScheduleJob).
 const QueryInsertJob = `
-	INSERT INTO JOBS (job_id, user_id, status, created_at, updated_at)
-	VALUES ($1, $2, 'Pending', NOW(), NOW())
+	INSERT INTO JOBS (job_id, user_id, status, created_at, updated_at, replica_index)
+	VALUES ($1, $2, 'Pending', NOW(), NOW(), $3)
 	ON CONFLICT (job_id) DO NOTHING`
 
 // QueryInsertJobConfig persists immutable job configuration, skipping if the

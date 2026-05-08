@@ -19,6 +19,7 @@ import (
 )
 
 const stagingBucket = "mapreduce-staging"
+const shuffleChunkSizeBytes = 1 << 20 // 1 MiB
 
 func (w *Worker) runMap(ctx context.Context, a *pb.TaskAssignment) (outputURIs, outputChecksums []string, err error) {
 	log.Printf("[map] task=%s partition=%d locations=%d", a.TaskId, a.PartitionId, len(a.DataLocations))
@@ -122,14 +123,58 @@ func (w *Worker) runMap(ctx context.Context, a *pb.TaskAssignment) (outputURIs, 
 		return nil, nil, fmt.Errorf("read sorted stream: %w", err)
 	}
 
-	// Upload each partition to staging.
+	// Upload each partition — prefer ShuffleService, fall back to object storage.
 	for i, part := range partitions {
-		uri, chk, upErr := uploadStagingPartition(ctx, w.storage, a.JobId, a.TaskId, a.AttemptId, i, part)
-		if upErr != nil {
-			return nil, nil, fmt.Errorf("upload partition %d: %w", i, upErr)
+		if len(part) == 0 {
+			continue
 		}
-		outputURIs = append(outputURIs, uri)
-		outputChecksums = append(outputChecksums, chk)
+
+		var buf bytes.Buffer
+		for _, rec := range part {
+			b, marshalErr := json.Marshal(rec)
+			if marshalErr != nil {
+				return nil, nil, fmt.Errorf("marshal partition %d record: %w", i, marshalErr)
+			}
+			buf.Write(b)
+			buf.WriteByte('\n')
+		}
+		data := buf.Bytes()
+		h := sha256.Sum256(data)
+		checksum := hex.EncodeToString(h[:])
+
+		if w.shuffleClient != nil {
+			stream, err := w.shuffleClient.PushShuffleData(ctx)
+			if err != nil {
+				return nil, nil, fmt.Errorf("open shuffle stream: %w", err)
+			}
+			for off := 0; off < len(data); off += shuffleChunkSizeBytes {
+				end := off + shuffleChunkSizeBytes
+				if end > len(data) {
+					end = len(data)
+				}
+				if err := stream.Send(&pb.ShuffleDataChunk{
+					JobId:       a.JobId,
+					PartitionId: int32(i),
+					Data:        data[off:end],
+				}); err != nil {
+					return nil, nil, fmt.Errorf("send shuffle data %d: %w", i, err)
+				}
+			}
+			if _, err := stream.CloseAndRecv(); err != nil {
+				return nil, nil, fmt.Errorf("close shuffle stream %d: %w", i, err)
+			}
+			outputURIs = append(outputURIs, fmt.Sprintf("shuffle://%s/%d", a.JobId, i))
+			outputChecksums = append(outputChecksums, checksum)
+		} else {
+			// Legacy / test fallback: write to object storage.
+			objKey := fmt.Sprintf("%s/%s/partition-%d.jsonl", a.JobId, a.TaskId, i)
+			_, err := w.storage.PutObject(ctx, stagingBucket, objKey, bytes.NewReader(data), int64(len(data)), minio.PutObjectOptions{ContentType: "application/jsonl"})
+			if err != nil {
+				return nil, nil, fmt.Errorf("upload partition %d: %w", i, err)
+			}
+			outputURIs = append(outputURIs, fmt.Sprintf("s3://%s/%s", stagingBucket, objKey))
+			outputChecksums = append(outputChecksums, checksum)
+		}
 	}
 
 	log.Printf("[map] done task=%s records=%d partitions=%d", a.TaskId, totalRecords, R)
