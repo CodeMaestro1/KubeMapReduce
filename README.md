@@ -369,6 +369,7 @@ Comprehensive guides for deploying, configuring, and troubleshooting KubeMapRedu
 - **[Linkerd Setup Guide](docs/LINKERD_SETUP.md)** — Service mesh installation and configuration for automatic mTLS and per-RPC timeouts (production-recommended)
 - **[Timeout Configuration Guide](docs/TIMEOUT_CONFIGURATION.md)** — Detailed tuning guidelines for timeout values, retry strategies, and circuit breaker settings
 - **[Architecture Documentation](docs/ARCHITECTURE.md)** — System design, component interactions, and fault tolerance patterns
+- **[Event-Driven Coordinator Proposal](docs/ARCHITECTURE_EVENT_DRIVEN_COORDINATION.md)** — Phased plan to decouple manager coordination with NATS/Kafka-style eventing
 
 ### Quick References
 

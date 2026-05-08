@@ -35,6 +35,7 @@ markdown_extensions:
 nav:
   - Home: index.md
   - Architecture: ARCHITECTURE.md
+  - Event-Driven Coordinator Proposal: ARCHITECTURE_EVENT_DRIVEN_COORDINATION.md
   - API Reference:
       - REST API: api/rest.md
       - gRPC API: api/grpc.md

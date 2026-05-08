@@ -21,6 +21,7 @@ The platform uses PostgreSQL for task state, MinIO for shared object storage, an
 ## Supporting References
 
 - [External Access Architecture](ARCHITECTURE_EXTERNAL_ACCESS.md)
+- [Event-Driven Coordinator Decoupling Proposal](ARCHITECTURE_EVENT_DRIVEN_COORDINATION.md)
 - [Deployment Guide](DEPLOYMENT.md)
 - [External Access Guide](EXTERNAL_ACCESS.md)
 - [gRPC API Reference](api/grpc.md)
