@@ -112,6 +112,7 @@ type SystemConfigUpdate struct {
 	MemoryLimit       string
 	WorkerReplicas    int
 	MaxJobsPerNode    int
+	LocalityKey       string
 }
 
 // Task represents the metadata the Master needs to track for a single unit of work.

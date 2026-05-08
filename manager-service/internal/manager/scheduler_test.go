@@ -1404,7 +1404,7 @@ func TestScheduler_UpsertSystemConfig(t *testing.T) {
 	defer db.Close()
 
 	mock.ExpectExec(regexp.QuoteMeta(QueryUpsertSystemConfig)).
-		WithArgs(20, "500m", "1Gi", 5, 2).
+		WithArgs(20, "500m", "1Gi", 5, 2, "topology.kubernetes.io/zone").
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
 	if err := scheduler.UpsertSystemConfig(context.Background(), SystemConfigUpdate{
@@ -1413,6 +1413,7 @@ func TestScheduler_UpsertSystemConfig(t *testing.T) {
 		MemoryLimit:       "1Gi",
 		WorkerReplicas:    5,
 		MaxJobsPerNode:    2,
+		LocalityKey:       "topology.kubernetes.io/zone",
 	}); err != nil {
 		t.Fatalf("expected upsert success, got %v", err)
 	}

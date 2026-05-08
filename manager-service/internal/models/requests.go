@@ -86,6 +86,7 @@ type AdminWorkerConfigRequest struct {
 	MemoryLimit    string `json:"memoryLimit,omitempty"`
 	WorkerReplicas int    `json:"workerReplicas,omitempty"`
 	MaxJobsPerNode int    `json:"maxJobsPerNode,omitempty"`
+	LocalityKey    string `json:"localityKey,omitempty"`
 }
 
 // DeleteUserRequest is used by the Admin CLI to deprovision users.

@@ -20,6 +20,8 @@ The platform uses PostgreSQL for task state, MinIO for shared object storage, an
 
 ## Supporting References
 
+- [Event-Driven Coordination Proposal](ARCHITECTURE_EVENT_DRIVEN_COORDINATION.md) (Draft)
+- [Data Locality-Aware Scheduling](ARCHITECTURE_DATA_LOCALITY.md) (Implemented)
 - [External Access Architecture](ARCHITECTURE_EXTERNAL_ACCESS.md)
 - [Deployment Guide](DEPLOYMENT.md)
 - [External Access Guide](EXTERNAL_ACCESS.md)

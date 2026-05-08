@@ -167,6 +167,7 @@ func runAdminConfigureNodes(args []string, doAuthReq func(method, url string, be
 	maxPods := fs.Int("max-pods", 0, "Maximum concurrent pods (required, > 0)")
 	cpuLimit := fs.String("cpu", "", "CPU limit per worker pod (e.g., 500m)")
 	memoryLimit := fs.String("memory", "", "Memory limit per worker pod (e.g., 1Gi)")
+	localityKey := fs.String("locality-key", "topology.kubernetes.io/zone", "Topology label key for worker co-location with MinIO (e.g. topology.kubernetes.io/zone, kubernetes.io/hostname)")
 	_ = fs.Parse(args)
 
 	if *maxPods < 1 {
@@ -177,6 +178,7 @@ func runAdminConfigureNodes(args []string, doAuthReq func(method, url string, be
 		"maxPods":     *maxPods,
 		"cpuLimit":    strings.TrimSpace(*cpuLimit),
 		"memoryLimit": strings.TrimSpace(*memoryLimit),
+		"localityKey": strings.TrimSpace(*localityKey),
 	})
 	if err != nil {
 		return fmt.Errorf("failed to build configure-nodes request: %v", err)

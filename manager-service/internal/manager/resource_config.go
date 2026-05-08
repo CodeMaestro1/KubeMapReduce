@@ -41,6 +41,10 @@ type ResourceConfigProvider interface {
 	// Kubernetes resource.Quantity syntax, e.g. "500m", "512Mi") to apply to
 	// freshly spawned worker pods.
 	GetWorkerResourceLimits(ctx context.Context) (cpuLimit, memoryLimit string, err error)
+
+	// GetLocalityKey returns the Kubernetes topology label key (e.g.
+	// "topology.kubernetes.io/zone") used to co-locate workers with MinIO.
+	GetLocalityKey(ctx context.Context) (string, error)
 }
 
 // resolveWorkerResources parses raw CPU and memory limit strings into a
@@ -150,4 +154,21 @@ func (p *DBResourceConfigProvider) GetWorkerResourceLimits(ctx context.Context) 
 		return "", "", err
 	}
 	return cpu, mem, nil
+}
+
+// GetLocalityKey implements ResourceConfigProvider by issuing QueryGetLocalityKey.
+// returns empty string if no configuration is found or on error.
+func (p *DBResourceConfigProvider) GetLocalityKey(ctx context.Context) (string, error) {
+	if p == nil || p.db == nil {
+		return "", nil
+	}
+	var key string
+	err := p.db.QueryRowContext(ctx, QueryGetLocalityKey).Scan(&key)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return "", nil
+		}
+		return "", err
+	}
+	return key, nil
 }

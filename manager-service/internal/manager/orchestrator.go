@@ -108,6 +108,22 @@ func (k *KubeOrchestrator) resolveContainerResources(ctx context.Context) corev1
 	return resolveWorkerResources(cpuLimit, memLimit)
 }
 
+// resolveLocalityKey returns the Kubernetes topology key used for pod affinity.
+func (k *KubeOrchestrator) resolveLocalityKey(ctx context.Context) string {
+	if k.resourceProvider != nil {
+		key, err := k.resourceProvider.GetLocalityKey(ctx)
+		if err != nil {
+			slog.WarnContext(ctx, "failed to read locality key, disabling locality",
+				slog.String("component", "orchestrator"),
+				slog.Any("err", err),
+			)
+			return ""
+		}
+		return key
+	}
+	return ""
+}
+
 // SpawnWorker creates a K8s Job for a task attempt.
 //
 // It uses a deterministic naming scheme (worker-[taskID]-[hash]) to prevent duplicate jobs
@@ -245,6 +261,27 @@ func (k *KubeOrchestrator) EnsureWorkerPool(ctx context.Context, jobID string, n
 				},
 			},
 		},
+	}
+
+	localityKey := k.resolveLocalityKey(ctx)
+	if localityKey != "" {
+		deployment.Spec.Template.Spec.Affinity = &corev1.Affinity{
+			PodAffinity: &corev1.PodAffinity{
+				PreferredDuringSchedulingIgnoredDuringExecution: []corev1.WeightedPodAffinityTerm{
+					{
+						Weight: 100,
+						PodAffinityTerm: corev1.PodAffinityTerm{
+							LabelSelector: &metav1.LabelSelector{
+								MatchLabels: map[string]string{
+									"app.kubernetes.io/name": "minio",
+								},
+							},
+							TopologyKey: localityKey,
+						},
+					},
+				},
+			},
+		}
 	}
 
 	_, err := k.clientset.AppsV1().Deployments(k.namespace).Create(ctx, deployment, metav1.CreateOptions{})
