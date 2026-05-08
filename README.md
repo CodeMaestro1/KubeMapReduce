@@ -169,22 +169,52 @@ kubectl apply -k k8s/
 kubectl -n mapreduce rollout status statefulset/postgres
 kubectl -n mapreduce rollout status statefulset/minio
 kubectl -n mapreduce rollout status deployment/keycloak
+kubectl -n mapreduce rollout status deployment/api
 kubectl -n mapreduce rollout status statefulset/manager
 
 # Run DB migrations (required on first deploy or after wiping the PVC)
-for f in migrations/*.sql; do
-  echo "Applying $f..."
-  kubectl exec -i postgres-0 -n mapreduce -- psql -U mapreduce -d mapreduce < "$f"
-done
+bash scripts/run-migrations.sh
+```
+
+### Bootstrap Keycloak and create admin user
+
+Keycloak and the API are exposed via NodePort — no port-forwarding needed. Get the node IP first:
+
+```bash
+NODE_IP=$(kubectl get nodes -o jsonpath='{.items[0].status.addresses[?(@.type=="InternalIP")].address}')
+echo "Node IP: $NODE_IP"
+# Keycloak: http://$NODE_IP:30080
+# API:      http://$NODE_IP:30081
+```
+
+Update `KC_HOSTNAME_URL` and `KC_HOSTNAME_ADMIN_URL` in `k8s/25-keycloak.yaml` and `KEYCLOAK_ISSUER` in `k8s/30-manager.yaml` to use `http://$NODE_IP:30080`, then re-apply and restart:
+
+```bash
+kubectl apply -k k8s/
+kubectl rollout restart deployment/keycloak deployment/api -n mapreduce
+```
+
+Bootstrap the Keycloak realm and create the first admin user:
+
+```bash
+export KEYCLOAK_BASE_URL=http://$NODE_IP:30080
+
+go run ./auth-service/cmd/setup \
+  --admin-password $(kubectl get secret keycloak-creds -n mapreduce -o jsonpath='{.data.KEYCLOAK_ADMIN_PASSWORD}' | base64 -d) \
+  --username platform-admin \
+  --email platform-admin@example.com \
+  --prompt-password \
+  --role ADMIN
 ```
 
 ### Submit a job
 
 ```bash
-# Point the CLI at the cluster API
-export API_URL=http://<cluster-ip-or-loadbalancer>:8081
+export KEYCLOAK_BASE_URL=http://$NODE_IP:30080
+export API_URL=http://$NODE_IP:30081
 
 go run ./cli-service/cmd/cli login --username platform-admin
+go run ./cli-service/cmd/cli health
 go run ./cli-service/cmd/cli jobs submit \
   --mapper  mapper.py \
   --reducer reducer.py \
