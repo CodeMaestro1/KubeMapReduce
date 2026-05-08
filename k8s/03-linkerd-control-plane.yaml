@@ -118,7 +118,7 @@ spec:
           args:
             - identity
             - -addr=:8080
-            - -metrics-addr=:9990
+            - -admin-addr=:9990
           ports:
             - name: http
               containerPort: 8080

@@ -35,6 +35,10 @@ rules:
   - apiGroups: [""]
     resources: ["pods", "services", "endpoints"]
     verbs: ["get", "list", "watch"]
+  # EndpointSlices for service discovery (required by destination)
+  - apiGroups: ["discovery.k8s.io"]
+    resources: ["endpointslices"]
+    verbs: ["get", "list", "watch"]
   # Read namespaces for injection policy
   - apiGroups: [""]
     resources: ["namespaces"]
