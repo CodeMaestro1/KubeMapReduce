@@ -523,7 +523,13 @@ func (h *Handlers) HandleAdminConfigWorkers(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	if req.MaxPods == 0 && req.WorkerReplicas == 0 && req.MaxJobsPerNode == 0 &&
-		strings.TrimSpace(req.CPULimit) == "" && strings.TrimSpace(req.MemoryLimit) == "" {
+		strings.TrimSpace(req.CPULimit) == "" && strings.TrimSpace(req.MemoryLimit) == "" &&
+		r.Method != http.MethodPost { // Method check is redundant here but keeping logic flow
+		// Actually, we want to allow updating ONLY localityKey if provided.
+	}
+	// Better check: at least one field must be non-zero or non-empty
+	if req.MaxPods <= 0 && req.WorkerReplicas <= 0 && req.MaxJobsPerNode <= 0 &&
+		req.CPULimit == "" && req.MemoryLimit == "" && req.LocalityKey == "" {
 		httputil.WriteErrorJSON(w, http.StatusBadRequest, "at least one configuration field must be provided")
 		return
 	}
@@ -534,6 +540,7 @@ func (h *Handlers) HandleAdminConfigWorkers(w http.ResponseWriter, r *http.Reque
 		MemoryLimit:       req.MemoryLimit,
 		WorkerReplicas:    req.WorkerReplicas,
 		MaxJobsPerNode:    req.MaxJobsPerNode,
+		LocalityKey:       req.LocalityKey,
 	}
 
 	payload, err := json.Marshal(update)
@@ -570,6 +577,7 @@ func (h *Handlers) HandleAdminConfigWorkers(w http.ResponseWriter, r *http.Reque
 		"memoryLimit":    req.MemoryLimit,
 		"workerReplicas": req.WorkerReplicas,
 		"maxJobsPerNode": req.MaxJobsPerNode,
+		"localityKey":    req.LocalityKey,
 	}); err != nil {
 		return
 	}

@@ -748,6 +748,7 @@ func (s *Scheduler) GetSystemConfig(ctx context.Context) (SystemConfigUpdate, er
 		&cfg.MemoryLimit,
 		&cfg.WorkerReplicas,
 		&cfg.MaxJobsPerNode,
+		&cfg.LocalityKey,
 	)
 	if err == sql.ErrNoRows {
 		// Return defaults if not configured
@@ -757,6 +758,7 @@ func (s *Scheduler) GetSystemConfig(ctx context.Context) (SystemConfigUpdate, er
 			MemoryLimit:       "1Gi",
 			WorkerReplicas:    1,
 			MaxJobsPerNode:    1,
+			LocalityKey:       "topology.kubernetes.io/zone",
 		}, nil
 	}
 	return cfg, err
@@ -770,6 +772,7 @@ func (s *Scheduler) UpsertSystemConfig(ctx context.Context, req SystemConfigUpda
 		req.MemoryLimit,
 		req.WorkerReplicas,
 		req.MaxJobsPerNode,
+		req.LocalityKey,
 	)
 	return err
 }

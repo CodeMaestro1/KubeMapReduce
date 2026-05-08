@@ -377,3 +377,68 @@ func TestKubeOrchestrator_SpawnWorker_SecurityHardening(t *testing.T) {
 func TestEnvtest(t *testing.T) {
 	t.Skip("Skipping envtest implementation because we don't have kubebuilder assets in the sandbox.")
 }
+func TestEnsureWorkerPool_LocalityAffinity(t *testing.T) {
+	client := fake.NewSimpleClientset()
+	orchestrator := NewKubeOrchestrator(client, "mapreduce", "worker:latest", "worker-secrets")
+
+	t.Run("injects podAffinity when locality key is configured", func(t *testing.T) {
+		provider := &mockLocalityProvider{key: "topology.kubernetes.io/zone"}
+		orchestrator.WithResourceProvider(provider)
+
+		jobID := "locality-job"
+		err := orchestrator.EnsureWorkerPool(context.Background(), jobID, 1, "manager:8081")
+		if err != nil {
+			t.Fatalf("EnsureWorkerPool failed: %v", err)
+		}
+
+		sanitized := sanitizeForDNSLabel(jobID)
+		deploy, err := client.AppsV1().Deployments("mapreduce").Get(context.Background(), "worker-pool-"+sanitized, metav1.GetOptions{})
+		if err != nil {
+			t.Fatalf("failed to get deployment: %v", err)
+		}
+
+		affinity := deploy.Spec.Template.Spec.Affinity
+		if affinity == nil || affinity.PodAffinity == nil {
+			t.Fatal("expected PodAffinity to be set")
+		}
+
+		terms := affinity.PodAffinity.PreferredDuringSchedulingIgnoredDuringExecution
+		if len(terms) == 0 {
+			t.Fatal("expected at least one preferred affinity term")
+		}
+
+		term := terms[0].PodAffinityTerm
+		if term.TopologyKey != "topology.kubernetes.io/zone" {
+			t.Errorf("expected topology key %q, got %q", "topology.kubernetes.io/zone", term.TopologyKey)
+		}
+		if term.LabelSelector.MatchLabels["app.kubernetes.io/name"] != "minio" {
+			t.Errorf("expected label selector for minio, got %v", term.LabelSelector.MatchLabels)
+		}
+	})
+
+	t.Run("skips affinity when locality key is empty", func(t *testing.T) {
+		provider := &mockLocalityProvider{key: ""}
+		orchestrator.WithResourceProvider(provider)
+
+		jobID := "no-locality-job"
+		orchestrator.EnsureWorkerPool(context.Background(), jobID, 1, "manager:8081")
+
+		sanitized := sanitizeForDNSLabel(jobID)
+		deploy, _ := client.AppsV1().Deployments("mapreduce").Get(context.Background(), "worker-pool-"+sanitized, metav1.GetOptions{})
+		if deploy.Spec.Template.Spec.Affinity != nil {
+			t.Errorf("expected nil affinity for empty locality key")
+		}
+	})
+}
+
+type mockLocalityProvider struct {
+	key string
+}
+
+func (m *mockLocalityProvider) GetWorkerResourceLimits(ctx context.Context) (string, string, error) {
+	return "500m", "512Mi", nil
+}
+
+func (m *mockLocalityProvider) GetLocalityKey(ctx context.Context) (string, error) {
+	return m.key, nil
+}
