@@ -43,7 +43,7 @@ spec:
         fsGroup: 65532
       containers:
         - name: destination
-          image: ghcr.io/linkerd/controller:stable-2.15.0
+          image: ghcr.io/linkerd/controller:edge-26.4.4
           args:
             - destination
             - -addr=:8086
@@ -114,7 +114,7 @@ spec:
         fsGroup: 65532
       containers:
         - name: identity
-          image: ghcr.io/linkerd/controller:stable-2.15.0
+          image: ghcr.io/linkerd/controller:edge-26.4.4
           args:
             - identity
             - -addr=:8080
@@ -189,7 +189,7 @@ spec:
         fsGroup: 65532
       containers:
         - name: proxy-injector
-          image: ghcr.io/linkerd/controller:stable-2.15.0
+          image: ghcr.io/linkerd/controller:edge-26.4.4
           args:
             - proxy-injector
             - -addr=:8443
@@ -205,7 +205,7 @@ spec:
             - name: LINKERD_IDENTITY_TRUST_DOMAIN
               value: cluster.local
             - name: LINKERD_PROXY_IMAGE
-              value: ghcr.io/linkerd/proxy:stable-2.15.0
+              value: ghcr.io/linkerd/proxy:edge-26.4.4
             - name: LINKERD_PROXY_INIT_IMAGE
               value: ghcr.io/linkerd/proxy-init:v2.3.0
           resources:
