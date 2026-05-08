@@ -19,6 +19,7 @@ import (
 )
 
 const stagingBucket = "mapreduce-staging"
+const shuffleChunkSizeBytes = 1 << 20 // 1 MiB
 
 func (w *Worker) runMap(ctx context.Context, a *pb.TaskAssignment) (outputURIs, outputChecksums []string, err error) {
 	log.Printf("[map] task=%s partition=%d locations=%d", a.TaskId, a.PartitionId, len(a.DataLocations))
@@ -130,7 +131,10 @@ func (w *Worker) runMap(ctx context.Context, a *pb.TaskAssignment) (outputURIs, 
 
 		var buf bytes.Buffer
 		for _, rec := range part {
-			b, _ := json.Marshal(rec)
+			b, marshalErr := json.Marshal(rec)
+			if marshalErr != nil {
+				return nil, nil, fmt.Errorf("marshal partition %d record: %w", i, marshalErr)
+			}
 			buf.Write(b)
 			buf.WriteByte('\n')
 		}
@@ -143,12 +147,18 @@ func (w *Worker) runMap(ctx context.Context, a *pb.TaskAssignment) (outputURIs, 
 			if err != nil {
 				return nil, nil, fmt.Errorf("open shuffle stream: %w", err)
 			}
-			if err := stream.Send(&pb.ShuffleDataChunk{
-				JobId:       a.JobId,
-				PartitionId: int32(i),
-				Data:        data,
-			}); err != nil {
-				return nil, nil, fmt.Errorf("send shuffle data %d: %w", i, err)
+			for off := 0; off < len(data); off += shuffleChunkSizeBytes {
+				end := off + shuffleChunkSizeBytes
+				if end > len(data) {
+					end = len(data)
+				}
+				if err := stream.Send(&pb.ShuffleDataChunk{
+					JobId:       a.JobId,
+					PartitionId: int32(i),
+					Data:        data[off:end],
+				}); err != nil {
+					return nil, nil, fmt.Errorf("send shuffle data %d: %w", i, err)
+				}
 			}
 			if _, err := stream.CloseAndRecv(); err != nil {
 				return nil, nil, fmt.Errorf("close shuffle stream %d: %w", i, err)

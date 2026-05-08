@@ -252,7 +252,12 @@ func (k *KubeOrchestrator) EnsureWorkerPool(ctx context.Context, jobID string, n
 		return nil
 	}
 	if apierrors.IsAlreadyExists(err) {
-		_, err = k.clientset.AppsV1().Deployments(k.namespace).Update(ctx, deployment, metav1.UpdateOptions{})
+		existing, getErr := k.clientset.AppsV1().Deployments(k.namespace).Get(ctx, deploymentName, metav1.GetOptions{})
+		if getErr != nil {
+			return getErr
+		}
+		existing.Spec = deployment.Spec
+		_, err = k.clientset.AppsV1().Deployments(k.namespace).Update(ctx, existing, metav1.UpdateOptions{})
 		return err
 	}
 	return err

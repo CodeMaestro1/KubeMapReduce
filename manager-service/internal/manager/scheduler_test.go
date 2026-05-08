@@ -684,6 +684,9 @@ func TestScheduler_RenewLease_Success(t *testing.T) {
 		WithArgs(taskID).
 		WillReturnRows(sqlmock.NewRows([]string{"status", "current_attempt_id"}).AddRow("In-Progress", attemptID))
 	expectLeaseValidation(mock, attemptID, leaseID, true)
+	mock.ExpectExec(regexp.QuoteMeta(QueryRenewLease)).
+		WithArgs(attemptID).
+		WillReturnResult(sqlmock.NewResult(0, 1))
 
 	mock.ExpectCommit()
 
@@ -709,6 +712,9 @@ func TestScheduler_RenewLease_DBClockValidEvenIfAppWouldThinkExpired(t *testing.
 	// Simulates DB clock behind the manager pod: a local check might think the lease
 	// expired already, but renewal succeeds because DB time is the lease authority.
 	expectLeaseValidation(mock, attemptID, leaseID, true)
+	mock.ExpectExec(regexp.QuoteMeta(QueryRenewLease)).
+		WithArgs(attemptID).
+		WillReturnResult(sqlmock.NewResult(0, 1))
 
 	mock.ExpectCommit()
 

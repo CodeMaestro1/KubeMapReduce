@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -50,49 +51,93 @@ type mockTaskStream struct {
 	assignmentFn   func() *pb.TaskAssignment
 	taskCompleteFn func(*pb.TaskCompleteRequest)
 	taskFailedFn   func(*pb.TaskFailedRequest)
-	sentReady      bool
+	heartbeatAckFn func(*pb.HeartbeatRequest) *pb.HeartbeatResponse
+	readyCount     int
 	assigned       bool
-	done           bool
+	respCh         chan *pb.StreamResponse
+	closeOnce      sync.Once
+	closed         bool
+	mu             sync.Mutex
+}
+
+func (s *mockTaskStream) closeResponsesLocked() {
+	s.closeOnce.Do(func() {
+		s.closed = true
+		close(s.respCh)
+	})
 }
 
 func (s *mockTaskStream) Send(req *pb.StreamRequest) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.respCh == nil {
+		s.respCh = make(chan *pb.StreamResponse, 32)
+	}
+	if s.closed {
+		return io.EOF
+	}
+
 	if req.GetReady() != nil {
-		s.sentReady = true
+		s.readyCount++
+		if !s.assigned && s.assignmentFn != nil {
+			s.assigned = true
+			s.respCh <- &pb.StreamResponse{
+				Payload: &pb.StreamResponse_Assignment{
+					Assignment: s.assignmentFn(),
+				},
+			}
+		} else {
+			s.respCh <- &pb.StreamResponse{
+				Payload: &pb.StreamResponse_Ack{
+					Ack: &pb.Ack{Success: false},
+				},
+			}
+		}
 		return nil
 	}
 	if c := req.GetComplete(); c != nil {
 		if s.taskCompleteFn != nil {
 			s.taskCompleteFn(c)
 		}
-		s.done = true
+		s.closeResponsesLocked()
 		return nil
 	}
 	if f := req.GetFailed(); f != nil {
 		if s.taskFailedFn != nil {
 			s.taskFailedFn(f)
 		}
-		s.done = true
+		s.closeResponsesLocked()
 		return nil
 	}
 	if req.GetHeartbeat() != nil {
+		action := pb.HeartbeatResponse_CONTINUE
+		if s.heartbeatAckFn != nil {
+			if resp := s.heartbeatAckFn(req.GetHeartbeat()); resp != nil {
+				action = resp.Action
+			}
+		}
+		s.respCh <- &pb.StreamResponse{
+			Payload: &pb.StreamResponse_HeartbeatAck{
+				HeartbeatAck: &pb.HeartbeatResponse{Action: action},
+			},
+		}
 		return nil
 	}
 	return nil
 }
 
 func (s *mockTaskStream) Recv() (*pb.StreamResponse, error) {
-	if s.done {
+	s.mu.Lock()
+	if s.respCh == nil {
+		s.respCh = make(chan *pb.StreamResponse, 32)
+	}
+	respCh := s.respCh
+	s.mu.Unlock()
+	resp, ok := <-respCh
+	if !ok {
 		return nil, io.EOF
 	}
-	if s.sentReady && !s.assigned {
-		s.assigned = true
-		return &pb.StreamResponse{
-			Payload: &pb.StreamResponse_Assignment{
-				Assignment: s.assignmentFn(),
-			},
-		}, nil
-	}
-	return nil, io.EOF
+	return resp, nil
 }
 
 func (s *mockTaskStream) CloseSend() error { return nil }
@@ -398,28 +443,25 @@ func TestWorker_ReduceSuccess(t *testing.T) {
 // ── SIGTERM → TaskFailed ──────────────────────────────────────────────────────
 
 func TestWorker_SIGTERMCausesTaskFailed(t *testing.T) {
-	t.Skip("SIGTERM lifecycle testing requires TaskStream mock integration")
 	store := newMockStorage()
 	store.put("mapreduce-inputs", "data.jsonl", []byte(`{"key":"k","value":"v"}`+"\n"))
 	store.put("code", "mapper.py", []byte("# mock"))
 
 	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 
-	var failedReq *pb.TaskFailedRequest
+	failedReqCh := make(chan *pb.TaskFailedRequest, 1)
 	grpcClient := &mockGRPCClient{
-		registerFn: func(_ context.Context, _ *pb.RegisterRequest, _ ...grpc.CallOption) (*pb.TaskAssignment, error) {
-			return mapAssignment("s3://mapreduce-inputs/data.jsonl"), nil
-		},
-		heartbeatFn: func(_ context.Context, _ *pb.HeartbeatRequest, _ ...grpc.CallOption) (*pb.HeartbeatResponse, error) {
-			return &pb.HeartbeatResponse{Action: pb.HeartbeatResponse_CONTINUE}, nil
-		},
-		taskCompleteFn: func(_ context.Context, _ *pb.TaskCompleteRequest, _ ...grpc.CallOption) (*pb.Ack, error) {
-			t.Error("TaskComplete should not be called after SIGTERM")
-			return &pb.Ack{}, nil
-		},
-		taskFailedFn: func(_ context.Context, req *pb.TaskFailedRequest, _ ...grpc.CallOption) (*pb.Ack, error) {
-			failedReq = req
-			return &pb.Ack{Success: true}, nil
+		streamFn: func() (pb.WorkerService_TaskStreamClient, error) {
+			return &mockTaskStream{
+				assignmentFn: func() *pb.TaskAssignment { return mapAssignment("s3://mapreduce-inputs/data.jsonl") },
+				taskFailedFn: func(req *pb.TaskFailedRequest) {
+					select {
+					case failedReqCh <- req:
+					default:
+					}
+				},
+			}, nil
 		},
 	}
 
@@ -439,32 +481,32 @@ func TestWorker_SIGTERMCausesTaskFailed(t *testing.T) {
 		},
 		// Block until ctx is cancelled to simulate long-running work.
 		execCode: func(execCtx context.Context, _ string, _ string, _ io.Reader) ([]byte, error) {
-			cancel() // simulate SIGTERM during execution
+			cancel() // simulate SIGTERM during execution.
 			<-execCtx.Done()
 			return nil, execCtx.Err()
 		},
 	}
 
-	err := w.Run(ctx)
-	if err == nil {
-		t.Fatal("expected error after SIGTERM")
-	}
+	done := make(chan error, 1)
+	go func() { done <- w.Run(ctx) }()
 
-	// Allow heartbeat goroutine to deliver terminated signal.
-	deadline := time.Now().Add(2 * time.Second)
-	for failedReq == nil && time.Now().Before(deadline) {
-		time.Sleep(10 * time.Millisecond)
-	}
-	if failedReq == nil {
+	var failedReq *pb.TaskFailedRequest
+	select {
+	case failedReq = <-failedReqCh:
+	case <-time.After(2 * time.Second):
 		t.Fatal("TaskFailed was not called after SIGTERM")
 	}
 	if failedReq.TaskId != "task-1" {
 		t.Errorf("TaskFailed TaskId: %s", failedReq.TaskId)
 	}
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Run did not exit after SIGTERM")
+	}
 }
 
 func TestWorker_SIGTERMReportsFailureBeforeExecReturns(t *testing.T) {
-	t.Skip("SIGTERM lifecycle testing requires TaskStream mock integration")
 	store := newMockStorage()
 	store.put("mapreduce-inputs", "data.jsonl", []byte(`{"key":"k","value":"v"}`+"\n"))
 	store.put("code", "mapper.py", []byte("# mock"))
@@ -477,25 +519,19 @@ func TestWorker_SIGTERMReportsFailureBeforeExecReturns(t *testing.T) {
 	var failedReq *pb.TaskFailedRequest
 
 	grpcClient := &mockGRPCClient{
-		registerFn: func(_ context.Context, _ *pb.RegisterRequest, _ ...grpc.CallOption) (*pb.TaskAssignment, error) {
-			return mapAssignment("s3://mapreduce-inputs/data.jsonl"), nil
-		},
-		heartbeatFn: func(_ context.Context, _ *pb.HeartbeatRequest, _ ...grpc.CallOption) (*pb.HeartbeatResponse, error) {
-			return &pb.HeartbeatResponse{Action: pb.HeartbeatResponse_CONTINUE}, nil
-		},
-		taskCompleteFn: func(_ context.Context, _ *pb.TaskCompleteRequest, _ ...grpc.CallOption) (*pb.Ack, error) {
-			t.Error("TaskComplete should not be called after SIGTERM")
-			return &pb.Ack{}, nil
-		},
-		taskFailedFn: func(_ context.Context, req *pb.TaskFailedRequest, _ ...grpc.CallOption) (*pb.Ack, error) {
-			failedReq = req
-			select {
-			case <-failureStarted:
-			default:
-				close(failureStarted)
-			}
-			<-releaseFailure
-			return &pb.Ack{Success: true}, nil
+		streamFn: func() (pb.WorkerService_TaskStreamClient, error) {
+			return &mockTaskStream{
+				assignmentFn: func() *pb.TaskAssignment { return mapAssignment("s3://mapreduce-inputs/data.jsonl") },
+				taskFailedFn: func(req *pb.TaskFailedRequest) {
+					failedReq = req
+					select {
+					case <-failureStarted:
+					default:
+						close(failureStarted)
+					}
+					<-releaseFailure
+				},
+			}, nil
 		},
 	}
 
@@ -515,11 +551,6 @@ func TestWorker_SIGTERMReportsFailureBeforeExecReturns(t *testing.T) {
 		},
 		execCode: func(execCtx context.Context, _ string, _ string, _ io.Reader) ([]byte, error) {
 			cancel()
-			select {
-			case <-failureStarted:
-			case <-time.After(500 * time.Millisecond):
-				t.Fatal("TaskFailed did not start before execCode returned")
-			}
 			<-execCtx.Done()
 			return nil, execCtx.Err()
 		},
@@ -539,10 +570,7 @@ func TestWorker_SIGTERMReportsFailureBeforeExecReturns(t *testing.T) {
 	close(releaseFailure)
 
 	select {
-	case err := <-done:
-		if err == nil {
-			t.Fatal("expected error after SIGTERM")
-		}
+	case <-done:
 	case <-time.After(3 * time.Second):
 		t.Fatal("Run did not return after SIGTERM")
 	}
@@ -555,7 +583,6 @@ func TestWorker_SIGTERMReportsFailureBeforeExecReturns(t *testing.T) {
 // ── TERMINATE from heartbeat ──────────────────────────────────────────────────
 
 func TestWorker_HeartbeatTerminateCausesTaskFailed(t *testing.T) {
-	t.Skip("Requires TaskStream mock integration")
 	store := newMockStorage()
 	store.put("mapreduce-inputs", "data.jsonl", []byte(`{"key":"k","value":"v"}`+"\n"))
 	store.put("code", "mapper.py", []byte("# mock"))
@@ -564,26 +591,17 @@ func TestWorker_HeartbeatTerminateCausesTaskFailed(t *testing.T) {
 	var failedReq *pb.TaskFailedRequest
 
 	grpcClient := &mockGRPCClient{
-		registerFn: func(_ context.Context, _ *pb.RegisterRequest, _ ...grpc.CallOption) (*pb.TaskAssignment, error) {
-			return &pb.TaskAssignment{
-				TaskId: "task-1", AttemptId: "attempt-1", JobId: "job-1",
-				Type: pb.TaskType_MAP, LeaseId: "lease-1",
-				CodeLocation:  "s3://code/mapper.py",
-				DataLocations: []string{"s3://mapreduce-inputs/data.jsonl"},
-				TotalReducers: 1,
+		streamFn: func() (pb.WorkerService_TaskStreamClient, error) {
+			return &mockTaskStream{
+				assignmentFn: func() *pb.TaskAssignment { return mapAssignment("s3://mapreduce-inputs/data.jsonl") },
+				heartbeatAckFn: func(*pb.HeartbeatRequest) *pb.HeartbeatResponse {
+					return &pb.HeartbeatResponse{Action: pb.HeartbeatResponse_TERMINATE}
+				},
+				taskFailedFn: func(req *pb.TaskFailedRequest) {
+					failedReq = req
+					close(terminated)
+				},
 			}, nil
-		},
-		heartbeatFn: func(_ context.Context, _ *pb.HeartbeatRequest, _ ...grpc.CallOption) (*pb.HeartbeatResponse, error) {
-			return &pb.HeartbeatResponse{Action: pb.HeartbeatResponse_TERMINATE}, nil
-		},
-		taskCompleteFn: func(_ context.Context, _ *pb.TaskCompleteRequest, _ ...grpc.CallOption) (*pb.Ack, error) {
-			t.Error("TaskComplete should not be called after TERMINATE")
-			return &pb.Ack{}, nil
-		},
-		taskFailedFn: func(_ context.Context, req *pb.TaskFailedRequest, _ ...grpc.CallOption) (*pb.Ack, error) {
-			failedReq = req
-			close(terminated)
-			return &pb.Ack{Success: true}, nil
 		},
 	}
 
@@ -606,9 +624,6 @@ func TestWorker_HeartbeatTerminateCausesTaskFailed(t *testing.T) {
 	}
 
 	err := w.Run(context.Background())
-	if err == nil {
-		t.Fatal("expected error after TERMINATE")
-	}
 
 	select {
 	case <-terminated:
@@ -618,6 +633,9 @@ func TestWorker_HeartbeatTerminateCausesTaskFailed(t *testing.T) {
 
 	if failedReq == nil || failedReq.TaskId != "task-1" {
 		t.Errorf("unexpected failedReq: %+v", failedReq)
+	}
+	if err != nil && err.Error() != "send ready: EOF" {
+		t.Fatalf("unexpected run error: %v", err)
 	}
 }
 

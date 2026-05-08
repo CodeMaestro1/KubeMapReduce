@@ -427,6 +427,9 @@ func TestWorkerServer_Heartbeat_Success(t *testing.T) {
 	mock.ExpectQuery(regexp.QuoteMeta(manager.QueryCheckLeaseValid)).
 		WithArgs(attemptID, leaseID).
 		WillReturnRows(sqlmock.NewRows([]string{"lease_valid"}).AddRow(true))
+	mock.ExpectExec(regexp.QuoteMeta(manager.QueryRenewLease)).
+		WithArgs(attemptID).
+		WillReturnResult(sqlmock.NewResult(0, 1))
 
 	mock.ExpectCommit()
 

@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"hash"
 	"io"
 	"log"
 	"os"
@@ -36,11 +37,16 @@ func (w *Worker) downloadShuffleInputsFromService(ctx context.Context, a *pb.Tas
 		return nil, nil, fmt.Errorf("open shuffle read stream: %w", err)
 	}
 
-	tmpPath := filepath.Join(taskTempDir, "shuffle-input.jsonl")
-	tmpFile, err := os.Create(tmpPath)
+	openSegment := func(idx int) (*os.File, error) {
+		// Precondition: taskTempDir is created by runReduce and writable.
+		return os.Create(filepath.Join(taskTempDir, fmt.Sprintf("shuffle-input-%d.jsonl", idx)))
+	}
+	segmentIdx := 0
+	tmpFile, err := openSegment(segmentIdx)
 	if err != nil {
 		return nil, nil, fmt.Errorf("create temp shuffle input file: %w", err)
 	}
+	segmentHasData := false
 
 	for {
 		chunk, err := stream.Recv()
@@ -51,18 +57,43 @@ func (w *Worker) downloadShuffleInputsFromService(ctx context.Context, a *pb.Tas
 			tmpFile.Close()
 			return nil, nil, fmt.Errorf("receive shuffle chunk: %w", err)
 		}
+		if len(chunk.Data) == 0 {
+			// Empty chunk signals a segment boundary (end of one map output stream).
+			if segmentHasData {
+				if _, err := tmpFile.Seek(0, io.SeekStart); err != nil {
+					tmpFile.Close()
+					return nil, nil, fmt.Errorf("seek temp shuffle input file: %w", err)
+				}
+				readers = append(readers, tmpFile)
+				closers = append(closers, tmpFile)
+				segmentIdx++
+				tmpFile, err = openSegment(segmentIdx)
+				if err != nil {
+					return nil, nil, fmt.Errorf("create temp shuffle input file: %w", err)
+				}
+				segmentHasData = false
+			}
+			continue
+		}
+		segmentHasData = true
 		if _, err := tmpFile.Write(chunk.Data); err != nil {
 			tmpFile.Close()
 			return nil, nil, fmt.Errorf("write shuffle chunk: %w", err)
 		}
 	}
 
-	if _, err := tmpFile.Seek(0, io.SeekStart); err != nil {
-		tmpFile.Close()
-		return nil, nil, fmt.Errorf("seek temp shuffle input file: %w", err)
+	if segmentHasData {
+		if _, err := tmpFile.Seek(0, io.SeekStart); err != nil {
+			tmpFile.Close()
+			return nil, nil, fmt.Errorf("seek temp shuffle input file: %w", err)
+		}
+		readers = append(readers, tmpFile)
+		closers = append(closers, tmpFile)
+	} else {
+		_ = tmpFile.Close()
 	}
 
-	return []io.Reader{tmpFile}, []io.Closer{tmpFile}, nil
+	return readers, closers, nil
 }
 
 func (w *Worker) downloadShuffleInputsFromStorage(ctx context.Context, a *pb.TaskAssignment, taskTempDir string) (readers []io.Reader, closers []io.Closer, err error) {
@@ -82,41 +113,60 @@ func (w *Worker) downloadShuffleInputsFromStorage(ctx context.Context, a *pb.Tas
 			}
 			return nil, nil, fmt.Errorf("download input %d (%s): %w", i, loc, err)
 		}
-
-		data, err := io.ReadAll(rc)
-		rc.Close()
+		tmpPath := filepath.Join(taskTempDir, fmt.Sprintf("input-%d.jsonl", i))
+		tmpFile, err := os.Create(tmpPath)
 		if err != nil {
+			rc.Close()
 			for _, c := range closers {
 				c.Close()
 			}
-			return nil, nil, fmt.Errorf("read input %d: %w", i, err)
+			return nil, nil, fmt.Errorf("create temp input file %d: %w", i, err)
 		}
-
-		if err := validateChecksum(data, expectedChecksum); err != nil {
+		hasher := sha256.New()
+		if _, err := io.Copy(tmpFile, io.TeeReader(rc, hasher)); err != nil {
+			_ = rc.Close()
+			_ = tmpFile.Close()
+			for _, c := range closers {
+				c.Close()
+			}
+			return nil, nil, fmt.Errorf("stream input %d to temp file: %w", i, err)
+		}
+		if err := rc.Close(); err != nil {
+			_ = tmpFile.Close()
+			for _, c := range closers {
+				c.Close()
+			}
+			return nil, nil, fmt.Errorf("close input %d: %w", i, err)
+		}
+		if err := validateChecksumHex(hasher, expectedChecksum); err != nil {
+			_ = tmpFile.Close()
 			for _, c := range closers {
 				c.Close()
 			}
 			return nil, nil, fmt.Errorf("input %d checksum mismatch: %w", i, err)
 		}
-
-		tmpPath := filepath.Join(taskTempDir, fmt.Sprintf("input-%d.jsonl", i))
-		if err := os.WriteFile(tmpPath, data, 0o644); err != nil {
+		if _, err := tmpFile.Seek(0, io.SeekStart); err != nil {
+			_ = tmpFile.Close()
 			for _, c := range closers {
 				c.Close()
 			}
-			return nil, nil, fmt.Errorf("write temp input file %d: %w", i, err)
-		}
-		tmpFile, err := os.Open(tmpPath)
-		if err != nil {
-			for _, c := range closers {
-				c.Close()
-			}
-			return nil, nil, fmt.Errorf("open temp input file %d: %w", i, err)
+			return nil, nil, fmt.Errorf("seek temp input file %d: %w", i, err)
 		}
 		readers = append(readers, tmpFile)
 		closers = append(closers, tmpFile)
 	}
 	return readers, closers, nil
+}
+
+func validateChecksumHex(hasher hash.Hash, expectedChecksum string) error {
+	if expectedChecksum == "" {
+		return nil
+	}
+	got := hex.EncodeToString(hasher.Sum(nil))
+	if got != expectedChecksum {
+		return fmt.Errorf("SHA-256 mismatch: expected %s, got %s", expectedChecksum, got)
+	}
+	return nil
 }
 
 func (w *Worker) mergeShuffleInputs(a *pb.TaskAssignment, taskTempDir string, readers []io.Reader) (io.Reader, io.Closer, error) {

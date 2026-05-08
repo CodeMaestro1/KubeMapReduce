@@ -114,6 +114,9 @@ func (w *Worker) executeTask(ctx context.Context, stream pb.WorkerService_TaskSt
 
 	// Resolve manifest if needed
 	if assignment.IsManifest {
+		if len(assignment.DataLocations) == 0 {
+			return fmt.Errorf("manifest assignment requires at least one data location URI")
+		}
 		manifestURI := assignment.DataLocations[0]
 		locs, err := fetchManifest(ctx, w.storage, manifestURI)
 		if err != nil {
@@ -123,11 +126,15 @@ func (w *Worker) executeTask(ctx context.Context, stream pb.WorkerService_TaskSt
 	}
 
 	taskCtx, taskCancel := context.WithCancel(ctx)
-	defer taskCancel()
+	sendMu := &sync.Mutex{}
 
 	// terminated receives the reason string when the task must abort.
 	terminated := make(chan string, 1)
-	go w.streamHeartbeatLoop(taskCtx, stream, workerID, assignment, terminated)
+	heartbeatDone := make(chan struct{})
+	go func() {
+		defer close(heartbeatDone)
+		w.streamHeartbeatLoop(taskCtx, stream, workerID, assignment, terminated, taskCancel, sendMu)
+	}()
 
 	var outputURIs, outputChecksums []string
 	var err error
@@ -140,9 +147,13 @@ func (w *Worker) executeTask(ctx context.Context, stream pb.WorkerService_TaskSt
 		err = fmt.Errorf("unknown task type: %v", assignment.Type)
 	}
 
+	taskCancel()
+	<-heartbeatDone
+
 	if err != nil {
 		// Report failure via stream
-		_ = stream.Send(&pb.StreamRequest{
+		sendMu.Lock()
+		sendErr := stream.Send(&pb.StreamRequest{
 			WorkerId: workerID,
 			Payload: &pb.StreamRequest_Failed{
 				Failed: &pb.TaskFailedRequest{
@@ -153,10 +164,15 @@ func (w *Worker) executeTask(ctx context.Context, stream pb.WorkerService_TaskSt
 				},
 			},
 		})
+		sendMu.Unlock()
+		if sendErr != nil {
+			log.Printf("[worker] failed to report TaskFailed via stream: %v", sendErr)
+		}
 		return err
 	}
 
 	// Report success via stream
+	sendMu.Lock()
 	err = stream.Send(&pb.StreamRequest{
 		WorkerId: workerID,
 		Payload: &pb.StreamRequest_Complete{
@@ -169,10 +185,19 @@ func (w *Worker) executeTask(ctx context.Context, stream pb.WorkerService_TaskSt
 			},
 		},
 	})
+	sendMu.Unlock()
 	return err
 }
 
-func (w *Worker) streamHeartbeatLoop(ctx context.Context, stream pb.WorkerService_TaskStreamClient, workerID string, a *pb.TaskAssignment, terminated chan<- string) {
+func (w *Worker) streamHeartbeatLoop(
+	ctx context.Context,
+	stream pb.WorkerService_TaskStreamClient,
+	workerID string,
+	a *pb.TaskAssignment,
+	terminated chan<- string,
+	taskCancel context.CancelFunc,
+	sendMu *sync.Mutex,
+) {
 	ticker := time.NewTicker(time.Duration(w.cfg.HeartbeatIntervalSec) * time.Second)
 	defer ticker.Stop()
 
@@ -181,6 +206,7 @@ func (w *Worker) streamHeartbeatLoop(ctx context.Context, stream pb.WorkerServic
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
+			sendMu.Lock()
 			err := stream.Send(&pb.StreamRequest{
 				WorkerId: workerID,
 				Payload: &pb.StreamRequest_Heartbeat{
@@ -191,16 +217,24 @@ func (w *Worker) streamHeartbeatLoop(ctx context.Context, stream pb.WorkerServic
 					},
 				},
 			})
+			sendMu.Unlock()
 			if err != nil {
 				log.Printf("[worker] heartbeat send error: %v", err)
 				return
 			}
-
-			// We don't wait for ACK here to keep it async,
-			// but we should probably handle TERMINATE from the stream reader.
-			// This simplified loop doesn't read from the stream (the main Run loop does).
-			// This is a concurrency challenge with gRPC bidirectional streams.
-			// PROPOSED: move Recv() to a dedicated goroutine.
+			resp, err := stream.Recv()
+			if err != nil {
+				log.Printf("[worker] heartbeat recv error: %v", err)
+				return
+			}
+			if hb := resp.GetHeartbeatAck(); hb != nil && hb.Action == pb.HeartbeatResponse_TERMINATE {
+				select {
+				case terminated <- "manager TERMINATE":
+				default:
+				}
+				taskCancel()
+				return
+			}
 		}
 	}
 }

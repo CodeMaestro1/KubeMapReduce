@@ -30,8 +30,7 @@ CREATE TABLE IF NOT EXISTS JOBS (
         CHECK (status IN ('Pending', 'Running', 'Completed',
                           'Cancelled', 'Failed', 'Cleaning')),
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    replica_index INTEGER NOT NULL DEFAULT 0
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
 -- ---------------------------------------------------------------------------

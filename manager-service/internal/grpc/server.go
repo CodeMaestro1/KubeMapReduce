@@ -397,16 +397,27 @@ func (s *WorkerServer) TaskStream(stream pb.WorkerService_TaskStreamServer) erro
 
 		switch p := req.Payload.(type) {
 		case *pb.StreamRequest_Ready:
-			queue := s.getOrCreateTaskQueue(p.Ready.JobId)
-			select {
-			case assignment := <-queue:
-				if err := stream.Send(&pb.StreamResponse{
-					Payload: &pb.StreamResponse_Assignment{Assignment: assignment},
-				}); err != nil {
-					return err
+			task, err := s.scheduler.GetNextTask(ctx, p.Ready.JobId, req.WorkerId)
+			if err != nil {
+				if errors.Is(err, manager.ErrNoIdleTasks) || errors.Is(err, manager.ErrJobCompleted) || errors.Is(err, manager.ErrJobFailed) {
+					if sendErr := stream.Send(&pb.StreamResponse{
+						Payload: &pb.StreamResponse_Ack{Ack: &pb.Ack{Success: false}},
+					}); sendErr != nil {
+						return sendErr
+					}
+					continue
 				}
-			case <-ctx.Done():
-				return ctx.Err()
+				return status.Errorf(codes.Internal, "failed to get next task for job %s: %v", p.Ready.JobId, err)
+			}
+			assignment := buildBaseAssignment(task)
+			populateTaskTypeSpecifics(task, assignment)
+			if err := s.applyManifestFallback(ctx, task, assignment); err != nil {
+				return err
+			}
+			if err := stream.Send(&pb.StreamResponse{
+				Payload: &pb.StreamResponse_Assignment{Assignment: assignment},
+			}); err != nil {
+				return err
 			}
 		case *pb.StreamRequest_Heartbeat:
 			resp, err := s.Heartbeat(ctx, p.Heartbeat)

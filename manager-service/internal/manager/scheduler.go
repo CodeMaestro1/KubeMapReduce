@@ -739,9 +739,10 @@ func (s *Scheduler) CompleteTask(ctx context.Context, taskID string, attemptID s
 	// Lock the parent job row early to prevent split-brain race conditions.
 	// Two concurrent CompleteTask/FailTask calls for tasks in the same job
 	// must be serialized to avoid both committing terminal transitions.
+	// This intentionally trades some terminal-path throughput for correctness.
 	var lockedJobID string
 	var jobStatus string
-	if err := tx.QueryRowContext(ctx, "SELECT t.job_id, j.status FROM TASKS t JOIN JOBS j ON t.job_id = j.job_id WHERE t.task_id = $1 FOR UPDATE OF j SKIP LOCKED", taskID).Scan(&lockedJobID, &jobStatus); err != nil {
+	if err := tx.QueryRowContext(ctx, "SELECT t.job_id, j.status FROM TASKS t JOIN JOBS j ON t.job_id = j.job_id WHERE t.task_id = $1 FOR UPDATE OF j", taskID).Scan(&lockedJobID, &jobStatus); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return ErrTaskNotFound
 		}
@@ -859,6 +860,10 @@ func (s *Scheduler) RenewLease(ctx context.Context, taskID string, attemptID str
 		return err
 	}
 
+	if _, err := tx.ExecContext(ctx, QueryRenewLease, attemptID); err != nil {
+		return err
+	}
+
 	if err := tx.Commit(); err != nil {
 		return err
 	}
@@ -915,7 +920,7 @@ func (s *Scheduler) FailTask(ctx context.Context, taskID string, attemptID strin
 	// Lock the parent job row early to prevent split-brain race conditions.
 	var lockedJobID string
 	var jobStatus string
-	if err := tx.QueryRowContext(ctx, "SELECT t.job_id, j.status FROM TASKS t JOIN JOBS j ON t.job_id = j.job_id WHERE t.task_id = $1 FOR UPDATE OF j SKIP LOCKED", taskID).Scan(&lockedJobID, &jobStatus); err != nil {
+	if err := tx.QueryRowContext(ctx, "SELECT t.job_id, j.status FROM TASKS t JOIN JOBS j ON t.job_id = j.job_id WHERE t.task_id = $1 FOR UPDATE OF j", taskID).Scan(&lockedJobID, &jobStatus); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return ErrTaskNotFound
 		}
