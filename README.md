@@ -197,7 +197,7 @@ go run ./cli-service/cmd/cli jobs download --id <job-id>
 
 ### Linkerd Service Mesh (Optional)
 
-For production deployments with automatic mTLS, per-RPC timeouts, and advanced traffic policies, deploy Linkerd via the CLI (do not apply `02-linkerd-crds.yaml` or `03-linkerd-control-plane.yaml` manually — the CLI generates correct manifests for the installed version):
+For production deployments with automatic mTLS, per-RPC timeouts, and advanced traffic policies, deploy Linkerd via the CLI:
 
 ```bash
 # 1. Install Linkerd CLI
@@ -210,6 +210,8 @@ kubectl apply -f https://github.com/kubernetes-sigs/gateway-api/releases/downloa
 # 3. Install Linkerd CRDs and control plane
 linkerd install --crds | kubectl apply -f -
 linkerd install | kubectl apply -f -
+# If cluster uses Docker runtime (not containerd), use instead:
+# linkerd install --set proxyInit.runAsRoot=true | kubectl apply -f -
 
 # 4. Wait for control plane to be ready
 linkerd check
