@@ -39,6 +39,7 @@ func TestNewMetrics_RegistersAndIncrements(t *testing.T) {
 	m.TasksFailed.Inc()
 	m.HeartbeatsTotal.WithLabelValues("CONTINUE").Inc()
 	m.ReaperRecovered.Add(2)
+	m.EventsEmitted.WithLabelValues("jobs.submitted").Inc()
 	m.SchedulerCycleSeconds.Observe(0.123)
 	m.HTTPRequestDurationSeconds.WithLabelValues("GET", "2xx").Observe(0.05)
 }
@@ -55,6 +56,7 @@ func TestMetricsHandler_ExposesPrometheusFormat(t *testing.T) {
 	m.TasksFailed.Inc()
 	m.HeartbeatsTotal.WithLabelValues("CONTINUE").Inc()
 	m.ReaperRecovered.Inc()
+	m.EventsEmitted.WithLabelValues("jobs.submitted").Inc()
 	m.SchedulerCycleSeconds.Observe(0.1)
 	m.HTTPRequestDurationSeconds.WithLabelValues("GET", "2xx").Observe(0.05)
 
@@ -80,6 +82,7 @@ func TestMetricsHandler_ExposesPrometheusFormat(t *testing.T) {
 		"kubemapreduce_tasks_failed_total",
 		"kubemapreduce_heartbeats_total",
 		"kubemapreduce_reaper_recovered_total",
+		"kubemapreduce_events_emitted_total",
 		"kubemapreduce_reaper_cycle_seconds",
 		"kubemapreduce_http_request_duration_seconds",
 	} {

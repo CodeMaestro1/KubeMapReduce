@@ -1,0 +1,471 @@
+{
+  "schema_version": "1.0.0",
+  "workspaceRoot": "/home/Aelfwif/Downloads/Kube1/KubeMapReduce",
+  "nodes": {
+    "/home/Aelfwif/Downloads/Kube1/KubeMapReduce/benchmarks/build_corpus.py": {
+      "filePath": "/home/Aelfwif/Downloads/Kube1/KubeMapReduce/benchmarks/build_corpus.py",
+      "moduleName": "benchmarks/build_corpus.py",
+      "exports": [
+        "CORPUS_DIR",
+        "OUTPUT_DIR",
+        "OUTPUT_FILE",
+        "START_MARKER",
+        "END_MARKER",
+        "MIN_LINE_LENGTH",
+        "TextExtractor",
+        "extract_book_text",
+        "book_id_from_filename",
+        "build_corpus"
+      ],
+      "imports": [],
+      "language": "python",
+      "mtime": "2026-05-07T13:59:02.388Z"
+    },
+    "/home/Aelfwif/Downloads/Kube1/KubeMapReduce/benchmarks/grep/mapper.py": {
+      "filePath": "/home/Aelfwif/Downloads/Kube1/KubeMapReduce/benchmarks/grep/mapper.py",
+      "moduleName": "benchmarks/grep/mapper.py",
+      "exports": [],
+      "imports": [],
+      "language": "python",
+      "mtime": "2026-05-07T13:59:02.388Z"
+    },
+    "/home/Aelfwif/Downloads/Kube1/KubeMapReduce/benchmarks/grep/reducer.py": {
+      "filePath": "/home/Aelfwif/Downloads/Kube1/KubeMapReduce/benchmarks/grep/reducer.py",
+      "moduleName": "benchmarks/grep/reducer.py",
+      "exports": [],
+      "imports": [],
+      "language": "python",
+      "mtime": "2026-05-07T13:59:02.389Z"
+    },
+    "/home/Aelfwif/Downloads/Kube1/KubeMapReduce/benchmarks/grep/validate.py": {
+      "filePath": "/home/Aelfwif/Downloads/Kube1/KubeMapReduce/benchmarks/grep/validate.py",
+      "moduleName": "benchmarks/grep/validate.py",
+      "exports": [
+        "SCRIPT_DIR",
+        "BENCHMARKS_DIR",
+        "CORPUS",
+        "MAPPER",
+        "REDUCER",
+        "run_pipeline",
+        "count_corpus_lines",
+        "load_jsonl",
+        "sanity_check",
+        "compare_outputs",
+        "main"
+      ],
+      "imports": [],
+      "language": "python",
+      "mtime": "2026-05-07T13:59:02.389Z"
+    },
+    "/home/Aelfwif/Downloads/Kube1/KubeMapReduce/benchmarks/wordcount/mapper.py": {
+      "filePath": "/home/Aelfwif/Downloads/Kube1/KubeMapReduce/benchmarks/wordcount/mapper.py",
+      "moduleName": "benchmarks/wordcount/mapper.py",
+      "exports": [
+        "WORD_RE"
+      ],
+      "imports": [],
+      "language": "python",
+      "mtime": "2026-05-07T13:59:02.389Z"
+    },
+    "/home/Aelfwif/Downloads/Kube1/KubeMapReduce/benchmarks/wordcount/reducer.py": {
+      "filePath": "/home/Aelfwif/Downloads/Kube1/KubeMapReduce/benchmarks/wordcount/reducer.py",
+      "moduleName": "benchmarks/wordcount/reducer.py",
+      "exports": [],
+      "imports": [],
+      "language": "python",
+      "mtime": "2026-05-07T13:59:02.389Z"
+    },
+    "/home/Aelfwif/Downloads/Kube1/KubeMapReduce/benchmarks/wordcount/validate.py": {
+      "filePath": "/home/Aelfwif/Downloads/Kube1/KubeMapReduce/benchmarks/wordcount/validate.py",
+      "moduleName": "benchmarks/wordcount/validate.py",
+      "exports": [
+        "SCRIPT_DIR",
+        "BENCHMARKS_DIR",
+        "CORPUS",
+        "MAPPER",
+        "REDUCER",
+        "EXPECTED_TOP_WORDS",
+        "MIN_UNIQUE_WORDS",
+        "MIN_TOP_WORD_OVERLAP",
+        "run_pipeline",
+        "load_jsonl",
+        "top_n_by_count",
+        "sanity_check",
+        "compare_outputs",
+        "main"
+      ],
+      "imports": [],
+      "language": "python",
+      "mtime": "2026-05-07T13:59:02.389Z"
+    },
+    "/home/Aelfwif/Downloads/Kube1/KubeMapReduce/scripts/load_test.js": {
+      "filePath": "/home/Aelfwif/Downloads/Kube1/KubeMapReduce/scripts/load_test.js",
+      "moduleName": "scripts/load_test.js",
+      "exports": [
+        "options",
+        "function"
+      ],
+      "imports": [
+        "k6/http",
+        "k6"
+      ],
+      "language": "javascript",
+      "mtime": "2026-05-07T13:59:02.888Z"
+    },
+    "/home/Aelfwif/Downloads/Kube1/KubeMapReduce/site/assets/javascripts/bundle.79ae519e.min.js": {
+      "filePath": "/home/Aelfwif/Downloads/Kube1/KubeMapReduce/site/assets/javascripts/bundle.79ae519e.min.js",
+      "moduleName": "site/assets/javascripts/bundle.79ae519e.min.js",
+      "exports": [],
+      "imports": [],
+      "language": "javascript",
+      "mtime": "2026-05-07T13:59:02.891Z"
+    },
+    "/home/Aelfwif/Downloads/Kube1/KubeMapReduce/site/assets/javascripts/lunr/min/lunr.ar.min.js": {
+      "filePath": "/home/Aelfwif/Downloads/Kube1/KubeMapReduce/site/assets/javascripts/lunr/min/lunr.ar.min.js",
+      "moduleName": "site/assets/javascripts/lunr/min/lunr.ar.min.js",
+      "exports": [],
+      "imports": [],
+      "language": "javascript",
+      "mtime": "2026-05-07T13:59:02.893Z"
+    },
+    "/home/Aelfwif/Downloads/Kube1/KubeMapReduce/site/assets/javascripts/lunr/min/lunr.da.min.js": {
+      "filePath": "/home/Aelfwif/Downloads/Kube1/KubeMapReduce/site/assets/javascripts/lunr/min/lunr.da.min.js",
+      "moduleName": "site/assets/javascripts/lunr/min/lunr.da.min.js",
+      "exports": [],
+      "imports": [],
+      "language": "javascript",
+      "mtime": "2026-05-07T13:59:02.893Z"
+    },
+    "/home/Aelfwif/Downloads/Kube1/KubeMapReduce/site/assets/javascripts/lunr/min/lunr.de.min.js": {
+      "filePath": "/home/Aelfwif/Downloads/Kube1/KubeMapReduce/site/assets/javascripts/lunr/min/lunr.de.min.js",
+      "moduleName": "site/assets/javascripts/lunr/min/lunr.de.min.js",
+      "exports": [],
+      "imports": [],
+      "language": "javascript",
+      "mtime": "2026-05-07T13:59:02.893Z"
+    },
+    "/home/Aelfwif/Downloads/Kube1/KubeMapReduce/site/assets/javascripts/lunr/min/lunr.du.min.js": {
+      "filePath": "/home/Aelfwif/Downloads/Kube1/KubeMapReduce/site/assets/javascripts/lunr/min/lunr.du.min.js",
+      "moduleName": "site/assets/javascripts/lunr/min/lunr.du.min.js",
+      "exports": [],
+      "imports": [],
+      "language": "javascript",
+      "mtime": "2026-05-07T13:59:02.893Z"
+    },
+    "/home/Aelfwif/Downloads/Kube1/KubeMapReduce/site/assets/javascripts/lunr/min/lunr.el.min.js": {
+      "filePath": "/home/Aelfwif/Downloads/Kube1/KubeMapReduce/site/assets/javascripts/lunr/min/lunr.el.min.js",
+      "moduleName": "site/assets/javascripts/lunr/min/lunr.el.min.js",
+      "exports": [],
+      "imports": [],
+      "language": "javascript",
+      "mtime": "2026-05-07T13:59:02.893Z"
+    },
+    "/home/Aelfwif/Downloads/Kube1/KubeMapReduce/site/assets/javascripts/lunr/min/lunr.es.min.js": {
+      "filePath": "/home/Aelfwif/Downloads/Kube1/KubeMapReduce/site/assets/javascripts/lunr/min/lunr.es.min.js",
+      "moduleName": "site/assets/javascripts/lunr/min/lunr.es.min.js",
+      "exports": [],
+      "imports": [],
+      "language": "javascript",
+      "mtime": "2026-05-07T13:59:02.893Z"
+    },
+    "/home/Aelfwif/Downloads/Kube1/KubeMapReduce/site/assets/javascripts/lunr/min/lunr.fi.min.js": {
+      "filePath": "/home/Aelfwif/Downloads/Kube1/KubeMapReduce/site/assets/javascripts/lunr/min/lunr.fi.min.js",
+      "moduleName": "site/assets/javascripts/lunr/min/lunr.fi.min.js",
+      "exports": [],
+      "imports": [],
+      "language": "javascript",
+      "mtime": "2026-05-07T13:59:02.893Z"
+    },
+    "/home/Aelfwif/Downloads/Kube1/KubeMapReduce/site/assets/javascripts/lunr/min/lunr.fr.min.js": {
+      "filePath": "/home/Aelfwif/Downloads/Kube1/KubeMapReduce/site/assets/javascripts/lunr/min/lunr.fr.min.js",
+      "moduleName": "site/assets/javascripts/lunr/min/lunr.fr.min.js",
+      "exports": [],
+      "imports": [],
+      "language": "javascript",
+      "mtime": "2026-05-07T13:59:02.893Z"
+    },
+    "/home/Aelfwif/Downloads/Kube1/KubeMapReduce/site/assets/javascripts/lunr/min/lunr.he.min.js": {
+      "filePath": "/home/Aelfwif/Downloads/Kube1/KubeMapReduce/site/assets/javascripts/lunr/min/lunr.he.min.js",
+      "moduleName": "site/assets/javascripts/lunr/min/lunr.he.min.js",
+      "exports": [],
+      "imports": [],
+      "language": "javascript",
+      "mtime": "2026-05-07T13:59:02.893Z"
+    },
+    "/home/Aelfwif/Downloads/Kube1/KubeMapReduce/site/assets/javascripts/lunr/min/lunr.hi.min.js": {
+      "filePath": "/home/Aelfwif/Downloads/Kube1/KubeMapReduce/site/assets/javascripts/lunr/min/lunr.hi.min.js",
+      "moduleName": "site/assets/javascripts/lunr/min/lunr.hi.min.js",
+      "exports": [],
+      "imports": [],
+      "language": "javascript",
+      "mtime": "2026-05-07T13:59:02.893Z"
+    },
+    "/home/Aelfwif/Downloads/Kube1/KubeMapReduce/site/assets/javascripts/lunr/min/lunr.hu.min.js": {
+      "filePath": "/home/Aelfwif/Downloads/Kube1/KubeMapReduce/site/assets/javascripts/lunr/min/lunr.hu.min.js",
+      "moduleName": "site/assets/javascripts/lunr/min/lunr.hu.min.js",
+      "exports": [],
+      "imports": [],
+      "language": "javascript",
+      "mtime": "2026-05-07T13:59:02.893Z"
+    },
+    "/home/Aelfwif/Downloads/Kube1/KubeMapReduce/site/assets/javascripts/lunr/min/lunr.hy.min.js": {
+      "filePath": "/home/Aelfwif/Downloads/Kube1/KubeMapReduce/site/assets/javascripts/lunr/min/lunr.hy.min.js",
+      "moduleName": "site/assets/javascripts/lunr/min/lunr.hy.min.js",
+      "exports": [],
+      "imports": [],
+      "language": "javascript",
+      "mtime": "2026-05-07T13:59:02.893Z"
+    },
+    "/home/Aelfwif/Downloads/Kube1/KubeMapReduce/site/assets/javascripts/lunr/min/lunr.it.min.js": {
+      "filePath": "/home/Aelfwif/Downloads/Kube1/KubeMapReduce/site/assets/javascripts/lunr/min/lunr.it.min.js",
+      "moduleName": "site/assets/javascripts/lunr/min/lunr.it.min.js",
+      "exports": [],
+      "imports": [],
+      "language": "javascript",
+      "mtime": "2026-05-07T13:59:02.893Z"
+    },
+    "/home/Aelfwif/Downloads/Kube1/KubeMapReduce/site/assets/javascripts/lunr/min/lunr.ja.min.js": {
+      "filePath": "/home/Aelfwif/Downloads/Kube1/KubeMapReduce/site/assets/javascripts/lunr/min/lunr.ja.min.js",
+      "moduleName": "site/assets/javascripts/lunr/min/lunr.ja.min.js",
+      "exports": [],
+      "imports": [],
+      "language": "javascript",
+      "mtime": "2026-05-07T13:59:02.893Z"
+    },
+    "/home/Aelfwif/Downloads/Kube1/KubeMapReduce/site/assets/javascripts/lunr/min/lunr.jp.min.js": {
+      "filePath": "/home/Aelfwif/Downloads/Kube1/KubeMapReduce/site/assets/javascripts/lunr/min/lunr.jp.min.js",
+      "moduleName": "site/assets/javascripts/lunr/min/lunr.jp.min.js",
+      "exports": [],
+      "imports": [
+        "./lunr.ja"
+      ],
+      "language": "javascript",
+      "mtime": "2026-05-07T13:59:02.893Z"
+    },
+    "/home/Aelfwif/Downloads/Kube1/KubeMapReduce/site/assets/javascripts/lunr/min/lunr.kn.min.js": {
+      "filePath": "/home/Aelfwif/Downloads/Kube1/KubeMapReduce/site/assets/javascripts/lunr/min/lunr.kn.min.js",
+      "moduleName": "site/assets/javascripts/lunr/min/lunr.kn.min.js",
+      "exports": [],
+      "imports": [],
+      "language": "javascript",
+      "mtime": "2026-05-07T13:59:02.893Z"
+    },
+    "/home/Aelfwif/Downloads/Kube1/KubeMapReduce/site/assets/javascripts/lunr/min/lunr.ko.min.js": {
+      "filePath": "/home/Aelfwif/Downloads/Kube1/KubeMapReduce/site/assets/javascripts/lunr/min/lunr.ko.min.js",
+      "moduleName": "site/assets/javascripts/lunr/min/lunr.ko.min.js",
+      "exports": [],
+      "imports": [],
+      "language": "javascript",
+      "mtime": "2026-05-07T13:59:02.893Z"
+    },
+    "/home/Aelfwif/Downloads/Kube1/KubeMapReduce/site/assets/javascripts/lunr/min/lunr.multi.min.js": {
+      "filePath": "/home/Aelfwif/Downloads/Kube1/KubeMapReduce/site/assets/javascripts/lunr/min/lunr.multi.min.js",
+      "moduleName": "site/assets/javascripts/lunr/min/lunr.multi.min.js",
+      "exports": [],
+      "imports": [],
+      "language": "javascript",
+      "mtime": "2026-05-07T13:59:02.893Z"
+    },
+    "/home/Aelfwif/Downloads/Kube1/KubeMapReduce/site/assets/javascripts/lunr/min/lunr.nl.min.js": {
+      "filePath": "/home/Aelfwif/Downloads/Kube1/KubeMapReduce/site/assets/javascripts/lunr/min/lunr.nl.min.js",
+      "moduleName": "site/assets/javascripts/lunr/min/lunr.nl.min.js",
+      "exports": [],
+      "imports": [],
+      "language": "javascript",
+      "mtime": "2026-05-07T13:59:02.893Z"
+    },
+    "/home/Aelfwif/Downloads/Kube1/KubeMapReduce/site/assets/javascripts/lunr/min/lunr.no.min.js": {
+      "filePath": "/home/Aelfwif/Downloads/Kube1/KubeMapReduce/site/assets/javascripts/lunr/min/lunr.no.min.js",
+      "moduleName": "site/assets/javascripts/lunr/min/lunr.no.min.js",
+      "exports": [],
+      "imports": [],
+      "language": "javascript",
+      "mtime": "2026-05-07T13:59:02.893Z"
+    },
+    "/home/Aelfwif/Downloads/Kube1/KubeMapReduce/site/assets/javascripts/lunr/min/lunr.pt.min.js": {
+      "filePath": "/home/Aelfwif/Downloads/Kube1/KubeMapReduce/site/assets/javascripts/lunr/min/lunr.pt.min.js",
+      "moduleName": "site/assets/javascripts/lunr/min/lunr.pt.min.js",
+      "exports": [],
+      "imports": [],
+      "language": "javascript",
+      "mtime": "2026-05-07T13:59:02.893Z"
+    },
+    "/home/Aelfwif/Downloads/Kube1/KubeMapReduce/site/assets/javascripts/lunr/min/lunr.ro.min.js": {
+      "filePath": "/home/Aelfwif/Downloads/Kube1/KubeMapReduce/site/assets/javascripts/lunr/min/lunr.ro.min.js",
+      "moduleName": "site/assets/javascripts/lunr/min/lunr.ro.min.js",
+      "exports": [],
+      "imports": [],
+      "language": "javascript",
+      "mtime": "2026-05-07T13:59:02.893Z"
+    },
+    "/home/Aelfwif/Downloads/Kube1/KubeMapReduce/site/assets/javascripts/lunr/min/lunr.ru.min.js": {
+      "filePath": "/home/Aelfwif/Downloads/Kube1/KubeMapReduce/site/assets/javascripts/lunr/min/lunr.ru.min.js",
+      "moduleName": "site/assets/javascripts/lunr/min/lunr.ru.min.js",
+      "exports": [],
+      "imports": [],
+      "language": "javascript",
+      "mtime": "2026-05-07T13:59:02.893Z"
+    },
+    "/home/Aelfwif/Downloads/Kube1/KubeMapReduce/site/assets/javascripts/lunr/min/lunr.sa.min.js": {
+      "filePath": "/home/Aelfwif/Downloads/Kube1/KubeMapReduce/site/assets/javascripts/lunr/min/lunr.sa.min.js",
+      "moduleName": "site/assets/javascripts/lunr/min/lunr.sa.min.js",
+      "exports": [],
+      "imports": [],
+      "language": "javascript",
+      "mtime": "2026-05-07T13:59:02.893Z"
+    },
+    "/home/Aelfwif/Downloads/Kube1/KubeMapReduce/site/assets/javascripts/lunr/min/lunr.stemmer.support.min.js": {
+      "filePath": "/home/Aelfwif/Downloads/Kube1/KubeMapReduce/site/assets/javascripts/lunr/min/lunr.stemmer.support.min.js",
+      "moduleName": "site/assets/javascripts/lunr/min/lunr.stemmer.support.min.js",
+      "exports": [],
+      "imports": [],
+      "language": "javascript",
+      "mtime": "2026-05-07T13:59:02.893Z"
+    },
+    "/home/Aelfwif/Downloads/Kube1/KubeMapReduce/site/assets/javascripts/lunr/min/lunr.sv.min.js": {
+      "filePath": "/home/Aelfwif/Downloads/Kube1/KubeMapReduce/site/assets/javascripts/lunr/min/lunr.sv.min.js",
+      "moduleName": "site/assets/javascripts/lunr/min/lunr.sv.min.js",
+      "exports": [],
+      "imports": [],
+      "language": "javascript",
+      "mtime": "2026-05-07T13:59:02.893Z"
+    },
+    "/home/Aelfwif/Downloads/Kube1/KubeMapReduce/site/assets/javascripts/lunr/min/lunr.ta.min.js": {
+      "filePath": "/home/Aelfwif/Downloads/Kube1/KubeMapReduce/site/assets/javascripts/lunr/min/lunr.ta.min.js",
+      "moduleName": "site/assets/javascripts/lunr/min/lunr.ta.min.js",
+      "exports": [],
+      "imports": [],
+      "language": "javascript",
+      "mtime": "2026-05-07T13:59:02.893Z"
+    },
+    "/home/Aelfwif/Downloads/Kube1/KubeMapReduce/site/assets/javascripts/lunr/min/lunr.te.min.js": {
+      "filePath": "/home/Aelfwif/Downloads/Kube1/KubeMapReduce/site/assets/javascripts/lunr/min/lunr.te.min.js",
+      "moduleName": "site/assets/javascripts/lunr/min/lunr.te.min.js",
+      "exports": [],
+      "imports": [],
+      "language": "javascript",
+      "mtime": "2026-05-07T13:59:02.893Z"
+    },
+    "/home/Aelfwif/Downloads/Kube1/KubeMapReduce/site/assets/javascripts/lunr/min/lunr.th.min.js": {
+      "filePath": "/home/Aelfwif/Downloads/Kube1/KubeMapReduce/site/assets/javascripts/lunr/min/lunr.th.min.js",
+      "moduleName": "site/assets/javascripts/lunr/min/lunr.th.min.js",
+      "exports": [],
+      "imports": [],
+      "language": "javascript",
+      "mtime": "2026-05-07T13:59:02.893Z"
+    },
+    "/home/Aelfwif/Downloads/Kube1/KubeMapReduce/site/assets/javascripts/lunr/min/lunr.tr.min.js": {
+      "filePath": "/home/Aelfwif/Downloads/Kube1/KubeMapReduce/site/assets/javascripts/lunr/min/lunr.tr.min.js",
+      "moduleName": "site/assets/javascripts/lunr/min/lunr.tr.min.js",
+      "exports": [],
+      "imports": [],
+      "language": "javascript",
+      "mtime": "2026-05-07T13:59:02.893Z"
+    },
+    "/home/Aelfwif/Downloads/Kube1/KubeMapReduce/site/assets/javascripts/lunr/min/lunr.vi.min.js": {
+      "filePath": "/home/Aelfwif/Downloads/Kube1/KubeMapReduce/site/assets/javascripts/lunr/min/lunr.vi.min.js",
+      "moduleName": "site/assets/javascripts/lunr/min/lunr.vi.min.js",
+      "exports": [],
+      "imports": [],
+      "language": "javascript",
+      "mtime": "2026-05-07T13:59:02.893Z"
+    },
+    "/home/Aelfwif/Downloads/Kube1/KubeMapReduce/site/assets/javascripts/lunr/min/lunr.zh.min.js": {
+      "filePath": "/home/Aelfwif/Downloads/Kube1/KubeMapReduce/site/assets/javascripts/lunr/min/lunr.zh.min.js",
+      "moduleName": "site/assets/javascripts/lunr/min/lunr.zh.min.js",
+      "exports": [],
+      "imports": [
+        "@node-rs/jieba"
+      ],
+      "language": "javascript",
+      "mtime": "2026-05-07T13:59:02.893Z"
+    },
+    "/home/Aelfwif/Downloads/Kube1/KubeMapReduce/site/assets/javascripts/lunr/tinyseg.js": {
+      "filePath": "/home/Aelfwif/Downloads/Kube1/KubeMapReduce/site/assets/javascripts/lunr/tinyseg.js",
+      "moduleName": "site/assets/javascripts/lunr/tinyseg.js",
+      "exports": [],
+      "imports": [],
+      "language": "javascript",
+      "mtime": "2026-05-07T13:59:02.893Z"
+    },
+    "/home/Aelfwif/Downloads/Kube1/KubeMapReduce/site/assets/javascripts/lunr/wordcut.js": {
+      "filePath": "/home/Aelfwif/Downloads/Kube1/KubeMapReduce/site/assets/javascripts/lunr/wordcut.js",
+      "moduleName": "site/assets/javascripts/lunr/wordcut.js",
+      "exports": [],
+      "imports": [
+        "underscore",
+        "path",
+        "glob",
+        "underscore",
+        "./wordcut_core",
+        "underscore",
+        "sys",
+        "./dict",
+        "./wordcut_core",
+        "./path_info_builder",
+        "./path_selector",
+        "./acceptors",
+        "./latin_rules",
+        "./thai_rules",
+        "underscore",
+        "util/",
+        "concat-map",
+        "balanced-match",
+        "path",
+        "minimatch",
+        "path-is-absolute",
+        "_process",
+        "fs",
+        "minimatch",
+        "inherits",
+        "events",
+        "path",
+        "assert",
+        "path-is-absolute",
+        "./sync.js",
+        "./common.js",
+        "inflight",
+        "util",
+        "once",
+        "_process",
+        "fs",
+        "minimatch",
+        "./glob.js",
+        "util",
+        "path",
+        "assert",
+        "path-is-absolute",
+        "./common.js",
+        "_process",
+        "wrappy",
+        "once",
+        "_process",
+        "path",
+        "brace-expansion",
+        "wrappy",
+        "_process",
+        "_process",
+        "./support/isBuffer",
+        "inherits",
+        "_process"
+      ],
+      "language": "javascript",
+      "mtime": "2026-05-07T13:59:02.894Z"
+    },
+    "/home/Aelfwif/Downloads/Kube1/KubeMapReduce/site/assets/javascripts/workers/search.2c215733.min.js": {
+      "filePath": "/home/Aelfwif/Downloads/Kube1/KubeMapReduce/site/assets/javascripts/workers/search.2c215733.min.js",
+      "moduleName": "site/assets/javascripts/workers/search.2c215733.min.js",
+      "exports": [],
+      "imports": [],
+      "language": "javascript",
+      "mtime": "2026-05-07T13:59:02.894Z"
+    }
+  },
+  "edges": [],
+  "metadata": {
+    "generatedAt": "2026-05-08T17:49:35.040Z",
+    "generator": "repo-graph",
+    "nodeCount": 44,
+    "edgeCount": 0
+  }
+}

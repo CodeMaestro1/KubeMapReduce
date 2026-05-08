@@ -2,6 +2,7 @@ package worker
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/minio/minio-go/v7"
+	"github.com/nats-io/nats.go"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
@@ -36,7 +38,13 @@ type Worker struct {
 	// execCode runs the user binary with JSONL on stdin and returns stdout.
 	// Swappable in tests to avoid real subprocess execution.
 	execCode func(ctx context.Context, codePath, runtimeEnv string, stdin io.Reader) ([]byte, error)
+
+	// NATS subscription for event-driven task assignment
+	natsConn    *nats.Conn
+	natsInbound chan *pb.TaskAssignment
 }
+
+// New creates a production Worker wired to the given gRPC client and MinIO instance.
 
 // New creates a production Worker wired to the given gRPC client and MinIO instance.
 func New(cfg *config.Config, client pb.WorkerServiceClient, shuffleClient pb.ShuffleServiceClient, minioClient *minio.Client) *Worker {
@@ -341,4 +349,45 @@ func terminationReason(terminated <-chan string, ctx, taskCtx context.Context) (
 		return "manager TERMINATE", true
 	}
 	return "", false
+}
+
+// SubscribeToNATS connects to NATS and subscribes to task assignment events.
+// This enables event-driven task pull (Phase 4). Returns channel for incoming tasks.
+func (w *Worker) SubscribeToNATS(ctx context.Context, natsURL string) (<-chan *pb.TaskAssignment, error) {
+	if natsURL == "" {
+		return nil, fmt.Errorf("NATS_URL not configured")
+	}
+
+	conn, err := nats.Connect(natsURL)
+	if err != nil {
+		return nil, fmt.Errorf("failed to connect to NATS: %w", err)
+	}
+	w.natsConn = conn
+	w.natsInbound = make(chan *pb.TaskAssignment, 10)
+
+	subject := fmt.Sprintf("tasks.assigned.%s", w.cfg.JobID)
+	_, err = conn.Subscribe(subject, func(msg *nats.Msg) {
+		var assignment pb.TaskAssignment
+		if err := json.Unmarshal(msg.Data, &assignment); err != nil {
+			log.Printf("[worker] failed to unmarshal task: %v", err)
+			msg.Nak()
+			return
+		}
+		w.natsInbound <- &assignment
+		msg.Ack()
+	})
+	if err != nil {
+		conn.Close()
+		return nil, fmt.Errorf("failed to subscribe to %s: %w", subject, err)
+	}
+
+	log.Printf("[worker] subscribed to NATS subject=%s", subject)
+	return w.natsInbound, nil
+}
+
+// CloseNATS disconnects from NATS.
+func (w *Worker) CloseNATS() {
+	if w.natsConn != nil {
+		w.natsConn.Close()
+	}
 }

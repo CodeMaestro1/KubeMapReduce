@@ -1,0 +1,286 @@
+{
+  "schema_version": 1,
+  "scanned_at": "2026-05-08T15:04:24.593Z",
+  "files": [
+    {
+      "path": ".github/agents/go-bug-hunter.agent.md",
+      "title": "go-bug-hunter instructions",
+      "summary": "--- description: \"Use this agent when you need to find and fix bugs, race conditions, or correctness issues in Go code.\\n\\nTrigger phrases include:\\n- 'find bugs in this code'\\n- 'check for race co...",
+      "lines": 126,
+      "mtime": 1777556764758.6797
+    },
+    {
+      "path": ".github/agents/go-vuln-auditor.agent.md",
+      "title": "go-vuln-auditor instructions",
+      "summary": "--- description: \"Use this agent when the user asks to find security issues, audit authentication/authorization logic, review JWT handling, inspect MinIO access controls, audit gRPC security, check...",
+      "lines": 80,
+      "mtime": 1777556764758.8083
+    },
+    {
+      "path": ".github/copilot-instructions.md",
+      "title": "GitHub Copilot Instructions — KubeMapReduce Platform",
+      "summary": "> **INF-419 Distributed Systems Project** > Technical University of Crete — School of ECE > Supervisor: Prof. Vasilios Samoladas --- This is a **microservice-based, distributed MapReduce computing ...",
+      "lines": 322,
+      "mtime": 1777556764758.8083
+    },
+    {
+      "path": ".github/ISSUE_TEMPLATE/bug_report.md",
+      "title": "bug_report.md",
+      "summary": "--- name: Bug report about: Create a report to help us improve title: \"[BUG]\" labels: '' assignees: '' --- **Describe the bug** A clear and concise description of what the bug is. **To Reproduce** ...",
+      "lines": 33,
+      "mtime": 1777556764758.6091
+    },
+    {
+      "path": ".github/ISSUE_TEMPLATE/feature_request.md",
+      "title": "feature_request.md",
+      "summary": "--- name: Feature request about: Suggest an idea for this project title: '' labels: '' assignees: '' --- **Is your feature request related to a problem? Please describe.** A clear and concise descr...",
+      "lines": 21,
+      "mtime": 1777556764758.6797
+    },
+    {
+      "path": ".github/skills/go-bug-hunter/SKILL.md",
+      "title": "SKILL.md",
+      "summary": "--- name: go-bug-hunter description: Expert Go bug detection and patching agent for the KubeMapReduce distributed platform. Use for finding bugs, race conditions, error handling issues, concurrency...",
+      "lines": 133,
+      "mtime": 1777556764759.0093
+    },
+    {
+      "path": ".github/skills/go-doc-writer/SKILL.md",
+      "title": "SKILL.md",
+      "summary": "--- name: go-doc-writer description: Documentation generation agent for the KubeMapReduce distributed platform. Use when asked to document code, write GoDoc comments, generate API references, creat...",
+      "lines": 225,
+      "mtime": 1777556764759.0093
+    },
+    {
+      "path": ".github/skills/go-vuln-auditor/SKILL.md",
+      "title": "SKILL.md",
+      "summary": "--- name: go-vuln-auditor description: Expert security vulnerability auditor for the KubeMapReduce distributed platform. Use when asked to find security issues, audit authentication/authorization l...",
+      "lines": 162,
+      "mtime": 1777556764759.0093
+    },
+    {
+      "path": ".github/workflows/ci.yml",
+      "title": "ci.yml",
+      "summary": "name: CI on: push: branches: [\"**\"] paths-ignore: - \"**/*.md\" - \"docs/**\" - \"mkdocs.yml\" - \"README.md\" - \"changeMultple.txt\" - \"changes.txt\" pull_request: branches: [\"**\"] paths-ignore: - \"**/*.md\"...",
+      "lines": 65,
+      "mtime": 1777556764759.0093
+    },
+    {
+      "path": "AGENTS.md",
+      "title": "Agent Instructions for this Repository",
+      "summary": "Welcome, AI Agent! When interacting with this repository, you must adhere to the following strict guidelines to ensure code quality, security, and stability. Before finalizing any code modification...",
+      "lines": 46,
+      "mtime": 1778162342372.6443
+    },
+    {
+      "path": "benchmarks/README.md",
+      "title": "Benchmarks",
+      "summary": "Two benchmark suites validating the MapReduce pipeline: **WordCount** and **Distributed Grep**. - Python 3 (no third-party packages required) - 6 Project Gutenberg HTML files in `corpus/` (already ...",
+      "lines": 140,
+      "mtime": 1778162342387.644
+    },
+    {
+      "path": "docs/api/grpc.md",
+      "title": "gRPC API Reference",
+      "summary": "This document describes the gRPC contract between the **Worker Service** (implemented by the Manager) and the **Worker Pods**. KubeMapReduce uses a two-level fencing strategy to protect against spl...",
+      "lines": 115,
+      "mtime": 1777556764761.9775
+    },
+    {
+      "path": "docs/api/rest.md",
+      "title": "REST API Reference",
+      "summary": "> Detailed documentation for the KubeMapReduce UI/Manager Service REST API. --- **Auth:** None **Response:** 200 OK Basic discovery endpoint to verify the API is running and reachable. | Field | Ty...",
+      "lines": 206,
+      "mtime": 1777556764762.0525
+    },
+    {
+      "path": "docs/ARCHITECTURE_EXTERNAL_ACCESS.md",
+      "title": "External Access Architecture for KubeMapReduce",
+      "summary": "``` ┌─────────────────────────────────────────────────────────────────┐ │                         EXTERNAL CLIENTS                         │ │                 (Users submitting jobs remotely)      ...",
+      "lines": 237,
+      "mtime": 1778162342882.6367
+    },
+    {
+      "path": "docs/ARCHITECTURE.md",
+      "title": "Architecture Documentation",
+      "summary": "KubeMapReduce is a three-layer distributed MapReduce platform: - **CLI Service** handles user authentication, token refresh, and job submission. - **Manager Service** coordinates scheduling, task a...",
+      "lines": 28,
+      "mtime": 1778162342882.6367
+    },
+    {
+      "path": "docs/auth-service/auth/README.md",
+      "title": "auth",
+      "summary": "> Centralized authentication and authorization primitives. KubeMapReduce is a distributed platform where various components (CLI, Manager, Workers) must interact securely. This package provides the...",
+      "lines": 59,
+      "mtime": 1777556764762.138
+    },
+    {
+      "path": "docs/auth-service/cmd_setup/README.md",
+      "title": "Keycloak Setup Utility Entry Point",
+      "summary": "> Bootstraps the KubeMapReduce identity provider (Keycloak). The `cmd/setup` package is a one-time utility designed to automate the configuration of Keycloak. It ensures that the required realm, ro...",
+      "lines": 51,
+      "mtime": 1777556764762.138
+    },
+    {
+      "path": "docs/auth-service/pkg/auth.md",
+      "title": "`auth` Package",
+      "summary": "The `auth` package provides authentication and authorization primitives for the KubeMapReduce platform. - Validates Bearer JWTs against Keycloak JWKS data. - Provides middleware for HTTP handlers. ...",
+      "lines": 28,
+      "mtime": 1778162342883.6367
+    },
+    {
+      "path": "docs/cli-service/cli/README.md",
+      "title": "CLI (Command Line Interface)",
+      "summary": "> The KubeMapReduce CLI is the primary user-facing tool for job submission, monitoring, and administration. The `cli-service/cmd/cli` package provides a stateless, developer-friendly interface to t...",
+      "lines": 84,
+      "mtime": 1777556764762.323
+    },
+    {
+      "path": "docs/CLUSTER_DEPLOYMENT.md",
+      "title": "Production Cluster Deployment Checklist",
+      "summary": "**Quick answer:** Follow this 10-step checklist to run KubeMapReduce in a production cluster. --- | Option | Best For | Cost | Setup Time | |--------|----------|------|-----------| | **GKE (Google ...",
+      "lines": 405,
+      "mtime": 1778162342882.6367
+    },
+    {
+      "path": "docs/DEPLOYMENT.md",
+      "title": "KubeMapReduce Deployment Guide",
+      "summary": "Complete guide for deploying KubeMapReduce to Kubernetes with optional Linkerd service mesh for production-grade security and observability. 1. [Prerequisites](#prerequisites) 2. [Local Development...",
+      "lines": 510,
+      "mtime": 1778162342882.6367
+    },
+    {
+      "path": "docs/EXTERNAL_ACCESS.md",
+      "title": "External Access Guide for KubeMapReduce",
+      "summary": "How to expose the KubeMapReduce API (`api.mapreduce.local`) to external clients so they can remotely submit jobs. **Your architecture:** - **Internal services:** Manager, PostgreSQL, MinIO (cluster...",
+      "lines": 441,
+      "mtime": 1778162342882.6367
+    },
+    {
+      "path": "docs/index.md",
+      "title": "KubeMapReduce",
+      "summary": "> Distributed MapReduce platform — INF-419, Technical University of Crete > Supervisor: Prof. Vasilios Samoladas A microservice-based MapReduce platform deployed on Kubernetes, built for fault tole...",
+      "lines": 34,
+      "mtime": 1777556764762.323
+    },
+    {
+      "path": "docs/LINKERD_SETUP.md",
+      "title": "Linkerd Service Mesh Setup Guide for KubeMapReduce",
+      "summary": "This guide walks through deploying Linkerd 2.15+ with automatic mTLS and per-RPC method timeouts on KubeMapReduce. **Linkerd** is a lightweight service mesh that adds: - **Automatic mTLS**: End-to-...",
+      "lines": 346,
+      "mtime": 1778162342882.6367
+    },
+    {
+      "path": "docs/manager-service/api/README.md",
+      "title": "Manager Service API",
+      "summary": "> The entry point for all job management and cluster administration. The `manager-service/internal/api` package provides the external REST interface to the KubeMapReduce platform. It acts as a gate...",
+      "lines": 67,
+      "mtime": 1777556764762.4766
+    },
+    {
+      "path": "docs/manager-service/cmd_api/README.md",
+      "title": "UI Service API Entry Point",
+      "summary": "> Bootstraps the user-facing REST API for the KubeMapReduce platform. The `cmd/api` package is the entry point for the UI Service. It is responsible for initializing the HTTP server, configuring se...",
+      "lines": 53,
+      "mtime": 1777556764762.4766
+    },
+    {
+      "path": "docs/manager-service/cmd_manager/README.md",
+      "title": "MapReduce Manager Entry Point",
+      "summary": "> Bootstraps the platform's brain: the Manager Service. The `cmd/manager` package is the entry point for the MapReduce Manager. It coordinates the complex initialization of the Scheduler, Kubernete...",
+      "lines": 64,
+      "mtime": 1777556764762.4766
+    },
+    {
+      "path": "docs/manager-service/config/README.md",
+      "title": "config",
+      "summary": "> Environment-driven configuration and service bootstrapping. The `config` package provides the \"glue\" between the Kubernetes environment and the Manager Service's internal logic. By centralizing a...",
+      "lines": 54,
+      "mtime": 1777556764762.4766
+    },
+    {
+      "path": "docs/manager-service/grpc/README.md",
+      "title": "grpc",
+      "summary": "> The primary gRPC interface for Worker communication. The `grpc` package is the entrypoint for all distributed computation in the KubeMapReduce system. It provides the high-performance, strongly-t...",
+      "lines": 83,
+      "mtime": 1777556764762.4766
+    },
+    {
+      "path": "docs/manager-service/httputil/README.md",
+      "title": "HTTP Utilities",
+      "summary": "> Standardization of RESTful responses. In a system with dozens of API endpoints, inconsistency in response headers, status codes, or payload formats leads to brittle clients. The `httputil` packag...",
+      "lines": 61,
+      "mtime": 1778162342883.6367
+    },
+    {
+      "path": "docs/manager-service/manager/README.md",
+      "title": "manager",
+      "summary": "> Core scheduling and orchestration logic for KubeMapReduce jobs. The MapReduce Manager is the brain of the cluster. Without it, work would not be distributed, and there would be no way to coordina...",
+      "lines": 104,
+      "mtime": 1777556764762.4766
+    },
+    {
+      "path": "docs/manager-service/models/README.md",
+      "title": "models",
+      "summary": "> Central data structures and Distributed Data Store (DDS) schemas. The `models` package acts as the \"lingua franca\" of the KubeMapReduce system. Without it, the Manager, Workers, and API would hav...",
+      "lines": 76,
+      "mtime": 1777556764762.4766
+    },
+    {
+      "path": "docs/manager-service/shuffle/README.md",
+      "title": "Shuffle",
+      "summary": "> High-performance k-way merge sort for intermediate MapReduce data. In a distributed MapReduce system, individual Mapper tasks produce sorted fragments of data. A Reducer task, however, requires a...",
+      "lines": 76,
+      "mtime": 1777556764762.4766
+    },
+    {
+      "path": "docs/manager-service/validation/README.md",
+      "title": "Validation",
+      "summary": "> Request sanitization and system invariant enforcement. Distributed systems are fragile when faced with malformed input. A single job submission with a path traversal string could compromise the M...",
+      "lines": 72,
+      "mtime": 1777556764762.4766
+    },
+    {
+      "path": "docs/MINIKUBE_EXTERNAL_ACCESS.md",
+      "title": "KubeMapReduce on minikube: Quick Setup for External Access",
+      "summary": "This is a step-by-step checklist for exposing your KubeMapReduce API to external clients on minikube. Users outside the VM (or on the VM) can access: ``` http://api.mapreduce.local/api/v1/jobs ``` ...",
+      "lines": 273,
+      "mtime": 1778162342883.6367
+    },
+    {
+      "path": "docs/MONITORING_AND_RESULTS.md",
+      "title": "Monitoring, Results Collection & Effectiveness Evaluation",
+      "summary": "**Question:** \"How will I check my application for effectiveness? How are the results collected?\" **Short answer:** You'll use three approaches: (1) Prometheus metrics for real-time performance, (2...",
+      "lines": 561,
+      "mtime": 1778162342883.6367
+    },
+    {
+      "path": "docs/TIMEOUT_CONFIGURATION.md",
+      "title": "Timeout Configuration and Tuning Guide for KubeMapReduce",
+      "summary": "This guide explains how timeouts work in KubeMapReduce and how to tune them for different operational requirements. Timeouts are enforced at **three layers**: 1. **Application Level (Go code)**: gR...",
+      "lines": 430,
+      "mtime": 1778162342883.6367
+    },
+    {
+      "path": "k8s/README.md",
+      "title": "Kubernetes Manifests",
+      "summary": "Declarative deployment for the KubeMapReduce platform. All workloads run in the `mapreduce` namespace. | File                       | Resources                                                | |---...",
+      "lines": 93,
+      "mtime": 1777556764763.713
+    },
+    {
+      "path": "migrations/README.md",
+      "title": "Database Migrations",
+      "summary": "Numbered SQL migration files that define the schema of the **Distributed Data Store (DDS)** — the PostgreSQL instance backing the Manager service. - Files are named `NNNN_short_description.sql`, wh...",
+      "lines": 36,
+      "mtime": 1777556764885.6511
+    },
+    {
+      "path": "README.md",
+      "title": "KubeMapReduce",
+      "summary": "A distributed MapReduce platform built on Kubernetes. Workers run as K8s Jobs spawned dynamically by the Manager. Includes Keycloak authentication, role-based authorization, MinIO object storage, a...",
+      "lines": 526,
+      "mtime": 1778252471739.5
+    }
+  ]
+}

@@ -32,6 +32,8 @@ import (
 	"kubemapreduce/manager-service/internal/config"
 	mgrpc "kubemapreduce/manager-service/internal/grpc"
 	"kubemapreduce/manager-service/internal/manager"
+	"kubemapreduce/manager-service/internal/relay"
+	"kubemapreduce/manager-service/internal/store"
 	"kubemapreduce/manager-service/pkg/observability"
 	pb "kubemapreduce/proto"
 )
@@ -133,13 +135,42 @@ func main() {
 	}
 	workerServer.SetScheduler(scheduler)
 
+	// Background context for reaper, reconciler, and outbox relay.
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	if cfg.EnableOutboxRelay {
+		outboxStore := store.NewOutboxStore(db)
+		emitter := manager.NewLiveEventEmitter(outboxStore)
+		scheduler.SetEventEmitter(emitter)
+
+		// Choose publisher: NATS if configured, otherwise NoopPublisher
+		var publisher relay.BrokerPublisher = &relay.NoopPublisher{}
+		if cfg.NATSURL != "" {
+			natsPublisher, err := relay.NewNATSPublisher(cfg.NATSURL, cfg.NATSCredsFile)
+			if err != nil {
+				log.Fatalf("failed to create NATS publisher: %v", err)
+			}
+			publisher = natsPublisher
+			slog.Info("NATS publisher configured", "url", cfg.NATSURL)
+		} else {
+			slog.Info("NATS not configured, using NoopPublisher (events logged to outbox only)")
+		}
+
+		relaySvc := relay.NewRelayService(outboxStore, publisher, relay.RelayConfig{
+			Enabled:    cfg.EnableOutboxRelay,
+			MaxRetries: cfg.OutboxMaxRetries,
+			Interval:   cfg.OutboxRelayInterval,
+		})
+		relaySvc.Start(ctx)
+		slog.Info("outbox relay enabled")
+	}
+
 	if err := scheduler.Recover(context.Background()); err != nil {
 		log.Fatalf("failed to recover scheduler tasks: %v", err)
 	}
 
 	// 3. Start background loops
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
 	scheduler.StartCleanupReconciler(ctx, 15*time.Second)
 	startReaper(ctx, scheduler, defaultReaperInterval(cfg.LeaseTTL))
 
