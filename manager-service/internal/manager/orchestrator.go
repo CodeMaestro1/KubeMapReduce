@@ -58,7 +58,7 @@ func NewKubeOrchestrator(clientset kubernetes.Interface, namespace, workerImage,
 		namespace = "default"
 	}
 	if workerImage == "" {
-		workerImage = "kubemapreduce-worker:latest"
+		workerImage = "kubemapreduce/worker:latest"
 	}
 	if workerSecretName == "" {
 		workerSecretName = "kubemapreduce-secrets"
