@@ -742,6 +742,18 @@ func (s *Scheduler) CompleteTask(ctx context.Context, taskID string, attemptID s
 	}
 	defer tx.Rollback()
 
+	var jobID string
+	var jobStatus string
+	if err := tx.QueryRowContext(ctx, "SELECT t.job_id, j.status FROM TASKS t JOIN JOBS j ON t.job_id = j.job_id WHERE t.task_id = $1 FOR UPDATE OF j SKIP LOCKED", taskID).Scan(&jobID, &jobStatus); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrTaskNotFound
+		}
+		return err
+	}
+	if jobStatus != "Running" {
+		return ErrInvalidStateTransition
+	}
+
 	var state string
 	var currAttempt sql.NullString
 	err = tx.QueryRowContext(ctx, QuerySelectTaskForUpdate, taskID).Scan(&state, &currAttempt)
@@ -788,10 +800,6 @@ func (s *Scheduler) CompleteTask(ctx context.Context, taskID string, attemptID s
 		}
 	}
 
-	var jobID string
-	if err := tx.QueryRowContext(ctx, QueryGetTaskJobID, taskID).Scan(&jobID); err != nil {
-		return err
-	}
 	var pendingTasks int
 	if err := tx.QueryRowContext(ctx, QueryCountAllPendingTasks, jobID).Scan(&pendingTasks); err != nil {
 		return err
@@ -912,6 +920,18 @@ func (s *Scheduler) FailTask(ctx context.Context, taskID string, attemptID strin
 	}
 	defer tx.Rollback()
 
+	var jobID string
+	var jobStatus string
+	if err := tx.QueryRowContext(ctx, "SELECT t.job_id, j.status FROM TASKS t JOIN JOBS j ON t.job_id = j.job_id WHERE t.task_id = $1 FOR UPDATE OF j SKIP LOCKED", taskID).Scan(&jobID, &jobStatus); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrTaskNotFound
+		}
+		return err
+	}
+	if jobStatus != "Running" {
+		return ErrInvalidStateTransition
+	}
+
 	var state string
 	var currAttempt sql.NullString
 	err = tx.QueryRowContext(ctx, QuerySelectTaskForUpdate, taskID).Scan(&state, &currAttempt)
@@ -951,11 +971,6 @@ func (s *Scheduler) FailTask(ctx context.Context, taskID string, attemptID strin
 
 	_, err = tx.ExecContext(ctx, QueryFailAttempt, attemptID)
 	if err != nil {
-		return err
-	}
-
-	var jobID string
-	if err := tx.QueryRowContext(ctx, QueryGetTaskJobID, taskID).Scan(&jobID); err != nil {
 		return err
 	}
 

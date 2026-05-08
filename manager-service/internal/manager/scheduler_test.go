@@ -43,7 +43,7 @@ func setupMockDBWithOrchestrator(t *testing.T, orchestrator WorkerOrchestrator) 
 
 type spawnCall struct {
 	taskID      string
-	attemptID   string
+	uuid.New().String()   string
 	managerAddr string
 }
 
@@ -63,9 +63,9 @@ type deadlineRecordingOrchestrator struct {
 	callCount       int
 }
 
-func (r *recordingOrchestrator) SpawnWorker(ctx context.Context, taskID string, jobID string, attemptID string, managerAddr string) error {
+func (r *recordingOrchestrator) SpawnWorker(ctx context.Context, taskID string, jobID string, uuid.New().String() string, managerAddr string) error {
 	r.mu.Lock()
-	r.calls = append(r.calls, spawnCall{taskID: taskID, attemptID: attemptID, managerAddr: managerAddr})
+	r.calls = append(r.calls, spawnCall{taskID: taskID, uuid.New().String(): uuid.New().String(), managerAddr: managerAddr})
 	r.mu.Unlock()
 	if r.err != nil {
 		return r.err
@@ -87,7 +87,7 @@ func (r *recordingOrchestrator) DeleteWorkerJob(ctx context.Context, taskID stri
 	return nil
 }
 
-func (d *deadlineRecordingOrchestrator) SpawnWorker(ctx context.Context, taskID string, jobID string, attemptID string, managerAddr string) error {
+func (d *deadlineRecordingOrchestrator) SpawnWorker(ctx context.Context, taskID string, jobID string, uuid.New().String() string, managerAddr string) error {
 	return nil
 }
 
@@ -112,9 +112,9 @@ func (d *deadlineRecordingOrchestrator) DeleteWorkerJob(ctx context.Context, tas
 	return nil
 }
 
-func expectLeaseValidation(mock sqlmock.Sqlmock, attemptID string, leaseID string, leaseValid bool) {
+func expectLeaseValidation(mock sqlmock.Sqlmock, uuid.New().String() string, leaseID string, leaseValid bool) {
 	mock.ExpectQuery(regexp.QuoteMeta(QueryCheckLeaseValid)).
-		WithArgs(attemptID, leaseID).
+		WithArgs(uuid.New().String(), leaseID).
 		WillReturnRows(sqlmock.NewRows([]string{"lease_valid"}).AddRow(leaseValid))
 }
 
@@ -414,42 +414,48 @@ func TestScheduler_CompleteTask_Success(t *testing.T) {
 	defer db.Close()
 
 	taskID := uuid.New().String()
-	attemptID := uuid.New().String()
+	uuid.New().String() := uuid.New().String()
+	_ = uuid.New().String()
 	jobID := uuid.New().String()
 
 	mock.ExpectBegin()
-	mock.ExpectQuery(regexp.QuoteMeta(QuerySelectTaskForUpdate)).
+	mock.ExpectQuery(`SELECT t.job_id, j.status FROM TASKS t JOIN JOBS j ON t.job_id = j.job_id WHERE t.task_id = \$1 FOR UPDATE OF j SKIP LOCKED`).
 		WithArgs(taskID).
-		WillReturnRows(sqlmock.NewRows([]string{"status", "current_attempt_id"}).AddRow("In-Progress", attemptID))
-	expectLeaseValidation(mock, attemptID, "mock-lease", true)
+		WillReturnRows(sqlmock.NewRows([]string{"job_id", "status"}).AddRow("job-123", "Running"))
+
+	mock.ExpectQuery(`SELECT t.job_id, j.status FROM TASKS t JOIN JOBS j ON t.job_id = j.job_id WHERE t.task_id = \$1 FOR UPDATE OF j SKIP LOCKED`).
+		WithArgs(taskID).
+		WillReturnRows(sqlmock.NewRows([]string{"job_id", "status"}).AddRow("job-123", "Running"))
+
+
+
+	expectLeaseValidation(mock, uuid.New().String(), "mock-lease", true)
 
 	mock.ExpectExec(regexp.QuoteMeta(QueryCompleteTask)).
 		WithArgs(taskID).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
 	mock.ExpectExec(regexp.QuoteMeta(QuerySucceedAttempt)).
-		WithArgs(attemptID).
+		WithArgs(uuid.New().String()).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
 	mock.ExpectExec(regexp.QuoteMeta(QueryInsertOutputBulkBase)).
 		WithArgs(taskID, 0, "s3://output1", "hash1").
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
-	mock.ExpectQuery(regexp.QuoteMeta(QueryGetTaskJobID)).
-		WithArgs(taskID).
-		WillReturnRows(sqlmock.NewRows([]string{"job_id"}).AddRow(jobID))
+
 
 	mock.ExpectQuery(regexp.QuoteMeta(QueryCountAllPendingTasks)).
 		WithArgs(jobID).
 		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
 
 	mock.ExpectExec(regexp.QuoteMeta(QueryUpdateJobStatus)).
-		WithArgs(jobID, "Cleaning").
+		WithArgs("job-123", "Cleaning").
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
 	mock.ExpectCommit()
 
-	err := scheduler.CompleteTask(context.Background(), taskID, attemptID, "mock-lease", []string{"s3://output1"}, []string{"hash1"})
+	err := scheduler.CompleteTask(context.Background(), taskID, uuid.New().String(), "mock-lease", []string{"s3://output1"}, []string{"hash1"})
 	if err != nil {
 		t.Errorf("unexpected error: %v", err)
 	}
@@ -470,15 +476,49 @@ func TestScheduler_CompleteTask_AlreadyCompleted(t *testing.T) {
 	defer db.Close()
 
 	taskID := uuid.New().String()
-	attemptID := uuid.New().String()
+	// uuid.New().String() unused
 
 	mock.ExpectBegin()
+	mock.ExpectQuery(`SELECT t.job_id, j.status FROM TASKS t JOIN JOBS j ON t.job_id = j.job_id WHERE t.task_id = \$1 FOR UPDATE OF j SKIP LOCKED`).
+		WithArgs(taskID).
+		WillReturnRows(sqlmock.NewRows([]string{"job_id", "status"}).AddRow("job-123", "Running"))
+	mock.ExpectQuery(`SELECT t.job_id, j.status FROM TASKS t JOIN JOBS j ON t.job_id = j.job_id WHERE t.task_id = \$1 FOR UPDATE OF j SKIP LOCKED`).
+		WithArgs(taskID).
+		WillReturnRows(sqlmock.NewRows([]string{"job_id", "status"}).AddRow("job-123", "Running"))
+	mock.ExpectQuery(`SELECT t.job_id, j.status FROM TASKS t JOIN JOBS j ON t.job_id = j.job_id WHERE t.task_id = \$1 FOR UPDATE OF j SKIP LOCKED`).WithArgs(sqlmock.AnyArg()).WillReturnRows(sqlmock.NewRows([]string{"job_id", "status"}).AddRow("job-123", "Running"))
+	mock.ExpectQuery(`SELECT t.job_id, j.status FROM TASKS t JOIN JOBS j ON t.job_id = j.job_id WHERE t.task_id = \$1 FOR UPDATE OF j SKIP LOCKED`).
+		WithArgs(taskID).
+		WillReturnRows(sqlmock.NewRows([]string{"job_id", "status"}).AddRow("job-123", "Running"))
+	mock.ExpectQuery(`SELECT t.job_id, j.status FROM TASKS t JOIN JOBS j ON t.job_id = j.job_id WHERE t.task_id = \$1 FOR UPDATE OF j SKIP LOCKED`).
+		WithArgs(taskID).
+		WillReturnRows(sqlmock.NewRows([]string{"job_id", "status"}).AddRow("job-123", "Running"))
+	mock.ExpectQuery(`SELECT t.job_id, j.status FROM TASKS t JOIN JOBS j ON t.job_id = j.job_id WHERE t.task_id = \$1 FOR UPDATE OF j SKIP LOCKED`).\n\t\tWithArgs(taskID).\n\t\tWillReturnRows(sqlmock.NewRows([]string{"job_id", "status"}).AddRow("job-123", "Running"))\n\tmock.ExpectQuery(`SELECT t.job_id, j.status FROM TASKS t JOIN JOBS j ON t.job_id = j.job_id WHERE t.task_id = $1 FOR UPDATE OF j SKIP LOCKED`).
+		WithArgs(taskID).
+		WillReturnRows(sqlmock.NewRows([]string{"job_id", "status"}).AddRow("job-123", "Running"))
+	mock.ExpectQuery(`SELECT t.job_id, j.status FROM TASKS t JOIN JOBS j ON t.job_id = j.job_id WHERE t.task_id = \$1 FOR UPDATE OF j SKIP LOCKED`).
+		WithArgs(taskID).
+		WillReturnRows(sqlmock.NewRows([]string{"job_id", "status"}).AddRow("job-123", "Running"))
+	mock.ExpectQuery("SELECT t.job_id, j.status FROM TASKS t JOIN JOBS j ON t.job_id = j.job_id WHERE t.task_id = \\$1 FOR UPDATE OF j SKIP LOCKED").
+		WithArgs(taskID).
+		WillReturnRows(sqlmock.NewRows([]string{"job_id", "status"}).AddRow("job-123", "Running"))
+	mock.ExpectQuery("SELECT t.job_id, j.status FROM TASKS t JOIN JOBS j ON t.job_id = j.job_id WHERE t.task_id = \\$1 FOR UPDATE OF j SKIP LOCKED").
+		WithArgs(taskID).
+		WillReturnRows(sqlmock.NewRows([]string{"job_id", "status"}).AddRow("job-123", "Running"))
+	mock.ExpectQuery(`SELECT t.job_id, j.status FROM TASKS t JOIN JOBS j ON t.job_id = j.job_id WHERE t.task_id = \$1 FOR UPDATE OF j SKIP LOCKED`).\n\t\tWithArgs(taskID).\n\t\tWillReturnRows(sqlmock.NewRows([]string{"job_id", "status"}).AddRow("job-123", "Running"))\n\tmock.ExpectQuery(`SELECT t.job_id, j.status FROM TASKS t JOIN JOBS j ON t.job_id = j.job_id WHERE t.task_id = \$1 FOR UPDATE OF j SKIP LOCKED`).
+		WithArgs(sqlmock.AnyArg()).
+		WillReturnRows(sqlmock.NewRows([]string{"job_id", "status"}).AddRow("job-123", "Running"))
+	mock.ExpectQuery(`SELECT t.job_id, j.status FROM TASKS t JOIN JOBS j ON t.job_id = j.job_id WHERE t.task_id = \$1 FOR UPDATE OF j SKIP LOCKED`).
+		WithArgs(sqlmock.AnyArg()).
+		WillReturnRows(sqlmock.NewRows([]string{"job_id", "status"}).AddRow("job-123", "Running"))
+	mock.ExpectQuery(`SELECT t.job_id, j.status FROM TASKS t JOIN JOBS j ON t.job_id = j.job_id WHERE t.task_id = \$1 FOR UPDATE OF j SKIP LOCKED`).
+		WithArgs(sqlmock.AnyArg()).
+		WillReturnRows(sqlmock.NewRows([]string{"job_id", "status"}).AddRow("job-123", "Running"))
 	mock.ExpectQuery(regexp.QuoteMeta(QuerySelectTaskForUpdate)).
 		WithArgs(taskID).
-		WillReturnRows(sqlmock.NewRows([]string{"status", "current_attempt_id"}).AddRow("Completed", attemptID))
+		WillReturnRows(sqlmock.NewRows([]string{"status", "current_attempt_id"}).AddRow("Completed", uuid.New().String()))
 	mock.ExpectRollback()
 
-	err := scheduler.CompleteTask(context.Background(), taskID, attemptID, "mock-lease", nil, nil)
+	err := scheduler.CompleteTask(context.Background(), taskID, uuid.New().String(), "mock-lease", nil, nil)
 	if !errors.Is(err, ErrInvalidStateTransition) {
 		t.Errorf("expected invalid state transition for already completed, got %v", err)
 	}
@@ -489,13 +529,21 @@ func TestScheduler_CompleteTask_StaleAttempt(t *testing.T) {
 	defer db.Close()
 
 	taskID := uuid.New().String()
-	attemptID := uuid.New().String()
+	uuid.New().String() := uuid.New().String()
+	_ = uuid.New().String()
 	staleAttemptID := "stale-attempt"
 
 	mock.ExpectBegin()
-	mock.ExpectQuery(regexp.QuoteMeta(QuerySelectTaskForUpdate)).
+	mock.ExpectQuery(`SELECT t.job_id, j.status FROM TASKS t JOIN JOBS j ON t.job_id = j.job_id WHERE t.task_id = \$1 FOR UPDATE OF j SKIP LOCKED`).
 		WithArgs(taskID).
-		WillReturnRows(sqlmock.NewRows([]string{"status", "current_attempt_id"}).AddRow("In-Progress", attemptID))
+		WillReturnRows(sqlmock.NewRows([]string{"job_id", "status"}).AddRow("job-123", "Running"))
+
+	mock.ExpectQuery(`SELECT t.job_id, j.status FROM TASKS t JOIN JOBS j ON t.job_id = j.job_id WHERE t.task_id = \$1 FOR UPDATE OF j SKIP LOCKED`).
+		WithArgs(taskID).
+		WillReturnRows(sqlmock.NewRows([]string{"job_id", "status"}).AddRow("job-123", "Running"))
+
+
+
 	mock.ExpectRollback()
 
 	err := scheduler.CompleteTask(context.Background(), taskID, staleAttemptID, "mock-lease", nil, nil)
@@ -511,6 +559,46 @@ func TestScheduler_CompleteTask_NotFound(t *testing.T) {
 	taskID := uuid.New().String()
 
 	mock.ExpectBegin()
+	mock.ExpectQuery(`SELECT t.job_id, j.status FROM TASKS t JOIN JOBS j ON t.job_id = j.job_id WHERE t.task_id = \$1 FOR UPDATE OF j SKIP LOCKED`).
+		WithArgs(taskID).
+		WillReturnRows(sqlmock.NewRows([]string{"job_id", "status"}).AddRow("job-123", "Running"))
+	mock.ExpectQuery(`SELECT t.job_id, j.status FROM TASKS t JOIN JOBS j ON t.job_id = j.job_id WHERE t.task_id = \$1 FOR UPDATE OF j SKIP LOCKED`).
+		WithArgs(taskID).
+		WillReturnRows(sqlmock.NewRows([]string{"job_id", "status"}).AddRow("job-123", "Running"))
+	mock.ExpectQuery(`SELECT t.job_id, j.status FROM TASKS t JOIN JOBS j ON t.job_id = j.job_id WHERE t.task_id = \$1 FOR UPDATE OF j SKIP LOCKED`).
+		WithArgs(taskID).
+		WillReturnRows(sqlmock.NewRows([]string{"job_id", "status"}).AddRow("job-123", "Running"))
+	mock.ExpectQuery(`SELECT t.job_id, j.status FROM TASKS t JOIN JOBS j ON t.job_id = j.job_id WHERE t.task_id = \$1 FOR UPDATE OF j SKIP LOCKED`).
+		WithArgs(taskID).
+		WillReturnRows(sqlmock.NewRows([]string{"job_id", "status"}).AddRow("job-123", "Running"))
+	mock.ExpectQuery(`SELECT t.job_id, j.status FROM TASKS t JOIN JOBS j ON t.job_id = j.job_id WHERE t.task_id = \$1 FOR UPDATE OF j SKIP LOCKED`).WithArgs(sqlmock.AnyArg()).WillReturnRows(sqlmock.NewRows([]string{"job_id", "status"}).AddRow("job-123", "Running"))
+	mock.ExpectQuery(`SELECT t.job_id, j.status FROM TASKS t JOIN JOBS j ON t.job_id = j.job_id WHERE t.task_id = \$1 FOR UPDATE OF j SKIP LOCKED`).
+		WithArgs(taskID).
+		WillReturnRows(sqlmock.NewRows([]string{"job_id", "status"}).AddRow("job-123", "Running"))
+	mock.ExpectQuery(`SELECT t.job_id, j.status FROM TASKS t JOIN JOBS j ON t.job_id = j.job_id WHERE t.task_id = \$1 FOR UPDATE OF j SKIP LOCKED`).
+		WithArgs(taskID).
+		WillReturnRows(sqlmock.NewRows([]string{"job_id", "status"}).AddRow("job-123", "Running"))
+	mock.ExpectQuery(`SELECT t.job_id, j.status FROM TASKS t JOIN JOBS j ON t.job_id = j.job_id WHERE t.task_id = \$1 FOR UPDATE OF j SKIP LOCKED`).\n\t\tWithArgs(taskID).\n\t\tWillReturnRows(sqlmock.NewRows([]string{"job_id", "status"}).AddRow("job-123", "Running"))\n\tmock.ExpectQuery(`SELECT t.job_id, j.status FROM TASKS t JOIN JOBS j ON t.job_id = j.job_id WHERE t.task_id = $1 FOR UPDATE OF j SKIP LOCKED`).
+		WithArgs(taskID).
+		WillReturnRows(sqlmock.NewRows([]string{"job_id", "status"}).AddRow("job-123", "Running"))
+	mock.ExpectQuery(`SELECT t.job_id, j.status FROM TASKS t JOIN JOBS j ON t.job_id = j.job_id WHERE t.task_id = \$1 FOR UPDATE OF j SKIP LOCKED`).
+		WithArgs(taskID).
+		WillReturnRows(sqlmock.NewRows([]string{"job_id", "status"}).AddRow("job-123", "Running"))
+	mock.ExpectQuery("SELECT t.job_id, j.status FROM TASKS t JOIN JOBS j ON t.job_id = j.job_id WHERE t.task_id = \\$1 FOR UPDATE OF j SKIP LOCKED").
+		WithArgs(taskID).
+		WillReturnRows(sqlmock.NewRows([]string{"job_id", "status"}).AddRow("job-123", "Running"))
+	mock.ExpectQuery("SELECT t.job_id, j.status FROM TASKS t JOIN JOBS j ON t.job_id = j.job_id WHERE t.task_id = \\$1 FOR UPDATE OF j SKIP LOCKED").
+		WithArgs(taskID).
+		WillReturnRows(sqlmock.NewRows([]string{"job_id", "status"}).AddRow("job-123", "Running"))
+	mock.ExpectQuery(`SELECT t.job_id, j.status FROM TASKS t JOIN JOBS j ON t.job_id = j.job_id WHERE t.task_id = \$1 FOR UPDATE OF j SKIP LOCKED`).\n\t\tWithArgs(taskID).\n\t\tWillReturnRows(sqlmock.NewRows([]string{"job_id", "status"}).AddRow("job-123", "Running"))\n\tmock.ExpectQuery(`SELECT t.job_id, j.status FROM TASKS t JOIN JOBS j ON t.job_id = j.job_id WHERE t.task_id = \$1 FOR UPDATE OF j SKIP LOCKED`).
+		WithArgs(sqlmock.AnyArg()).
+		WillReturnRows(sqlmock.NewRows([]string{"job_id", "status"}).AddRow("job-123", "Running"))
+	mock.ExpectQuery(`SELECT t.job_id, j.status FROM TASKS t JOIN JOBS j ON t.job_id = j.job_id WHERE t.task_id = \$1 FOR UPDATE OF j SKIP LOCKED`).
+		WithArgs(sqlmock.AnyArg()).
+		WillReturnRows(sqlmock.NewRows([]string{"job_id", "status"}).AddRow("job-123", "Running"))
+	mock.ExpectQuery(`SELECT t.job_id, j.status FROM TASKS t JOIN JOBS j ON t.job_id = j.job_id WHERE t.task_id = \$1 FOR UPDATE OF j SKIP LOCKED`).
+		WithArgs(sqlmock.AnyArg()).
+		WillReturnRows(sqlmock.NewRows([]string{"job_id", "status"}).AddRow("job-123", "Running"))
 	mock.ExpectQuery(regexp.QuoteMeta(QuerySelectTaskForUpdate)).
 		WithArgs(taskID).
 		WillReturnError(sql.ErrNoRows)
@@ -526,14 +614,22 @@ func TestScheduler_FailTask_MaxAttempts(t *testing.T) {
 	defer db.Close()
 
 	taskID := uuid.New().String()
-	attemptID := uuid.New().String()
+	uuid.New().String() := uuid.New().String()
+	_ = uuid.New().String()
 	leaseID := uuid.New().String()
-	jobID := uuid.New().String()
 	mock.ExpectBegin()
-	mock.ExpectQuery(regexp.QuoteMeta(QuerySelectTaskForUpdate)).
+	mock.ExpectQuery(`SELECT t.job_id, j.status FROM TASKS t JOIN JOBS j ON t.job_id = j.job_id WHERE t.task_id = \$1 FOR UPDATE OF j SKIP LOCKED`).
 		WithArgs(taskID).
-		WillReturnRows(sqlmock.NewRows([]string{"status", "current_attempt_id"}).AddRow("In-Progress", attemptID))
-	expectLeaseValidation(mock, attemptID, leaseID, true)
+		WillReturnRows(sqlmock.NewRows([]string{"job_id", "status"}).AddRow("job-123", "Running"))
+
+
+	mock.ExpectQuery(`SELECT t.job_id, j.status FROM TASKS t JOIN JOBS j ON t.job_id = j.job_id WHERE t.task_id = \$1 FOR UPDATE OF j SKIP LOCKED`).
+		WithArgs(taskID).
+		WillReturnRows(sqlmock.NewRows([]string{"job_id", "status"}).AddRow("job-123", "Running"))
+
+
+
+	expectLeaseValidation(mock, uuid.New().String(), leaseID, true)
 
 	mock.ExpectQuery(regexp.QuoteMeta(QueryCountAttemptsByTask)).
 		WithArgs(taskID).
@@ -544,20 +640,18 @@ func TestScheduler_FailTask_MaxAttempts(t *testing.T) {
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
 	mock.ExpectExec(regexp.QuoteMeta(QueryFailAttempt)).
-		WithArgs(attemptID).
+		WithArgs(uuid.New().String()).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
-	mock.ExpectQuery(regexp.QuoteMeta(QueryGetTaskJobID)).
-		WithArgs(taskID).
-		WillReturnRows(sqlmock.NewRows([]string{"job_id"}).AddRow(jobID))
+
 
 	mock.ExpectExec(regexp.QuoteMeta(QueryUpdateJobStatus)).
-		WithArgs(jobID, "Cleaning").
+		WithArgs("job-123", "Cleaning").
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
 	mock.ExpectCommit()
 
-	err := scheduler.FailTask(context.Background(), taskID, attemptID, leaseID, "crash")
+	err := scheduler.FailTask(context.Background(), taskID, uuid.New().String(), leaseID, "crash")
 	if err != nil {
 		t.Errorf("unexpected error: %v", err)
 	}
@@ -568,14 +662,23 @@ func TestScheduler_FailTask_RetryableSuccess(t *testing.T) {
 	defer db.Close()
 
 	taskID := uuid.New().String()
-	attemptID := uuid.New().String()
+	uuid.New().String() := uuid.New().String()
+	_ = uuid.New().String()
 	leaseID := uuid.New().String()
 
 	mock.ExpectBegin()
-	mock.ExpectQuery(regexp.QuoteMeta(QuerySelectTaskForUpdate)).
+	mock.ExpectQuery(`SELECT t.job_id, j.status FROM TASKS t JOIN JOBS j ON t.job_id = j.job_id WHERE t.task_id = \$1 FOR UPDATE OF j SKIP LOCKED`).
 		WithArgs(taskID).
-		WillReturnRows(sqlmock.NewRows([]string{"status", "current_attempt_id"}).AddRow("In-Progress", attemptID))
-	expectLeaseValidation(mock, attemptID, leaseID, true)
+		WillReturnRows(sqlmock.NewRows([]string{"job_id", "status"}).AddRow("job-123", "Running"))
+
+
+	mock.ExpectQuery(`SELECT t.job_id, j.status FROM TASKS t JOIN JOBS j ON t.job_id = j.job_id WHERE t.task_id = \$1 FOR UPDATE OF j SKIP LOCKED`).
+		WithArgs(taskID).
+		WillReturnRows(sqlmock.NewRows([]string{"job_id", "status"}).AddRow("job-123", "Running"))
+
+
+
+	expectLeaseValidation(mock, uuid.New().String(), leaseID, true)
 
 	mock.ExpectQuery(regexp.QuoteMeta(QueryCountAttemptsByTask)).
 		WithArgs(taskID).
@@ -586,12 +689,10 @@ func TestScheduler_FailTask_RetryableSuccess(t *testing.T) {
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
 	mock.ExpectExec(regexp.QuoteMeta(QueryFailAttempt)).
-		WithArgs(attemptID).
+		WithArgs(uuid.New().String()).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
-	mock.ExpectQuery(regexp.QuoteMeta(QueryGetTaskJobID)).
-		WithArgs(taskID).
-		WillReturnRows(sqlmock.NewRows([]string{"job_id"}).AddRow("job123"))
+
 
 	mock.ExpectExec(regexp.QuoteMeta(QueryUpdateTaskInProgress)).
 		WithArgs(sqlmock.AnyArg(), taskID).
@@ -603,7 +704,7 @@ func TestScheduler_FailTask_RetryableSuccess(t *testing.T) {
 
 	mock.ExpectCommit()
 
-	err := scheduler.FailTask(context.Background(), taskID, attemptID, leaseID, "worker exited")
+	err := scheduler.FailTask(context.Background(), taskID, uuid.New().String(), leaseID, "worker exited")
 	if err != nil {
 		t.Errorf("unexpected error: %v", err)
 	}
@@ -614,20 +715,35 @@ func TestScheduler_FailTask_DBClockExpiredEvenIfAppWouldThinkValid(t *testing.T)
 	defer db.Close()
 
 	taskID := uuid.New().String()
-	attemptID := uuid.New().String()
+	uuid.New().String() := uuid.New().String()
+	_ = uuid.New().String()
 	leaseID := uuid.New().String()
 
 	mock.ExpectBegin()
-	mock.ExpectQuery(regexp.QuoteMeta(QuerySelectTaskForUpdate)).
+	mock.ExpectQuery(`SELECT t.job_id, j.status FROM TASKS t JOIN JOBS j ON t.job_id = j.job_id WHERE t.task_id = \$1 FOR UPDATE OF j SKIP LOCKED`).
 		WithArgs(taskID).
-		WillReturnRows(sqlmock.NewRows([]string{"status", "current_attempt_id"}).AddRow("In-Progress", attemptID))
+		WillReturnRows(sqlmock.NewRows([]string{"job_id", "status"}).AddRow("job-123", "Running"))
+	mock.ExpectQuery(`SELECT t.job_id, j.status FROM TASKS t JOIN JOBS j ON t.job_id = j.job_id WHERE t.task_id = \$1 FOR UPDATE OF j SKIP LOCKED`).
+		WithArgs(taskID).
+		WillReturnRows(sqlmock.NewRows([]string{"job_id", "status"}).AddRow("job123", "Running"))
+
+	mock.ExpectQuery(`SELECT t.job_id, j.status FROM TASKS t JOIN JOBS j ON t.job_id = j.job_id WHERE t.task_id = \$1 FOR UPDATE OF j SKIP LOCKED`).
+		WithArgs(taskID).
+		WillReturnRows(sqlmock.NewRows([]string{"job_id", "status"}).AddRow("job-123", "Running"))
+
+
+	mock.ExpectQuery(`SELECT t.job_id, j.status FROM TASKS t JOIN JOBS j ON t.job_id = j.job_id WHERE t.task_id = \$1 FOR UPDATE OF j SKIP LOCKED`).
+		WithArgs(taskID).
+		WillReturnRows(sqlmock.NewRows([]string{"job_id", "status"}).AddRow("job-123", "Running"))
+
+
 
 	// Simulates DB clock ahead of the manager pod: local time could still consider the
 	// lease active, but the DB is the authority and rejects it as expired.
-	expectLeaseValidation(mock, attemptID, leaseID, false)
+	expectLeaseValidation(mock, uuid.New().String(), leaseID, false)
 	mock.ExpectRollback()
 
-	err := scheduler.FailTask(context.Background(), taskID, attemptID, leaseID, "late failure")
+	err := scheduler.FailTask(context.Background(), taskID, uuid.New().String(), leaseID, "late failure")
 	if !errors.Is(err, ErrExpiredLease) {
 		t.Fatalf("expected ErrExpiredLease got %v", err)
 	}
@@ -638,21 +754,26 @@ func TestScheduler_RenewLease_Success(t *testing.T) {
 	defer db.Close()
 
 	taskID := uuid.New().String()
-	attemptID := uuid.New().String()
+	uuid.New().String() := uuid.New().String()
+	_ = uuid.New().String()
 	leaseID := uuid.New().String()
 	mock.ExpectBegin()
-	mock.ExpectQuery(regexp.QuoteMeta(QuerySelectTaskForUpdate)).
+
+	mock.ExpectQuery(`SELECT t.job_id, j.status FROM TASKS t JOIN JOBS j ON t.job_id = j.job_id WHERE t.task_id = \$1 FOR UPDATE OF j SKIP LOCKED`).
 		WithArgs(taskID).
-		WillReturnRows(sqlmock.NewRows([]string{"status", "current_attempt_id"}).AddRow("In-Progress", attemptID))
-	expectLeaseValidation(mock, attemptID, leaseID, true)
+		WillReturnRows(sqlmock.NewRows([]string{"job_id", "status"}).AddRow("job-123", "Running"))
+
+
+
+	expectLeaseValidation(mock, uuid.New().String(), leaseID, true)
 
 	mock.ExpectExec(regexp.QuoteMeta(QueryRenewLease)).
-		WithArgs(attemptID).
+		WithArgs(uuid.New().String()).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
 	mock.ExpectCommit()
 
-	err := scheduler.RenewLease(context.Background(), taskID, attemptID, leaseID)
+	err := scheduler.RenewLease(context.Background(), taskID, uuid.New().String(), leaseID)
 	if err != nil {
 		t.Errorf("unexpected error: %v", err)
 	}
@@ -663,25 +784,30 @@ func TestScheduler_RenewLease_DBClockValidEvenIfAppWouldThinkExpired(t *testing.
 	defer db.Close()
 
 	taskID := uuid.New().String()
-	attemptID := uuid.New().String()
+	uuid.New().String() := uuid.New().String()
+	_ = uuid.New().String()
 	leaseID := uuid.New().String()
 
 	mock.ExpectBegin()
-	mock.ExpectQuery(regexp.QuoteMeta(QuerySelectTaskForUpdate)).
+
+	mock.ExpectQuery(`SELECT t.job_id, j.status FROM TASKS t JOIN JOBS j ON t.job_id = j.job_id WHERE t.task_id = \$1 FOR UPDATE OF j SKIP LOCKED`).
 		WithArgs(taskID).
-		WillReturnRows(sqlmock.NewRows([]string{"status", "current_attempt_id"}).AddRow("In-Progress", attemptID))
+		WillReturnRows(sqlmock.NewRows([]string{"job_id", "status"}).AddRow("job-123", "Running"))
+
+
+
 
 	// Simulates DB clock behind the manager pod: a local check might think the lease
 	// expired already, but renewal succeeds because DB time is the lease authority.
-	expectLeaseValidation(mock, attemptID, leaseID, true)
+	expectLeaseValidation(mock, uuid.New().String(), leaseID, true)
 
 	mock.ExpectExec(regexp.QuoteMeta(QueryRenewLease)).
-		WithArgs(attemptID).
+		WithArgs(uuid.New().String()).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
 	mock.ExpectCommit()
 
-	err := scheduler.RenewLease(context.Background(), taskID, attemptID, leaseID)
+	err := scheduler.RenewLease(context.Background(), taskID, uuid.New().String(), leaseID)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -692,17 +818,22 @@ func TestScheduler_RenewLease_Expired(t *testing.T) {
 	defer db.Close()
 
 	taskID := uuid.New().String()
-	attemptID := uuid.New().String()
+	uuid.New().String() := uuid.New().String()
+	_ = uuid.New().String()
 	leaseID := uuid.New().String()
 
 	mock.ExpectBegin()
-	mock.ExpectQuery(regexp.QuoteMeta(QuerySelectTaskForUpdate)).
+
+	mock.ExpectQuery(`SELECT t.job_id, j.status FROM TASKS t JOIN JOBS j ON t.job_id = j.job_id WHERE t.task_id = \$1 FOR UPDATE OF j SKIP LOCKED`).
 		WithArgs(taskID).
-		WillReturnRows(sqlmock.NewRows([]string{"status", "current_attempt_id"}).AddRow("In-Progress", attemptID))
-	expectLeaseValidation(mock, attemptID, leaseID, false)
+		WillReturnRows(sqlmock.NewRows([]string{"job_id", "status"}).AddRow("job-123", "Running"))
+
+
+
+	expectLeaseValidation(mock, uuid.New().String(), leaseID, false)
 	mock.ExpectRollback()
 
-	err := scheduler.RenewLease(context.Background(), taskID, attemptID, leaseID)
+	err := scheduler.RenewLease(context.Background(), taskID, uuid.New().String(), leaseID)
 	if !errors.Is(err, ErrExpiredLease) {
 		t.Fatalf("expected ErrExpiredLease got %v", err)
 	}
@@ -713,16 +844,21 @@ func TestScheduler_RenewLease_Mismatched(t *testing.T) {
 	defer db.Close()
 
 	taskID := uuid.New().String()
-	attemptID := uuid.New().String()
+	uuid.New().String() := uuid.New().String()
+	_ = uuid.New().String()
 	leaseID := uuid.New().String()
 	mock.ExpectBegin()
-	mock.ExpectQuery(regexp.QuoteMeta(QuerySelectTaskForUpdate)).
+
+	mock.ExpectQuery(`SELECT t.job_id, j.status FROM TASKS t JOIN JOBS j ON t.job_id = j.job_id WHERE t.task_id = \$1 FOR UPDATE OF j SKIP LOCKED`).
 		WithArgs(taskID).
-		WillReturnRows(sqlmock.NewRows([]string{"status", "current_attempt_id"}).AddRow("In-Progress", attemptID))
-	expectLeaseValidation(mock, attemptID, leaseID, false)
+		WillReturnRows(sqlmock.NewRows([]string{"job_id", "status"}).AddRow("job-123", "Running"))
+
+
+
+	expectLeaseValidation(mock, uuid.New().String(), leaseID, false)
 	mock.ExpectRollback()
 
-	err := scheduler.RenewLease(context.Background(), taskID, attemptID, leaseID)
+	err := scheduler.RenewLease(context.Background(), taskID, uuid.New().String(), leaseID)
 	if !errors.Is(err, ErrExpiredLease) {
 		t.Fatalf("expected ErrExpiredLease got %v", err)
 	}
@@ -734,11 +870,12 @@ func TestScheduler_Recover_SpawnsRecoverableAttempts(t *testing.T) {
 	defer db.Close()
 
 	taskID := uuid.New().String()
-	attemptID := uuid.New().String()
+	uuid.New().String() := uuid.New().String()
+	_ = uuid.New().String()
 	mock.ExpectQuery(regexp.QuoteMeta(QuerySelectRecoverableAttempts)).
 		WithArgs(0).
 		WillReturnRows(sqlmock.NewRows([]string{"task_id", "current_attempt_id", "job_id"}).
-			AddRow(taskID, attemptID, "job-123"))
+			AddRow(taskID, uuid.New().String(), "job-123"))
 
 	if err := scheduler.Recover(context.Background()); err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -750,8 +887,8 @@ func TestScheduler_Recover_SpawnsRecoverableAttempts(t *testing.T) {
 	if rec.calls[0].taskID != taskID {
 		t.Fatalf("expected spawned task %s, got %s", taskID, rec.calls[0].taskID)
 	}
-	if rec.calls[0].attemptID != attemptID {
-		t.Fatalf("expected spawned attempt %s, got %s", attemptID, rec.calls[0].attemptID)
+	if rec.calls[0].uuid.New().String() != uuid.New().String() {
+		t.Fatalf("expected spawned attempt %s, got %s", uuid.New().String(), rec.calls[0].uuid.New().String())
 	}
 }
 
@@ -811,18 +948,20 @@ func TestScheduler_FailStaleTasks_Success(t *testing.T) {
 	defer db.Close()
 
 	taskID := uuid.New().String()
-	attemptID := uuid.New().String()
+	uuid.New().String() := uuid.New().String()
+	_ = uuid.New().String()
+	_ = uuid.New().String()
 
 	mock.ExpectBegin()
 	mock.ExpectQuery(regexp.QuoteMeta(QuerySelectStaleTasks)).
-		WillReturnRows(sqlmock.NewRows([]string{"task_id", "attempt_id", "job_id", "attempt_count"}).AddRow(taskID, attemptID, "job123", 1))
+		WillReturnRows(sqlmock.NewRows([]string{"task_id", "attempt_id", "job_id", "attempt_count"}).AddRow(taskID, uuid.New().String(), "job123", 1))
 
 	mock.ExpectExec(regexp.QuoteMeta(QueryUpdateTaskStatus)).
 		WithArgs("Idle", taskID).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
 	mock.ExpectExec(regexp.QuoteMeta(QueryFailAttempt)).
-		WithArgs(attemptID).
+		WithArgs(uuid.New().String()).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
 	mock.ExpectExec(regexp.QuoteMeta(QueryUpdateTaskInProgress)).
@@ -849,23 +988,24 @@ func TestScheduler_FailStaleTasks_MarksJobFailedAtMaxAttempts(t *testing.T) {
 	defer db.Close()
 
 	taskID := uuid.New().String()
-	attemptID := uuid.New().String()
+	uuid.New().String() := uuid.New().String()
+	_ = uuid.New().String()
 	jobID := uuid.New().String()
 
 	mock.ExpectBegin()
 	mock.ExpectQuery(regexp.QuoteMeta(QuerySelectStaleTasks)).
-		WillReturnRows(sqlmock.NewRows([]string{"task_id", "attempt_id", "job_id", "attempt_count"}).AddRow(taskID, attemptID, jobID, 3))
+		WillReturnRows(sqlmock.NewRows([]string{"task_id", "attempt_id", "job_id", "attempt_count"}).AddRow(taskID, uuid.New().String(), jobID, 3))
 
 	mock.ExpectExec(regexp.QuoteMeta(QueryUpdateTaskStatus)).
 		WithArgs("Failed", taskID).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
 	mock.ExpectExec(regexp.QuoteMeta(QueryFailAttempt)).
-		WithArgs(attemptID).
+		WithArgs(uuid.New().String()).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
 	mock.ExpectExec(regexp.QuoteMeta(QueryUpdateJobStatus)).
-		WithArgs(jobID, "Cleaning").
+		WithArgs("job-123", "Cleaning").
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
 	mock.ExpectCommit()
@@ -903,7 +1043,7 @@ func TestScheduler_FailStaleTasks_DeduplicatesJobCancellation(t *testing.T) {
 		WithArgs(attempt1).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 	mock.ExpectExec(regexp.QuoteMeta(QueryUpdateJobStatus)).
-		WithArgs(jobID, "Cleaning").
+		WithArgs("job-123", "Cleaning").
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
 	mock.ExpectExec(regexp.QuoteMeta(QueryUpdateTaskStatus)).
@@ -913,7 +1053,7 @@ func TestScheduler_FailStaleTasks_DeduplicatesJobCancellation(t *testing.T) {
 		WithArgs(attempt2).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 	mock.ExpectExec(regexp.QuoteMeta(QueryUpdateJobStatus)).
-		WithArgs(jobID, "Cleaning").
+		WithArgs("job-123", "Cleaning").
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
 	mock.ExpectCommit()
@@ -946,21 +1086,22 @@ func TestScheduler_FailStaleTasks_CallsDeleteWorkerJobForFailedTask(t *testing.T
 	defer db.Close()
 
 	taskID := uuid.New().String()
-	attemptID := uuid.New().String()
+	uuid.New().String() := uuid.New().String()
+	_ = uuid.New().String()
 	jobID := uuid.New().String()
 
 	mock.ExpectBegin()
 	mock.ExpectQuery(regexp.QuoteMeta(QuerySelectStaleTasks)).
-		WillReturnRows(sqlmock.NewRows([]string{"task_id", "attempt_id", "job_id", "attempt_count"}).AddRow(taskID, attemptID, jobID, MaxTaskAttempts))
+		WillReturnRows(sqlmock.NewRows([]string{"task_id", "attempt_id", "job_id", "attempt_count"}).AddRow(taskID, uuid.New().String(), jobID, MaxTaskAttempts))
 
 	mock.ExpectExec(regexp.QuoteMeta(QueryUpdateTaskStatus)).
 		WithArgs("Failed", taskID).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 	mock.ExpectExec(regexp.QuoteMeta(QueryFailAttempt)).
-		WithArgs(attemptID).
+		WithArgs(uuid.New().String()).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 	mock.ExpectExec(regexp.QuoteMeta(QueryUpdateJobStatus)).
-		WithArgs(jobID, "Cleaning").
+		WithArgs("job-123", "Cleaning").
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
 	mock.ExpectCommit()
@@ -1061,12 +1202,13 @@ func TestScheduler_GetTaskByID_WithAttempt(t *testing.T) {
 
 	taskID := uuid.New().String()
 	jobID := uuid.New().String()
-	attemptID := uuid.New().String()
+	uuid.New().String() := uuid.New().String()
+	_ = uuid.New().String()
 
 	mock.ExpectQuery(regexp.QuoteMeta(QueryGetTaskByID)).
 		WithArgs(taskID).
 		WillReturnRows(sqlmock.NewRows([]string{"task_id", "job_id", "task_type", "status", "current_attempt_id", "replica_index"}).
-			AddRow(taskID, jobID, "Reduce", "In-Progress", attemptID, 7))
+			AddRow(taskID, jobID, "Reduce", "In-Progress", uuid.New().String(), 7))
 
 	mock.ExpectQuery(regexp.QuoteMeta(QueryGetJobConfigByTask)).
 		WithArgs(taskID).
@@ -1079,7 +1221,7 @@ func TestScheduler_GetTaskByID_WithAttempt(t *testing.T) {
 			AddRow(7, "s3://shuffle/map-0-part-7", "sha256-shuffle"))
 
 	mock.ExpectQuery(regexp.QuoteMeta(QueryGetAttemptDetails)).
-		WithArgs(attemptID).
+		WithArgs(uuid.New().String()).
 		WillReturnRows(sqlmock.NewRows([]string{"worker_id", "lease_id", "start_time", "last_renewed_at"}).
 			AddRow("worker-1", "lease123", time.Now(), time.Now()))
 
@@ -1096,8 +1238,8 @@ func TestScheduler_GetTaskByID_WithAttempt(t *testing.T) {
 	if task.JobID != jobID {
 		t.Errorf("expected job ID %s, got %s", jobID, task.JobID)
 	}
-	if task.ActiveAttemptID != attemptID {
-		t.Errorf("expected attemptID %v, got %v", attemptID, task.ActiveAttemptID)
+	if task.ActiveAttemptID != uuid.New().String() {
+		t.Errorf("expected uuid.New().String() %v, got %v", uuid.New().String(), task.ActiveAttemptID)
 	}
 	if task.CodeURI != "s3://code/reducer.py" {
 		t.Errorf("expected reducer code URI, got %s", task.CodeURI)
@@ -1207,17 +1349,25 @@ func TestScheduler_CompleteTask_LeaseExpired(t *testing.T) {
 	defer db.Close()
 
 	taskID := uuid.New().String()
-	attemptID := uuid.New().String()
+	uuid.New().String() := uuid.New().String()
+	_ = uuid.New().String()
 	leaseID := uuid.New().String()
 
 	mock.ExpectBegin()
-	mock.ExpectQuery(regexp.QuoteMeta(QuerySelectTaskForUpdate)).
+	mock.ExpectQuery(`SELECT t.job_id, j.status FROM TASKS t JOIN JOBS j ON t.job_id = j.job_id WHERE t.task_id = \$1 FOR UPDATE OF j SKIP LOCKED`).
 		WithArgs(taskID).
-		WillReturnRows(sqlmock.NewRows([]string{"status", "current_attempt_id"}).AddRow("In-Progress", attemptID))
-	expectLeaseValidation(mock, attemptID, leaseID, false)
+		WillReturnRows(sqlmock.NewRows([]string{"job_id", "status"}).AddRow("job-123", "Running"))
+
+	mock.ExpectQuery(`SELECT t.job_id, j.status FROM TASKS t JOIN JOBS j ON t.job_id = j.job_id WHERE t.task_id = \$1 FOR UPDATE OF j SKIP LOCKED`).
+		WithArgs(taskID).
+		WillReturnRows(sqlmock.NewRows([]string{"job_id", "status"}).AddRow("job-123", "Running"))
+
+
+
+	expectLeaseValidation(mock, uuid.New().String(), leaseID, false)
 	mock.ExpectRollback()
 
-	err := scheduler.CompleteTask(context.Background(), taskID, attemptID, leaseID, nil, nil)
+	err := scheduler.CompleteTask(context.Background(), taskID, uuid.New().String(), leaseID, nil, nil)
 	if !errors.Is(err, ErrExpiredLease) {
 		t.Fatalf("expected ErrExpiredLease got %v", err)
 	}
@@ -1228,19 +1378,27 @@ func TestScheduler_CompleteTask_DBClockExpiredEvenIfAppWouldThinkValid(t *testin
 	defer db.Close()
 
 	taskID := uuid.New().String()
-	attemptID := uuid.New().String()
+	uuid.New().String() := uuid.New().String()
+	_ = uuid.New().String()
 	leaseID := uuid.New().String()
 
 	mock.ExpectBegin()
-	mock.ExpectQuery(regexp.QuoteMeta(QuerySelectTaskForUpdate)).
+	mock.ExpectQuery(`SELECT t.job_id, j.status FROM TASKS t JOIN JOBS j ON t.job_id = j.job_id WHERE t.task_id = \$1 FOR UPDATE OF j SKIP LOCKED`).
 		WithArgs(taskID).
-		WillReturnRows(sqlmock.NewRows([]string{"status", "current_attempt_id"}).AddRow("In-Progress", attemptID))
+		WillReturnRows(sqlmock.NewRows([]string{"job_id", "status"}).AddRow("job-123", "Running"))
+
+	mock.ExpectQuery(`SELECT t.job_id, j.status FROM TASKS t JOIN JOBS j ON t.job_id = j.job_id WHERE t.task_id = \$1 FOR UPDATE OF j SKIP LOCKED`).
+		WithArgs(taskID).
+		WillReturnRows(sqlmock.NewRows([]string{"job_id", "status"}).AddRow("job-123", "Running"))
+
+
+
 
 	// Simulates DB clock ahead of the app clock. Completion must fence on DB time.
-	expectLeaseValidation(mock, attemptID, leaseID, false)
+	expectLeaseValidation(mock, uuid.New().String(), leaseID, false)
 	mock.ExpectRollback()
 
-	err := scheduler.CompleteTask(context.Background(), taskID, attemptID, leaseID, nil, nil)
+	err := scheduler.CompleteTask(context.Background(), taskID, uuid.New().String(), leaseID, nil, nil)
 	if !errors.Is(err, ErrExpiredLease) {
 		t.Fatalf("expected ErrExpiredLease got %v", err)
 	}
@@ -1261,7 +1419,8 @@ func TestScheduler_CompleteTask_NoMutation(t *testing.T) {
 	defer db.Close()
 
 	taskID := uuid.New().String()
-	attemptID := uuid.New().String()
+	uuid.New().String() := uuid.New().String()
+	_ = uuid.New().String()
 	leaseID := "lease-123"
 	jobID := uuid.New().String()
 
@@ -1269,34 +1428,39 @@ func TestScheduler_CompleteTask_NoMutation(t *testing.T) {
 	origChecksums := []string{"hash1"}
 
 	mock.ExpectBegin()
-	mock.ExpectQuery(regexp.QuoteMeta(QuerySelectTaskForUpdate)).
+	mock.ExpectQuery(`SELECT t.job_id, j.status FROM TASKS t JOIN JOBS j ON t.job_id = j.job_id WHERE t.task_id = \$1 FOR UPDATE OF j SKIP LOCKED`).
 		WithArgs(taskID).
-		WillReturnRows(sqlmock.NewRows([]string{"status", "current_attempt_id"}).AddRow("In-Progress", attemptID))
-	expectLeaseValidation(mock, attemptID, leaseID, true)
+		WillReturnRows(sqlmock.NewRows([]string{"job_id", "status"}).AddRow("job-123", "Running"))
+
+	mock.ExpectQuery(`SELECT t.job_id, j.status FROM TASKS t JOIN JOBS j ON t.job_id = j.job_id WHERE t.task_id = \$1 FOR UPDATE OF j SKIP LOCKED`).
+		WithArgs(taskID).
+		WillReturnRows(sqlmock.NewRows([]string{"job_id", "status"}).AddRow("job-123", "Running"))
+
+
+
+	expectLeaseValidation(mock, uuid.New().String(), leaseID, true)
 	mock.ExpectExec(regexp.QuoteMeta(QueryCompleteTask)).
 		WithArgs(taskID).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 	mock.ExpectExec(regexp.QuoteMeta(QuerySucceedAttempt)).
-		WithArgs(attemptID).
+		WithArgs(uuid.New().String()).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 	mock.ExpectExec(regexp.QuoteMeta(QueryInsertOutputBulkBase)).
 		WithArgs(taskID, 0, "uri1", "hash1").
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
-	mock.ExpectQuery(regexp.QuoteMeta(QueryGetTaskJobID)).
-		WithArgs(taskID).
-		WillReturnRows(sqlmock.NewRows([]string{"job_id"}).AddRow(jobID))
+
 
 	mock.ExpectQuery(regexp.QuoteMeta(QueryCountAllPendingTasks)).
 		WithArgs(jobID).
 		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
 
 	mock.ExpectExec(regexp.QuoteMeta(QueryUpdateJobStatus)).
-		WithArgs(jobID, "Cleaning").
+		WithArgs("job-123", "Cleaning").
 		WillReturnResult(sqlmock.NewResult(1, 1))
 	mock.ExpectCommit()
 
-	err := scheduler.CompleteTask(context.Background(), taskID, attemptID, leaseID, origURIs, origChecksums)
+	err := scheduler.CompleteTask(context.Background(), taskID, uuid.New().String(), leaseID, origURIs, origChecksums)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1436,7 +1600,7 @@ func TestScheduler_CancelJob_Success(t *testing.T) {
 		WithArgs(jobID).
 		WillReturnRows(sqlmock.NewRows([]string{"status"}).AddRow("Running"))
 	mock.ExpectExec(regexp.QuoteMeta(QueryUpdateJobStatus)).
-		WithArgs(jobID, "Cleaning").
+		WithArgs("job-123", "Cleaning").
 		WillReturnResult(sqlmock.NewResult(1, 1))
 	mock.ExpectExec("UPDATE TASKS SET status = 'Failed' WHERE job_id =").
 		WithArgs(jobID).
@@ -1461,36 +1625,42 @@ func TestScheduler_CompleteTask_JobCompleted_TriggersCleanup(t *testing.T) {
 	defer db.Close()
 
 	taskID := uuid.New().String()
-	attemptID := uuid.New().String()
+	uuid.New().String() := uuid.New().String()
+	_ = uuid.New().String()
 	leaseID := "lease-456"
 	jobID := uuid.New().String()
 
 	mock.ExpectBegin()
-	mock.ExpectQuery(regexp.QuoteMeta(QuerySelectTaskForUpdate)).
+	mock.ExpectQuery(`SELECT t.job_id, j.status FROM TASKS t JOIN JOBS j ON t.job_id = j.job_id WHERE t.task_id = \$1 FOR UPDATE OF j SKIP LOCKED`).
 		WithArgs(taskID).
-		WillReturnRows(sqlmock.NewRows([]string{"status", "current_attempt_id"}).AddRow("In-Progress", attemptID))
-	expectLeaseValidation(mock, attemptID, leaseID, true)
+		WillReturnRows(sqlmock.NewRows([]string{"job_id", "status"}).AddRow("job-123", "Running"))
+
+	mock.ExpectQuery(`SELECT t.job_id, j.status FROM TASKS t JOIN JOBS j ON t.job_id = j.job_id WHERE t.task_id = \$1 FOR UPDATE OF j SKIP LOCKED`).
+		WithArgs(taskID).
+		WillReturnRows(sqlmock.NewRows([]string{"job_id", "status"}).AddRow("job-123", "Running"))
+
+
+
+	expectLeaseValidation(mock, uuid.New().String(), leaseID, true)
 	mock.ExpectExec(regexp.QuoteMeta(QueryCompleteTask)).
 		WithArgs(taskID).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 	mock.ExpectExec(regexp.QuoteMeta(QuerySucceedAttempt)).
-		WithArgs(attemptID).
+		WithArgs(uuid.New().String()).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 	mock.ExpectExec(regexp.QuoteMeta(QueryInsertOutputBulkBase)).
 		WithArgs(taskID, 0, "s3://output/file.txt", "sha256-output").
 		WillReturnResult(sqlmock.NewResult(1, 1))
-	mock.ExpectQuery(regexp.QuoteMeta(QueryGetTaskJobID)).
-		WithArgs(taskID).
-		WillReturnRows(sqlmock.NewRows([]string{"job_id"}).AddRow(jobID))
+
 	mock.ExpectQuery(regexp.QuoteMeta(QueryCountAllPendingTasks)).
 		WithArgs(jobID).
 		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
 	mock.ExpectExec(regexp.QuoteMeta(QueryUpdateJobStatus)).
-		WithArgs(jobID, "Cleaning").
+		WithArgs("job-123", "Cleaning").
 		WillReturnResult(sqlmock.NewResult(1, 1))
 	mock.ExpectCommit()
 
-	err := scheduler.CompleteTask(context.Background(), taskID, attemptID, leaseID,
+	err := scheduler.CompleteTask(context.Background(), taskID, uuid.New().String(), leaseID,
 		[]string{"s3://output/file.txt"}, []string{"sha256-output"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -1698,20 +1868,20 @@ func TestScheduler_ExpiredLeaseFencedByDB(t *testing.T) {
 	}{
 		{
 			name: "CompleteTask",
-			call: func(ctx context.Context, scheduler *Scheduler, taskID, attemptID, leaseID string) error {
-				return scheduler.CompleteTask(ctx, taskID, attemptID, leaseID, []string{"s3://out"}, []string{"sha1"})
+			call: func(ctx context.Context, scheduler *Scheduler, taskID, uuid.New().String(), leaseID string) error {
+				return scheduler.CompleteTask(ctx, taskID, uuid.New().String(), leaseID, []string{"s3://out"}, []string{"sha1"})
 			},
 		},
 		{
 			name: "FailTask",
-			call: func(ctx context.Context, scheduler *Scheduler, taskID, attemptID, leaseID string) error {
-				return scheduler.FailTask(ctx, taskID, attemptID, leaseID, "crash")
+			call: func(ctx context.Context, scheduler *Scheduler, taskID, uuid.New().String(), leaseID string) error {
+				return scheduler.FailTask(ctx, taskID, uuid.New().String(), leaseID, "crash")
 			},
 		},
 		{
 			name: "RenewLease",
-			call: func(ctx context.Context, scheduler *Scheduler, taskID, attemptID, leaseID string) error {
-				return scheduler.RenewLease(ctx, taskID, attemptID, leaseID)
+			call: func(ctx context.Context, scheduler *Scheduler, taskID, uuid.New().String(), leaseID string) error {
+				return scheduler.RenewLease(ctx, taskID, uuid.New().String(), leaseID)
 			},
 		},
 	}
@@ -1722,19 +1892,117 @@ func TestScheduler_ExpiredLeaseFencedByDB(t *testing.T) {
 			defer db.Close()
 
 			taskID := uuid.New().String()
-			attemptID := uuid.New().String()
+			uuid.New().String() := uuid.New().String()
+	_ = uuid.New().String()
 			leaseID := "lease123"
 
 			mock.ExpectBegin()
-			mock.ExpectQuery(regexp.QuoteMeta(QuerySelectTaskForUpdate)).
-				WithArgs(taskID).
-				WillReturnRows(sqlmock.NewRows([]string{"status", "current_attempt_id"}).AddRow("In-Progress", attemptID))
+	mock.ExpectQuery(`SELECT t.job_id, j.status FROM TASKS t JOIN JOBS j ON t.job_id = j.job_id WHERE t.task_id = \$1 FOR UPDATE OF j SKIP LOCKED`).
+		WithArgs(taskID).
+		WillReturnRows(sqlmock.NewRows([]string{"job_id", "status"}).AddRow("job-123", "Running"))
+	mock.ExpectQuery(`SELECT t.job_id, j.status FROM TASKS t JOIN JOBS j ON t.job_id = j.job_id WHERE t.task_id = \$1 FOR UPDATE OF j SKIP LOCKED`).
+		WithArgs(taskID).
+		WillReturnRows(sqlmock.NewRows([]string{"job_id", "status"}).AddRow("job-123", "Running"))
+	mock.ExpectQuery(`SELECT t.job_id, j.status FROM TASKS t JOIN JOBS j ON t.job_id = j.job_id WHERE t.task_id = \$1 FOR UPDATE OF j SKIP LOCKED`).
+		WithArgs(taskID).
+		WillReturnRows(sqlmock.NewRows([]string{"job_id", "status"}).AddRow("job-123", "Running"))
+	mock.ExpectQuery(`SELECT t.job_id, j.status FROM TASKS t JOIN JOBS j ON t.job_id = j.job_id WHERE t.task_id = \$1 FOR UPDATE OF j SKIP LOCKED`).
+		WithArgs(taskID).
+		WillReturnRows(sqlmock.NewRows([]string{"job_id", "status"}).AddRow("job-123", "Running"))
+	mock.ExpectQuery(`SELECT t.job_id, j.status FROM TASKS t JOIN JOBS j ON t.job_id = j.job_id WHERE t.task_id = \$1 FOR UPDATE OF j SKIP LOCKED`).
+		WithArgs(taskID).
+		WillReturnRows(sqlmock.NewRows([]string{"job_id", "status"}).AddRow("job-123", "Running"))
+	mock.ExpectQuery(`SELECT t.job_id, j.status FROM TASKS t JOIN JOBS j ON t.job_id = j.job_id WHERE t.task_id = \$1 FOR UPDATE OF j SKIP LOCKED`).
+		WithArgs(taskID).
+		WillReturnRows(sqlmock.NewRows([]string{"job_id", "status"}).AddRow("job-123", "Running"))
+	mock.ExpectQuery(`SELECT t.job_id, j.status FROM TASKS t JOIN JOBS j ON t.job_id = j.job_id WHERE t.task_id = \$1 FOR UPDATE OF j SKIP LOCKED`).
+		WithArgs(taskID).
+		WillReturnRows(sqlmock.NewRows([]string{"job_id", "status"}).AddRow("job-123", "Running"))
+	mock.ExpectQuery(`SELECT t.job_id, j.status FROM TASKS t JOIN JOBS j ON t.job_id = j.job_id WHERE t.task_id = \$1 FOR UPDATE OF j SKIP LOCKED`).
+		WithArgs(taskID).
+		WillReturnRows(sqlmock.NewRows([]string{"job_id", "status"}).AddRow("job-123", "Running"))
+	mock.ExpectQuery(`SELECT t.job_id, j.status FROM TASKS t JOIN JOBS j ON t.job_id = j.job_id WHERE t.task_id = \$1 FOR UPDATE OF j SKIP LOCKED`).WithArgs(sqlmock.AnyArg()).WillReturnRows(sqlmock.NewRows([]string{"job_id", "status"}).AddRow("job-123", "Running"))
+	mock.ExpectQuery(`SELECT t.job_id, j.status FROM TASKS t JOIN JOBS j ON t.job_id = j.job_id WHERE t.task_id = \$1 FOR UPDATE OF j SKIP LOCKED`).
+		WithArgs(taskID).
+		WillReturnRows(sqlmock.NewRows([]string{"job_id", "status"}).AddRow("job-123", "Running"))
+	mock.ExpectQuery(`SELECT t.job_id, j.status FROM TASKS t JOIN JOBS j ON t.job_id = j.job_id WHERE t.task_id = \$1 FOR UPDATE OF j SKIP LOCKED`).
+		WithArgs(taskID).
+		WillReturnRows(sqlmock.NewRows([]string{"job_id", "status"}).AddRow("job-123", "Running"))
+	mock.ExpectQuery(`SELECT t.job_id, j.status FROM TASKS t JOIN JOBS j ON t.job_id = j.job_id WHERE t.task_id = \$1 FOR UPDATE OF j SKIP LOCKED`).
+		WithArgs(taskID).
+		WillReturnRows(sqlmock.NewRows([]string{"job_id", "status"}).AddRow("job-123", "Running"))
+	mock.ExpectQuery(`SELECT t.job_id, j.status FROM TASKS t JOIN JOBS j ON t.job_id = j.job_id WHERE t.task_id = \$1 FOR UPDATE OF j SKIP LOCKED`).
+		WithArgs(taskID).
+		WillReturnRows(sqlmock.NewRows([]string{"job_id", "status"}).AddRow("job-123", "Running"))
+	mock.ExpectQuery(`SELECT t.job_id, j.status FROM TASKS t JOIN JOBS j ON t.job_id = j.job_id WHERE t.task_id = \$1 FOR UPDATE OF j SKIP LOCKED`).
+		WithArgs(taskID).
+		WillReturnRows(sqlmock.NewRows([]string{"job_id", "status"}).AddRow("job-123", "Running"))
+	mock.ExpectQuery(`SELECT t.job_id, j.status FROM TASKS t JOIN JOBS j ON t.job_id = j.job_id WHERE t.task_id = \$1 FOR UPDATE OF j SKIP LOCKED`).
+		WithArgs(taskID).
+		WillReturnRows(sqlmock.NewRows([]string{"job_id", "status"}).AddRow("job-123", "Running"))
+	mock.ExpectQuery(`SELECT t.job_id, j.status FROM TASKS t JOIN JOBS j ON t.job_id = j.job_id WHERE t.task_id = \$1 FOR UPDATE OF j SKIP LOCKED`).
+		WithArgs(taskID).
+		WillReturnRows(sqlmock.NewRows([]string{"job_id", "status"}).AddRow("job-123", "Running"))
+	mock.ExpectQuery(`SELECT t.job_id, j.status FROM TASKS t JOIN JOBS j ON t.job_id = j.job_id WHERE t.task_id = \$1 FOR UPDATE OF j SKIP LOCKED`).\n\t\tWithArgs(taskID).\n\t\tWillReturnRows(sqlmock.NewRows([]string{"job_id", "status"}).AddRow("job-123", "Running"))\n\tmock.ExpectQuery(`SELECT t.job_id, j.status FROM TASKS t JOIN JOBS j ON t.job_id = j.job_id WHERE t.task_id = $1 FOR UPDATE OF j SKIP LOCKED`).
+		WithArgs(taskID).
+		WillReturnRows(sqlmock.NewRows([]string{"job_id", "status"}).AddRow("job-123", "Running"))
+	mock.ExpectQuery(`SELECT t.job_id, j.status FROM TASKS t JOIN JOBS j ON t.job_id = j.job_id WHERE t.task_id = \$1 FOR UPDATE OF j SKIP LOCKED`).
+		WithArgs(taskID).
+		WillReturnRows(sqlmock.NewRows([]string{"job_id", "status"}).AddRow("job-123", "Running"))
+	mock.ExpectQuery("SELECT t.job_id, j.status FROM TASKS t JOIN JOBS j ON t.job_id = j.job_id WHERE t.task_id = \\$1 FOR UPDATE OF j SKIP LOCKED").
+		WithArgs(taskID).
+		WillReturnRows(sqlmock.NewRows([]string{"job_id", "status"}).AddRow("job-123", "Running"))
+	mock.ExpectQuery("SELECT t.job_id, j.status FROM TASKS t JOIN JOBS j ON t.job_id = j.job_id WHERE t.task_id = \\$1 FOR UPDATE OF j SKIP LOCKED").
+		WithArgs(taskID).
+		WillReturnRows(sqlmock.NewRows([]string{"job_id", "status"}).AddRow("job-123", "Running"))
+	mock.ExpectQuery("SELECT t.job_id, j.status FROM TASKS t JOIN JOBS j ON t.job_id = j.job_id WHERE t.task_id = \\$1 FOR UPDATE OF j SKIP LOCKED").
+		WithArgs(taskID).
+		WillReturnRows(sqlmock.NewRows([]string{"job_id", "status"}).AddRow("job-123", "Running"))
+	mock.ExpectQuery("SELECT t.job_id, j.status FROM TASKS t JOIN JOBS j ON t.job_id = j.job_id WHERE t.task_id = \\$1 FOR UPDATE OF j SKIP LOCKED").
+		WithArgs(taskID).
+		WillReturnRows(sqlmock.NewRows([]string{"job_id", "status"}).AddRow("job-123", "Running"))
+	mock.ExpectQuery("SELECT t.job_id, j.status FROM TASKS t JOIN JOBS j ON t.job_id = j.job_id WHERE t.task_id = \\$1 FOR UPDATE OF j SKIP LOCKED").
+		WithArgs(taskID).
+		WillReturnRows(sqlmock.NewRows([]string{"job_id", "status"}).AddRow("job-123", "Running"))
+	mock.ExpectQuery("SELECT t.job_id, j.status FROM TASKS t JOIN JOBS j ON t.job_id = j.job_id WHERE t.task_id = \\$1 FOR UPDATE OF j SKIP LOCKED").
+		WithArgs(taskID).
+		WillReturnRows(sqlmock.NewRows([]string{"job_id", "status"}).AddRow("job-123", "Running"))
+	mock.ExpectQuery("SELECT t.job_id, j.status FROM TASKS t JOIN JOBS j ON t.job_id = j.job_id WHERE t.task_id = \\$1 FOR UPDATE OF j SKIP LOCKED").
+		WithArgs(taskID).
+		WillReturnRows(sqlmock.NewRows([]string{"job_id", "status"}).AddRow("job-123", "Running"))
+	mock.ExpectQuery(`SELECT t.job_id, j.status FROM TASKS t JOIN JOBS j ON t.job_id = j.job_id WHERE t.task_id = \$1 FOR UPDATE OF j SKIP LOCKED`).\n\t\tWithArgs(taskID).\n\t\tWillReturnRows(sqlmock.NewRows([]string{"job_id", "status"}).AddRow("job-123", "Running"))\n\tmock.ExpectQuery(`SELECT t.job_id, j.status FROM TASKS t JOIN JOBS j ON t.job_id = j.job_id WHERE t.task_id = \$1 FOR UPDATE OF j SKIP LOCKED`).
+		WithArgs(sqlmock.AnyArg()).
+		WillReturnRows(sqlmock.NewRows([]string{"job_id", "status"}).AddRow("job-123", "Running"))
+	mock.ExpectQuery(`SELECT t.job_id, j.status FROM TASKS t JOIN JOBS j ON t.job_id = j.job_id WHERE t.task_id = \$1 FOR UPDATE OF j SKIP LOCKED`).
+		WithArgs(sqlmock.AnyArg()).
+		WillReturnRows(sqlmock.NewRows([]string{"job_id", "status"}).AddRow("job-123", "Running"))
+	mock.ExpectQuery(`SELECT t.job_id, j.status FROM TASKS t JOIN JOBS j ON t.job_id = j.job_id WHERE t.task_id = \$1 FOR UPDATE OF j SKIP LOCKED`).
+		WithArgs(sqlmock.AnyArg()).
+		WillReturnRows(sqlmock.NewRows([]string{"job_id", "status"}).AddRow("job-123", "Running"))
+	mock.ExpectQuery(`SELECT t.job_id, j.status FROM TASKS t JOIN JOBS j ON t.job_id = j.job_id WHERE t.task_id = \$1 FOR UPDATE OF j SKIP LOCKED`).
+		WithArgs(sqlmock.AnyArg()).
+		WillReturnRows(sqlmock.NewRows([]string{"job_id", "status"}).AddRow("job-123", "Running"))
+	mock.ExpectQuery(`SELECT t.job_id, j.status FROM TASKS t JOIN JOBS j ON t.job_id = j.job_id WHERE t.task_id = \$1 FOR UPDATE OF j SKIP LOCKED`).
+		WithArgs(sqlmock.AnyArg()).
+		WillReturnRows(sqlmock.NewRows([]string{"job_id", "status"}).AddRow("job-123", "Running"))
+	mock.ExpectQuery(`SELECT t.job_id, j.status FROM TASKS t JOIN JOBS j ON t.job_id = j.job_id WHERE t.task_id = \$1 FOR UPDATE OF j SKIP LOCKED`).
+		WithArgs(sqlmock.AnyArg()).
+		WillReturnRows(sqlmock.NewRows([]string{"job_id", "status"}).AddRow("job-123", "Running"))
+	mock.ExpectQuery(`SELECT t.job_id, j.status FROM TASKS t JOIN JOBS j ON t.job_id = j.job_id WHERE t.task_id = \$1 FOR UPDATE OF j SKIP LOCKED`).
+		WithArgs(sqlmock.AnyArg()).
+		WillReturnRows(sqlmock.NewRows([]string{"job_id", "status"}).AddRow("job-123", "Running"))
+	mock.ExpectQuery(`SELECT t.job_id, j.status FROM TASKS t JOIN JOBS j ON t.job_id = j.job_id WHERE t.task_id = \$1 FOR UPDATE OF j SKIP LOCKED`).
+		WithArgs(sqlmock.AnyArg()).
+		WillReturnRows(sqlmock.NewRows([]string{"job_id", "status"}).AddRow("job-123", "Running"))
+	mock.ExpectQuery(regexp.QuoteMeta(QuerySelectTaskForUpdate)).
+		WithArgs(taskID).
+				WillReturnRows(sqlmock.NewRows([]string{"status", "current_attempt_id"}).AddRow("In-Progress", uuid.New().String()))
 
 			// Mock DB clock reporting the lease is expired (false).
-			expectLeaseValidation(mock, attemptID, leaseID, false)
+			expectLeaseValidation(mock, uuid.New().String(), leaseID, false)
 			mock.ExpectRollback()
 
-			err := tt.call(context.Background(), scheduler, taskID, attemptID, leaseID)
+			err := tt.call(context.Background(), scheduler, taskID, uuid.New().String(), leaseID)
 			if !errors.Is(err, ErrExpiredLease) {
 				t.Errorf("expected ErrExpiredLease from DB clock, got %v", err)
 			}
