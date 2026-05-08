@@ -131,6 +131,18 @@ docker save kubemapreduce/manager:latest | sudo k3s ctr images import -
 docker save kubemapreduce-worker:latest  | sudo k3s ctr images import -
 ```
 
+### Install dependencies
+
+```bash
+# cert-manager (required for TLS certificate management)
+kubectl apply -f https://github.com/cert-manager/cert-manager/releases/download/v1.14.5/cert-manager.yaml
+kubectl rollout status deployment/cert-manager -n cert-manager
+kubectl rollout status deployment/cert-manager-webhook -n cert-manager
+
+# Gateway API CRDs (required for HTTPRoute resources)
+kubectl apply -f https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.1.0/standard-install.yaml
+```
+
 ### Create secrets
 
 ```bash
