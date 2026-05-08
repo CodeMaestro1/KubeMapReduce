@@ -289,7 +289,7 @@ metadata:
   labels:
     app.kubernetes.io/name: linkerd
 webhooks:
-  - name: linkerd.io/inject
+  - name: proxy-injector.linkerd.io
     clientConfig:
       service:
         name: linkerd-proxy-injector
