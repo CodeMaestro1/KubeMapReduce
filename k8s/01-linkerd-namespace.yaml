@@ -80,26 +80,3 @@ metadata:
   namespace: linkerd
   labels:
     app.kubernetes.io/name: linkerd
----
-# ConfigMap for Linkerd global configuration
-# This is used by Linkerd components to determine behavior like:
-# - Trust domain (used in certificate identity)
-# - Identity issuer (certificate provider)
-# - Proxy defaults (timeouts, retry budgets, etc.)
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: linkerd-config
-  namespace: linkerd
-  labels:
-    app.kubernetes.io/name: linkerd
-data:
-  # Trust domain for mTLS (can be any DNS-like name)
-  trust-domain: "cluster.local"
-  
-  # Proxy defaults: timeout and retry configuration
-  # These are used as defaults for traffic policies
-  proxy-defaults: |
-    outboundPolicyAllowIfNotFound: false
-    inboundPolicyAllowIfNotFound: false
-    enableExternalProfiles: false
