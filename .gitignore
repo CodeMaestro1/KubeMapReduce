@@ -180,4 +180,4 @@ graphify-out/
 .claude/
 
 # Generated benchmark corpus (build with: python benchmarks/build_corpus.py)
-benchmarks/data/
+benchmarks/data/.swarm/

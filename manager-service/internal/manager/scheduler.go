@@ -5,13 +5,13 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"kubemapreduce/manager-service/pkg/observability"
 	"log/slog"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/google/uuid"
+	"kubemapreduce/manager-service/pkg/observability"
 )
 
 // MaxTaskAttempts defines the maximum number of times a single task will be retried
@@ -66,6 +66,8 @@ type Scheduler struct {
 	cleanupMu             sync.Mutex
 	pendingCleanup        map[string]string
 	heartbeats            sync.Map
+	emitter               EventEmitter
+	builder               *eventBuilder
 }
 
 type taskMetadataQuerier interface {
@@ -106,7 +108,15 @@ func NewScheduler(db *sql.DB, replicaIndex int, totalReplicas int, orchestrator 
 		staging:               staging,
 		pendingCleanup:        make(map[string]string),
 		heartbeats:            sync.Map{},
+		emitter:               &NoopEventEmitter{},
+		builder:               newEventBuilder("manager-scheduler"),
 	}, nil
+}
+
+// SetEventEmitter replaces the default no-op emitter with a live implementation.
+// This is set during bootstrap when the outbox relay feature flag is enabled.
+func (s *Scheduler) SetEventEmitter(emitter EventEmitter) {
+	s.emitter = emitter
 }
 
 // Recover reconciles active attempts assigned to this replica and re-spawns workers.
@@ -262,6 +272,19 @@ func (s *Scheduler) GetNextTask(ctx context.Context, jobID string, workerID stri
 	if err == nil {
 		if err := s.updateJobStatusTx(ctx, tx, jobID, "Running"); err != nil {
 			return nil, err
+		}
+
+		taskID, _ := uuid.Parse(task.ID)
+		jobIDp, _ := uuid.Parse(task.JobID)
+		taskTypeStr := "Map"
+		if task.Type == ReduceTask {
+			taskTypeStr = "Reduce"
+		}
+		if err := s.emitter.Emit(ctx, tx, s.builder.taskAssigned(taskID, jobIDp, taskTypeStr, workerID, s.leaseTTL)); err != nil {
+			slog.ErrorContext(ctx, "failed to emit tasks.assigned event",
+				slog.String("task_id", task.ID),
+				slog.String("job_id", task.JobID),
+				slog.Any("err", err))
 		}
 		if errCommit := tx.Commit(); errCommit != nil {
 			return nil, errCommit
@@ -632,6 +655,12 @@ func (s *Scheduler) ScheduleJob(ctx context.Context, req ScheduleJobRequest) err
 		}
 	}
 
+	if err := s.emitter.Emit(ctx, tx, s.builder.jobSubmitted(jobID, userID, req.InputURI, req.MTasks, req.RTasks)); err != nil {
+		slog.ErrorContext(ctx, "failed to emit job.submitted event",
+			slog.String("job_id", req.JobID),
+			slog.Any("err", err))
+	}
+
 	if err := tx.Commit(); err != nil {
 		return err
 	}
@@ -825,6 +854,21 @@ func (s *Scheduler) CompleteTask(ctx context.Context, taskID string, attemptID s
 		jobCompleted = true
 	}
 
+	taskUUID, _ := uuid.Parse(taskID)
+	jobUUID, _ := uuid.Parse(jobID)
+	attemptUUID, _ := uuid.Parse(attemptID)
+	if err := s.emitter.Emit(ctx, tx, s.builder.attemptCompleted(taskUUID, jobUUID, attemptUUID, attemptID)); err != nil {
+		slog.ErrorContext(ctx, "failed to emit tasks.attempt.completed event",
+			slog.String("task_id", taskID), slog.Any("err", err))
+	}
+
+	if jobCompleted {
+		if err := s.emitter.Emit(ctx, tx, s.builder.jobStateChanged(jobUUID, "Running", "Cleaning")); err != nil {
+			slog.ErrorContext(ctx, "failed to emit jobs.state.changed event",
+				slog.String("job_id", jobID), slog.Any("err", err))
+		}
+	}
+
 	if err := tx.Commit(); err != nil {
 		return err
 	}
@@ -878,11 +922,20 @@ func (s *Scheduler) RenewLease(ctx context.Context, taskID string, attemptID str
 		return err
 	}
 
+	attemptUUID, _ := uuid.Parse(attemptID)
+	taskUUID, _ := uuid.Parse(taskID)
+	// jobID not available in RenewLease scope without extra query
+	if err := s.emitter.Emit(ctx, tx, s.builder.heartbeatReceived(taskUUID, uuid.Nil, attemptUUID)); err != nil {
+		slog.ErrorContext(ctx, "failed to emit tasks.heartbeat.received event",
+			slog.String("task_id", taskID), slog.Any("err", err))
+	}
+
 	if err := tx.Commit(); err != nil {
 		return err
 	}
 
 	s.heartbeats.Store(attemptID, time.Now())
+
 	return nil
 }
 
@@ -909,6 +962,16 @@ func (s *Scheduler) CancelJob(ctx context.Context, jobID string) error {
 	_, err = tx.ExecContext(ctx, QueryFailRunningAttemptsByJob, jobID)
 	if err != nil {
 		return err
+	}
+
+	jobUUID, _ := uuid.Parse(jobID)
+	if err := s.emitter.Emit(ctx, tx, s.builder.jobCancelRequested(jobUUID)); err != nil {
+		slog.ErrorContext(ctx, "failed to emit jobs.cancel.requested event",
+			slog.String("job_id", jobID), slog.Any("err", err))
+	}
+	if err := s.emitter.Emit(ctx, tx, s.builder.jobStateChanged(jobUUID, "", "Cleaning")); err != nil {
+		slog.ErrorContext(ctx, "failed to emit jobs.state.changed event",
+			slog.String("job_id", jobID), slog.Any("err", err))
 	}
 
 	if err := tx.Commit(); err != nil {
@@ -996,6 +1059,22 @@ func (s *Scheduler) FailTask(ctx context.Context, taskID string, attemptID strin
 		_, err = s.prepareRetryAttemptTx(ctx, tx, taskID)
 		if err != nil {
 			return err
+		}
+	}
+
+	taskUUID, _ := uuid.Parse(taskID)
+	attemptUUID, _ := uuid.Parse(attemptID)
+	jobUUID, _ := uuid.Parse(jobID)
+	var workerID string // workerID not available in FailTask scope
+	if err := s.emitter.Emit(ctx, tx, s.builder.attemptFailed(taskUUID, jobUUID, attemptUUID, workerID, reason)); err != nil {
+		slog.ErrorContext(ctx, "failed to emit tasks.attempt.failed event",
+			slog.String("task_id", taskID), slog.Any("err", err))
+	}
+
+	if newState == "Failed" {
+		if err := s.emitter.Emit(ctx, tx, s.builder.jobStateChanged(jobUUID, "Running", "Cleaning")); err != nil {
+			slog.ErrorContext(ctx, "failed to emit jobs.state.changed event",
+				slog.String("job_id", jobID), slog.Any("err", err))
 		}
 	}
 
@@ -1125,6 +1204,24 @@ func (s *Scheduler) FailStaleTasks(ctx context.Context) (int, error) {
 			respawnTasks = append(respawnTasks, retrySpawn{taskID: rec.taskID, attemptID: retryAttemptID, jobID: rec.jobID})
 		}
 		recoveredCount++
+	}
+
+	for _, rec := range stales {
+		taskUUID, _ := uuid.Parse(rec.taskID)
+		jobUUID, _ := uuid.Parse(rec.jobID)
+		attemptUUID, _ := uuid.Parse(rec.attemptID)
+		if err := s.emitter.Emit(ctx, tx, s.builder.taskReaped(taskUUID, jobUUID, attemptUUID, "lease expired")); err != nil {
+			slog.ErrorContext(ctx, "failed to emit tasks.reaped event",
+				slog.String("task_id", rec.taskID), slog.Any("err", err))
+		}
+	}
+
+	for jobID := range failedJobs {
+		jobUUID, _ := uuid.Parse(jobID)
+		if err := s.emitter.Emit(ctx, tx, s.builder.jobStateChanged(jobUUID, "Running", "Cleaning")); err != nil {
+			slog.ErrorContext(ctx, "failed to emit jobs.state.changed event",
+				slog.String("job_id", jobID), slog.Any("err", err))
+		}
 	}
 
 	if err := tx.Commit(); err != nil {

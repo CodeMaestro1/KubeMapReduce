@@ -5,6 +5,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // Config holds all environment-sourced configuration for the Manager Service.
@@ -73,6 +74,19 @@ type Config struct {
 	// WorkerSecretName is the name of the Kubernetes Secret to be used for
 	// injecting sensitive credentials into worker pods.
 	WorkerSecretName string
+
+	// Feature flags for event-driven coordinator decoupling (Phase 0+)
+	// EnableOutboxRelay enables the transactional outbox pattern and event publishing.
+	// When disabled, the system behaves exactly as before (no behavior change).
+	EnableOutboxRelay bool
+	// OutboxRelayInterval is how often the relay service polls for undelivered events.
+	OutboxRelayInterval time.Duration
+	// OutboxMaxRetries is the maximum number of delivery attempts before moving to DLQ.
+	OutboxMaxRetries int
+
+	// NATS configuration for event publishing
+	NATSURL       string
+	NATSCredsFile string
 }
 
 // DefaultManifestThresholdBytes is the default size threshold (2 MiB) at which
@@ -114,6 +128,15 @@ func Load() (*Config, error) {
 		return nil, fmt.Errorf("MANAGER_MANIFEST_THRESHOLD_BYTES must be positive, got %d", manifestThreshold)
 	}
 
+	outboxRelayIntervalSec, err := getEnvInt("OUTBOX_RELAY_INTERVAL_SEC", 5)
+	if err != nil {
+		return nil, err
+	}
+	outboxMaxRetries, err := getEnvInt("OUTBOX_MAX_RETRIES", 3)
+	if err != nil {
+		return nil, err
+	}
+
 	cfg := &Config{
 		KeycloakBaseURL:                 keycloakBaseURL,
 		Realm:                           realm,
@@ -142,6 +165,11 @@ func Load() (*Config, error) {
 		ManagerAddr:                     getEnv("MANAGER_ADDR", "manager-0.manager-hs.default.svc.cluster.local:8081"),
 		ManifestThresholdBytes:          manifestThreshold,
 		WorkerSecretName:                getEnv("WORKER_SECRET_NAME", "kubemapreduce-secrets"),
+		EnableOutboxRelay:               getEnvBool("ENABLE_OUTBOX_RELAY", false),
+		OutboxRelayInterval:             time.Duration(outboxRelayIntervalSec) * time.Second,
+		OutboxMaxRetries:                outboxMaxRetries,
+		NATSURL:                         getEnv("NATS_URL", ""),
+		NATSCredsFile:                   getEnv("NATS_CREDS_FILE", ""),
 	}
 	cfg.LeaseTTL = cfg.HeartbeatInterval * cfg.MaxMissedHeartbeats
 	return cfg, nil
