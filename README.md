@@ -8,8 +8,8 @@ A distributed MapReduce platform built on Kubernetes. Workers run as K8s Jobs sp
 - Docker + Docker Compose
 - `kubectl` (for Kubernetes deployment)
 - **Kubernetes 1.21+** (for Linkerd service mesh)
-- **Linkerd 2.15+** (optional, recommended for production mTLS and timeout management)
-  - Install with: `curl -fsL https://linkerd.io/install-edge | sh`
+- **Linkerd CLI** (optional, recommended for production mTLS and timeout management)
+  - Install with: `curl -sL run.linkerd.io/install | sh`
   - See [Linkerd Setup Guide](docs/LINKERD_SETUP.md) for deployment instructions
 
 ## Local Development (infrastructure only)
@@ -197,22 +197,29 @@ go run ./cli-service/cmd/cli jobs download --id <job-id>
 
 ### Linkerd Service Mesh (Optional)
 
-For production deployments with automatic mTLS, per-RPC timeouts, and advanced traffic policies, deploy Linkerd 2.15+:
+For production deployments with automatic mTLS, per-RPC timeouts, and advanced traffic policies, deploy Linkerd via the CLI (do not apply `02-linkerd-crds.yaml` or `03-linkerd-control-plane.yaml` manually — the CLI generates correct manifests for the installed version):
 
 ```bash
-# 1. Install Linkerd control plane
+# 1. Install Linkerd CLI
+curl -sL run.linkerd.io/install | sh
+export PATH=$PATH:$HOME/.linkerd2/bin
+
+# 2. Install Gateway API CRDs (required for HTTPRoute policies)
+kubectl apply -f https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.1.0/standard-install.yaml
+
+# 3. Install Linkerd CRDs and control plane
+linkerd install --crds | kubectl apply -f -
 linkerd install | kubectl apply -f -
 
-# 2. Wait for control plane to be ready
+# 4. Wait for control plane to be ready
 linkerd check
 
-# 3. Install traffic policies into mapreduce namespace
+# 5. Apply project RBAC, namespace config, and traffic policies
 kubectl apply -f k8s/01-linkerd-namespace.yaml
-kubectl apply -f k8s/02-linkerd-crds.yaml
 kubectl apply -f k8s/04-manager-linkerd-policy.yaml
 kubectl apply -f k8s/05-linkerd-storage-policies.yaml
 
-# 4. Re-roll pods to inject Linkerd sidecar proxies
+# 6. Re-roll pods to inject Linkerd sidecar proxies
 kubectl -n mapreduce rollout restart statefulset/manager
 kubectl -n mapreduce rollout restart deployment/ui
 ```
