@@ -119,8 +119,10 @@ The Manager looks for the worker image as `kubemapreduce-worker:latest` (hardcod
 
 ```bash
 docker build -f infra/docker/Dockerfile.manager -t kubemapreduce/manager:latest .
+docker build -f infra/docker/Dockerfile.api     -t kubemapreduce/api:latest     .
 docker build -f infra/docker/Dockerfile.worker  -t kubemapreduce-worker:latest  .
 docker push kubemapreduce/manager:latest
+docker push kubemapreduce/api:latest
 docker push kubemapreduce-worker:latest
 ```
 
@@ -128,6 +130,7 @@ For k3s without a registry, import images directly:
 
 ```bash
 docker save kubemapreduce/manager:latest | sudo k3s ctr images import -
+docker save kubemapreduce/api:latest     | sudo k3s ctr images import -
 docker save kubemapreduce-worker:latest  | sudo k3s ctr images import -
 ```
 
