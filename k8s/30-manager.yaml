@@ -169,6 +169,8 @@ spec:
                   key: MANAGER_WORKER_RPC_TOKEN
             - name: GRPC_TLS_CERT_FILE
               value: /tls/tls.crt
+            - name: GRPC_TLS_KEY_FILE
+              value: /tls/tls.key
           readinessProbe:
             httpGet:
               path: /readyz
