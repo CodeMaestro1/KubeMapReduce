@@ -84,6 +84,8 @@ spec:
                 secretKeyRef:
                   name: manager-secrets
                   key: MANAGER_INTERNAL_API_KEY
+            - name: MANAGER_ADDR
+              value: "manager-0.manager-headless.mapreduce.svc.cluster.local:8081"
           livenessProbe:
             httpGet:
               path: /healthz
