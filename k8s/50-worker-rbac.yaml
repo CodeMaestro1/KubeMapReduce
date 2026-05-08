@@ -26,7 +26,11 @@ metadata:
   name: manager-worker-controller
   namespace: mapreduce
 rules:
-  # Worker Job lifecycle.
+  # Worker pool Deployment lifecycle (EnsureWorkerPool / CancelJob).
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["create", "get", "list", "watch", "update", "delete"]
+  # Worker Job lifecycle (SpawnWorker / reaper).
   - apiGroups: ["batch"]
     resources: ["jobs"]
     verbs: ["create", "get", "list", "watch", "delete"]
