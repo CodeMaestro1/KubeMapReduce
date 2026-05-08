@@ -131,7 +131,7 @@ spec:
             # Each replica advertises its own stable DNS name so the UI
             # service can hash-route directly to it.
             - name: MANAGER_ADDR
-              value: "$(POD_NAME).manager-headless.mapreduce.svc.cluster.local:8081"
+              value: "$(POD_NAME).manager-headless.mapreduce.svc.cluster.local:50051"
             - name: POSTGRES_USER
               valueFrom:
                 secretKeyRef:
