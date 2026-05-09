@@ -38,6 +38,30 @@ kubemapreduce admin configure-nodes --locality-key ""
 1. **Map Phase**: Workers pull input splits from MinIO. Co-location reduces the initial download time.
 2. **Shuffle Phase**: Map outputs are written back to MinIO (or intermediate storage). Reducers then pull these partitions. Co-location here minimizes the network cost of the shuffle "all-to-all" transfer.
 
+## Current Limitation: Storage-Tier Locality vs. Per-Split Data Locality
+
+The current implementation provides **storage-tier locality** — it biases the entire worker
+Deployment toward nodes/zones that already host MinIO pods. This is not the same as
+Hadoop-style **per-split data locality**, where each individual task is placed on the node
+that physically holds its input bytes.
+
+Specifically:
+- All workers for a job receive the **same** `PodAffinity` rule (it is on the Deployment).
+- Two Map workers processing different input splits will both prefer the MinIO zone, not
+  their own respective input node.
+- The Manager has no per-object placement metadata from MinIO (MinIO erasure-codes objects
+  across drives and pools, and does not expose per-object node placement via a public API).
+
+This still meaningfully reduces cross-AZ egress when MinIO is zone-pinned, and satisfies
+the acceptance criterion of expressing locality preferences as soft constraints in
+placement decisions.
+
+### Path to per-split data locality (future work)
+True per-task locality would require:
+1. Querying MinIO admin/placement APIs to learn which nodes hold each input object's primary shard.
+2. Emitting per-pod `NodeAffinity` (or switching to Job-per-task) so each worker targets its own input node.
+3. Graceful fallback when placement metadata is unavailable (single-node MinIO, gateway mode, S3).
+
 ## Required Signals
 The scheduler relies on standard Kubernetes node labels:
 - `topology.kubernetes.io/zone` (Automatic on cloud providers like Okeanos)
