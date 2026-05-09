@@ -5,10 +5,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/DATA-DOG/go-sqlmock"
-	"github.com/google/uuid"
 	"kubemapreduce/manager-service/internal/events"
 	"kubemapreduce/manager-service/internal/store"
+
+	"github.com/DATA-DOG/go-sqlmock"
+	"github.com/google/uuid"
 )
 
 type mockPublisher struct {
@@ -134,6 +135,41 @@ func TestEventToSubject(t *testing.T) {
 	if subject != "jobs.submitted" {
 		t.Errorf("EventToSubject = %q, want %q", subject, "jobs.submitted")
 	}
+}
+
+func TestSubjectForEvent_TaskScopedPerJob(t *testing.T) {
+	job := uuid.New()
+	got := SubjectForEvent(&events.EventEnvelope{EventType: events.TaskAssigned, JobID: job})
+	want := "tasks.assigned." + job.String()
+	if got != want {
+		t.Errorf("SubjectForEvent = %q, want %q", got, want)
+	}
+}
+
+func TestSubjectForEvent_NonTaskUnchanged(t *testing.T) {
+	got := SubjectForEvent(&events.EventEnvelope{EventType: events.JobSubmitted, JobID: uuid.New()})
+	if got != "jobs.submitted" {
+		t.Errorf("SubjectForEvent = %q, want %q", got, "jobs.submitted")
+	}
+}
+
+func TestSubjectForEvent_TaskWithoutJobIDFallsBack(t *testing.T) {
+	got := SubjectForEvent(&events.EventEnvelope{EventType: events.TaskAssigned, JobID: uuid.Nil})
+	if got != "tasks.assigned" {
+		t.Errorf("SubjectForEvent = %q, want %q", got, "tasks.assigned")
+	}
+}
+
+func TestRelayService_StopIsIdempotent(t *testing.T) {
+	db, _, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock: %v", err)
+	}
+	defer db.Close()
+
+	svc := NewRelayService(store.NewOutboxStore(db), &NoopPublisher{}, RelayConfig{Enabled: false})
+	svc.Stop()
+	svc.Stop() // must not panic
 }
 
 func TestNATSPublisher(t *testing.T) {
