@@ -27,6 +27,9 @@ kubemapreduce admin configure-nodes --locality-key topology.kubernetes.io/zone
 # co-locate workers on the same physical node as MinIO
 kubemapreduce admin configure-nodes --locality-key kubernetes.io/hostname
 
+# use a custom label selector for target pods (e.g. external MinIO with different labels)
+kubemapreduce admin configure-nodes --locality-label-selector app.kubernetes.io/name=minio-external
+
 # disable locality scheduling
 kubemapreduce admin configure-nodes --locality-key ""
 ```

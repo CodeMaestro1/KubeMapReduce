@@ -45,6 +45,10 @@ type ResourceConfigProvider interface {
 	// GetLocalityKey returns the Kubernetes topology label key (e.g.
 	// "topology.kubernetes.io/zone") used to co-locate workers with MinIO.
 	GetLocalityKey(ctx context.Context) (string, error)
+
+	// GetLocalityLabelSelector returns the label selector used to identify target
+	// pods (typically MinIO) for data locality scheduling.
+	GetLocalityLabelSelector(ctx context.Context) (string, error)
 }
 
 // resolveWorkerResources parses raw CPU and memory limit strings into a
@@ -171,4 +175,26 @@ func (p *DBResourceConfigProvider) GetLocalityKey(ctx context.Context) (string, 
 		return "", err
 	}
 	return key, nil
+}
+
+// GetLocalityLabelSelector implements ResourceConfigProvider by issuing
+// QueryGetLocalityLabelSelector. Returns empty string if no configuration is
+// found or on error. Returns default selector if empty string is configured.
+func (p *DBResourceConfigProvider) GetLocalityLabelSelector(ctx context.Context) (string, error) {
+	if p == nil || p.db == nil {
+		return "", nil
+	}
+	var selector string
+	err := p.db.QueryRowContext(ctx, QueryGetLocalityLabelSelector).Scan(&selector)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return "", nil
+		}
+		return "", err
+	}
+	// If empty string is configured, return default selector
+	if selector == "" {
+		return "app.kubernetes.io/name=minio", nil
+	}
+	return selector, nil
 }

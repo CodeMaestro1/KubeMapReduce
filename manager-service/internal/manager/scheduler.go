@@ -660,16 +660,18 @@ func (s *Scheduler) GetSystemConfig(ctx context.Context) (SystemConfigUpdate, er
 		&cfg.WorkerReplicas,
 		&cfg.MaxJobsPerNode,
 		&cfg.LocalityKey,
+		&cfg.LocalityLabelSelector,
 	)
 	if err == sql.ErrNoRows {
 		// Return defaults if not configured
 		return SystemConfigUpdate{
-			MaxConcurrentPods: DefaultMaxConcurrentPods,
-			CPULimit:          "500m",
-			MemoryLimit:       "1Gi",
-			WorkerReplicas:    1,
-			MaxJobsPerNode:    1,
-			LocalityKey:       "topology.kubernetes.io/zone",
+			MaxConcurrentPods:     DefaultMaxConcurrentPods,
+			CPULimit:              "500m",
+			MemoryLimit:           "1Gi",
+			WorkerReplicas:        1,
+			MaxJobsPerNode:        1,
+			LocalityKey:           "topology.kubernetes.io/zone",
+			LocalityLabelSelector: "app.kubernetes.io/name=minio",
 		}, nil
 	}
 	return cfg, err
@@ -684,6 +686,7 @@ func (s *Scheduler) UpsertSystemConfig(ctx context.Context, req SystemConfigUpda
 		req.WorkerReplicas,
 		req.MaxJobsPerNode,
 		req.LocalityKey,
+		req.LocalityLabelSelector,
 	)
 	return err
 }

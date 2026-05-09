@@ -19,6 +19,24 @@ var adminConfigureNodesExit = os.Exit
 var adminGetValidToken = getValidToken
 var adminRequireAdminRole = requireAdminRole
 
+// configureNodesStatusError evaluates the HTTP response status from a configure-nodes request
+// and returns an appropriate error, or nil if the response was successful.
+//
+// HTTP 200 (OK) and 202 (Accepted) are treated as success and return nil.
+// HTTP 501 (Not Implemented) returns a helpful error mentioning backend integration status.
+// Other HTTP statuses return an error including the status code and response body.
+func configureNodesStatusError(status int, body string) error {
+	if status == http.StatusOK || status == http.StatusAccepted {
+		return nil
+	}
+
+	if status == http.StatusNotImplemented {
+		return fmt.Errorf("HTTP 501 Not Implemented: node configuration backend integration is not implemented yet (pending backend implementation)")
+	}
+
+	return fmt.Errorf("HTTP %d: %s", status, body)
+}
+
 // ── admin helpers ──────────────────────────────────────────
 
 // requireAdminRole checks that the supplied access token carries the ADMIN realm role.
@@ -156,82 +174,11 @@ func cmdAdminConfigureNodes(args []string) {
 	}
 }
 
-// ── admin configure-nodes helpers ─────────────────────────
+// ── admin worker-config ───────────────────
 
-// runAdminConfigureNodes is the implementation of the admin configure-nodes command.
-// It accepts optional doAuthRequest override for testing purposes.
-func runAdminConfigureNodes(args []string, doAuthReq func(method, url string, bearerToken string, body []byte) (*http.Response, error)) error {
+func cmdAdminWorkerConfig(args []string) {
 	token, serverURL := adminGetValidToken()
 	adminRequireAdminRole(token)
-	fs := flag.NewFlagSet("admin configure-nodes", flag.ExitOnError)
-	maxPods := fs.Int("max-pods", 0, "Maximum concurrent pods (required, > 0)")
-	cpuLimit := fs.String("cpu", "", "CPU limit per worker pod (e.g., 500m)")
-	memoryLimit := fs.String("memory", "", "Memory limit per worker pod (e.g., 1Gi)")
-	localityKey := fs.String("locality-key", "topology.kubernetes.io/zone", "Topology label key for worker co-location with MinIO (e.g. topology.kubernetes.io/zone, kubernetes.io/hostname)")
-	_ = fs.Parse(args)
-
-	if *maxPods < 1 {
-		return fmt.Errorf("--max-pods is required and must be > 0")
-	}
-
-	payload, err := json.Marshal(map[string]interface{}{
-		"maxPods":     *maxPods,
-		"cpuLimit":    strings.TrimSpace(*cpuLimit),
-		"memoryLimit": strings.TrimSpace(*memoryLimit),
-		"localityKey": strings.TrimSpace(*localityKey),
-	})
-	if err != nil {
-		return fmt.Errorf("failed to build configure-nodes request: %v", err)
-	}
-
-	resp, err := doAuthReq(http.MethodPost, serverURL+"/api/v1/admin/config/workers", token, payload)
-	if err != nil {
-		return fmt.Errorf("configure-nodes request failed: %v", err)
-	}
-	defer resp.Body.Close()
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return fmt.Errorf("failed to read response: %v", err)
-	}
-
-	if statusErr := configureNodesStatusError(resp.StatusCode, string(body)); statusErr != nil {
-		return statusErr
-	}
-
-	fmt.Printf("Node configuration updated successfully.\n")
-	return nil
-}
-
-// configureNodesStatusError evaluates the HTTP response status from a configure-nodes request
-// and returns an appropriate error, or nil if the response was successful.
-//
-// HTTP 200 (OK) and 202 (Accepted) are treated as success and return nil.
-// HTTP 501 (Not Implemented) returns a helpful error mentioning backend integration status.
-// Other HTTP statuses return an error including the status code and response body.
-func configureNodesStatusError(status int, body string) error {
-	if status == http.StatusOK || status == http.StatusAccepted {
-		return nil
-	}
-
-	if status == http.StatusNotImplemented {
-		return fmt.Errorf("HTTP 501 Not Implemented: node configuration backend integration is not implemented yet (pending backend implementation)")
-	}
-
-	return fmt.Errorf("HTTP %d: %s", status, body)
-}
-
-// ── admin worker-config ────────────────────────────────────
-
-// cmdAdminWorkerConfig updates the configuration for worker pods.
-//
-// This command controls the scale and density of the worker fleet. By adjusting
-// the number of replicas and the maximum number of concurrent jobs per node,
-// administrators can tune the system's performance and resource utilization
-// based on current workload demands.
-func cmdAdminWorkerConfig(args []string) {
-	token, serverURL := getValidToken()
-	requireAdminRole(token)
 	fs := flag.NewFlagSet("admin worker-config", flag.ExitOnError)
 	replicas := fs.Int("replicas", 0, "Number of worker replicas (required, > 0)")
 	maxJobs := fs.Int("max-jobs", 0, "Max jobs per node (required, > 0)")
@@ -261,4 +208,53 @@ func cmdAdminWorkerConfig(args []string) {
 	defer resp.Body.Close()
 
 	printResponse(resp)
+}
+
+// ── admin configure-nodes helpers ─────────
+
+// runAdminConfigureNodes is the implementation of the admin configure-nodes command.
+// It accepts optional doAuthRequest override for testing purposes.
+func runAdminConfigureNodes(args []string, doAuthReq func(method, url string, bearerToken string, body []byte) (*http.Response, error)) error {
+	token, serverURL := adminGetValidToken()
+	adminRequireAdminRole(token)
+	fs := flag.NewFlagSet("admin configure-nodes", flag.ExitOnError)
+	maxPods := fs.Int("max-pods", 0, "Maximum concurrent pods (required, > 0)")
+	cpuLimit := fs.String("cpu", "", "CPU limit per worker pod (e.g., 500m)")
+	memoryLimit := fs.String("memory", "", "Memory limit per worker pod (e.g., 1Gi)")
+	localityKey := fs.String("locality-key", "topology.kubernetes.io/zone", "Topology label key for worker co-location with MinIO (e.g. topology.kubernetes.io/zone, kubernetes.io/hostname)")
+	localityLabelSelector := fs.String("locality-label-selector", "app.kubernetes.io/name=minio", "Label selector for target pods (e.g. app.kubernetes.io/name=minio)")
+	_ = fs.Parse(args)
+
+	if *maxPods < 1 {
+		return fmt.Errorf("--max-pods is required and must be > 0")
+	}
+
+	payload, err := json.Marshal(map[string]interface{}{
+		"maxPods":               *maxPods,
+		"cpuLimit":              strings.TrimSpace(*cpuLimit),
+		"memoryLimit":           strings.TrimSpace(*memoryLimit),
+		"localityKey":           strings.TrimSpace(*localityKey),
+		"localityLabelSelector": strings.TrimSpace(*localityLabelSelector),
+	})
+	if err != nil {
+		return fmt.Errorf("failed to build configure-nodes request: %v", err)
+	}
+
+	resp, err := doAuthReq(http.MethodPost, serverURL+"/api/v1/admin/config/workers", token, payload)
+	if err != nil {
+		return fmt.Errorf("configure-nodes request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return fmt.Errorf("failed to read response: %v", err)
+	}
+
+	if statusErr := configureNodesStatusError(resp.StatusCode, string(body)); statusErr != nil {
+		return statusErr
+	}
+
+	fmt.Printf("Node configuration updated successfully.\n")
+	return nil
 }

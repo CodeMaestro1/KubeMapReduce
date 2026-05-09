@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"sync"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -39,11 +40,12 @@ type WorkerOrchestrator interface {
 // task retries are controlled exclusively by the Manager's scheduler logic rather than
 // the K8s kubelet, preventing "zombie" retries from interfering with new attempts.
 type KubeOrchestrator struct {
-	clientset        kubernetes.Interface
-	namespace        string
-	workerImage      string
-	workerSecretName string
-	resourceProvider ResourceConfigProvider
+	clientset              kubernetes.Interface
+	namespace              string
+	workerImage            string
+	workerSecretName       string
+	resourceProvider       ResourceConfigProvider
+	localityValidationOnce sync.Once
 }
 
 // NewKubeOrchestrator creates a new Kubernetes-backed orchestrator.
@@ -122,6 +124,94 @@ func (k *KubeOrchestrator) resolveLocalityKey(ctx context.Context) string {
 		return key
 	}
 	return ""
+}
+
+// resolveLocalityLabelSelector returns the label selector used for worker co-location with target pods.
+func (k *KubeOrchestrator) resolveLocalityLabelSelector(ctx context.Context) string {
+	if k.resourceProvider != nil {
+		selector, err := k.resourceProvider.GetLocalityLabelSelector(ctx)
+		if err != nil {
+			slog.WarnContext(ctx, "failed to read locality label selector, using default",
+				slog.String("component", "orchestrator"),
+				slog.Any("err", err),
+			)
+			return "app.kubernetes.io/name=minio"
+		}
+		if selector == "" {
+			return "app.kubernetes.io/name=minio"
+		}
+		return selector
+	}
+	return "app.kubernetes.io/name=minio"
+}
+
+// validateLocalityConfig logs warnings when the configured locality settings
+// are unlikely to produce co-location. It checks that:
+//   - At least one pod matches the configured label selector
+//   - At least one node carries the configured topology key
+//
+// Failures are non-fatal (the affinity is a soft preference), but making them
+// visible prevents silent misconfiguration where locality silently becomes a no-op.
+func (k *KubeOrchestrator) validateLocalityConfig(ctx context.Context, localityKey, localityLabelSelector string) {
+	pods, err := k.clientset.CoreV1().Pods(k.namespace).List(ctx, metav1.ListOptions{
+		LabelSelector: localityLabelSelector,
+	})
+	if err != nil {
+		slog.WarnContext(ctx, "locality: cannot list pods to validate label selector",
+			slog.String("component", "orchestrator"),
+			slog.String("labelSelector", localityLabelSelector),
+			slog.Any("err", err),
+		)
+	} else if len(pods.Items) == 0 {
+		slog.WarnContext(ctx, "locality: no pods match the configured label selector, affinity is a no-op",
+			slog.String("component", "orchestrator"),
+			slog.String("labelSelector", localityLabelSelector),
+			slog.String("namespace", k.namespace),
+		)
+	}
+
+	nodes, err := k.clientset.CoreV1().Nodes().List(ctx, metav1.ListOptions{})
+	if err != nil {
+		slog.WarnContext(ctx, "locality: cannot list nodes to validate topology key",
+			slog.String("component", "orchestrator"),
+			slog.String("topologyKey", localityKey),
+			slog.Any("err", err),
+		)
+		return
+	}
+	for _, node := range nodes.Items {
+		if _, ok := node.Labels[localityKey]; ok {
+			return
+		}
+	}
+	slog.WarnContext(ctx, "locality: no nodes carry the configured topology key, affinity is a no-op",
+		slog.String("component", "orchestrator"),
+		slog.String("topologyKey", localityKey),
+	)
+}
+
+// parseLabelSelector parses a comma-separated list of key=value pairs into a map.
+// It's used to convert the locality label selector string (e.g. "app.kubernetes.io/name=minio")
+// into the LabelSelector.MatchLabels map expected by the Kubernetes client.
+// Malformed pairs are ignored.
+func parseLabelSelector(selector string) map[string]string {
+	labels := make(map[string]string)
+	if selector == "" {
+		return labels
+	}
+
+	parts := strings.Split(selector, ",")
+	for _, part := range parts {
+		kv := strings.SplitN(strings.TrimSpace(part), "=", 2)
+		if len(kv) == 2 {
+			key := strings.TrimSpace(kv[0])
+			value := strings.TrimSpace(kv[1])
+			if key != "" && value != "" {
+				labels[key] = value
+			}
+		}
+	}
+	return labels
 }
 
 // SpawnWorker creates a K8s Job for a task attempt.
@@ -264,7 +354,13 @@ func (k *KubeOrchestrator) EnsureWorkerPool(ctx context.Context, jobID string, n
 	}
 
 	localityKey := k.resolveLocalityKey(ctx)
-	if localityKey != "" {
+	localityLabelSelector := k.resolveLocalityLabelSelector(ctx)
+	if localityKey != "" && localityLabelSelector != "" {
+		k.localityValidationOnce.Do(func() {
+			k.validateLocalityConfig(ctx, localityKey, localityLabelSelector)
+		})
+		// Parse the label selector string into matchLabels map
+		labelSelector := parseLabelSelector(localityLabelSelector)
 		deployment.Spec.Template.Spec.Affinity = &corev1.Affinity{
 			PodAffinity: &corev1.PodAffinity{
 				PreferredDuringSchedulingIgnoredDuringExecution: []corev1.WeightedPodAffinityTerm{
@@ -272,9 +368,7 @@ func (k *KubeOrchestrator) EnsureWorkerPool(ctx context.Context, jobID string, n
 						Weight: 100,
 						PodAffinityTerm: corev1.PodAffinityTerm{
 							LabelSelector: &metav1.LabelSelector{
-								MatchLabels: map[string]string{
-									"app.kubernetes.io/name": "minio",
-								},
+								MatchLabels: labelSelector,
 							},
 							TopologyKey: localityKey,
 						},

@@ -107,12 +107,13 @@ type ScheduleJobRequest struct {
 
 // SystemConfigUpdate represents a request to update cluster-wide resource limits.
 type SystemConfigUpdate struct {
-	MaxConcurrentPods int
-	CPULimit          string
-	MemoryLimit       string
-	WorkerReplicas    int
-	MaxJobsPerNode    int
-	LocalityKey       string
+	MaxConcurrentPods     int
+	CPULimit              string
+	MemoryLimit           string
+	WorkerReplicas        int
+	MaxJobsPerNode        int
+	LocalityKey           string
+	LocalityLabelSelector string
 }
 
 // Task represents the metadata the Master needs to track for a single unit of work.
