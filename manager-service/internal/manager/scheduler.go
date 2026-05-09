@@ -123,6 +123,16 @@ func (s *Scheduler) SetEventEmitter(emitter EventEmitter) {
 	s.emitter = emitter
 }
 
+// SetLeaseClockSkewSeconds overrides the clock-skew tolerance used when
+// validating lease expiry. The default of 5 seconds is applied by NewScheduler;
+// call this at startup to inject the value from Config.LeaseClockSkewSeconds.
+func (s *Scheduler) SetLeaseClockSkewSeconds(seconds int) {
+	if seconds < 0 {
+		seconds = 0
+	}
+	s.leaseClockSkewSeconds = seconds
+}
+
 // SetHeartbeatEventSampleN configures sampling of tasks.heartbeat.received
 // events. n <= 1 emits every heartbeat (default). For n > 1, only every n-th
 // successful RenewLease call emits an event, reducing outbox pressure under
@@ -1090,7 +1100,17 @@ func (s *Scheduler) CancelJob(ctx context.Context, jobID string) error {
 		return err
 	}
 
-	_, err = tx.ExecContext(ctx, "UPDATE TASKS SET status = 'Failed' WHERE job_id = $1 AND status != 'Completed'", jobID)
+	// Lock all non-completed task rows before updating them. This serializes
+	// CancelJob with concurrent tryAssignTask calls (which use FOR UPDATE SKIP
+	// LOCKED): any task already locked by tryAssignTask will cause this query
+	// to wait, ensuring the cancel sees the final task state before overwriting.
+	rows, err := tx.QueryContext(ctx, QueryLockNonCompletedTasksByJob, jobID)
+	if err != nil {
+		return err
+	}
+	rows.Close()
+
+	_, err = tx.ExecContext(ctx, QueryBulkFailNonCompletedTasksByJob, jobID)
 	if err != nil {
 		return err
 	}

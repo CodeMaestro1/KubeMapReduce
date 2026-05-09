@@ -332,6 +332,12 @@ func (k *KubeOrchestrator) EnsureWorkerPool(ctx context.Context, jobID string, n
 								Capabilities: &corev1.Capabilities{
 									Drop: []corev1.Capability{"ALL"},
 								},
+								// Redundant with the pod-level SeccompProfile but required by
+								// admission policies (e.g. Pod Security Standards "restricted")
+								// that validate the seccomp setting at the container level.
+								SeccompProfile: &corev1.SeccompProfile{
+									Type: corev1.SeccompProfileTypeRuntimeDefault,
+								},
 							},
 							VolumeMounts: []corev1.VolumeMount{
 								{
