@@ -162,6 +162,9 @@ func (k *KubeOrchestrator) EnsureWorkerPool(ctx context.Context, jobID string, n
 					AutomountServiceAccountToken: &falseVal,
 					SecurityContext: &corev1.PodSecurityContext{
 						RunAsNonRoot: &trueVal,
+						RunAsUser:    func() *int64 { uid := WorkerUID; return &uid }(),
+						RunAsGroup:   func() *int64 { gid := WorkerGID; return &gid }(),
+						FSGroup:      func() *int64 { gid := WorkerGID; return &gid }(),
 						SeccompProfile: &corev1.SeccompProfile{
 							Type: corev1.SeccompProfileTypeRuntimeDefault,
 						},
@@ -196,23 +199,23 @@ func (k *KubeOrchestrator) EnsureWorkerPool(ctx context.Context, jobID string, n
 										{Key: "MINIO_ACCESS_KEY", Path: "access-key"},
 										{Key: "MINIO_SECRET_KEY", Path: "secret-key"},
 									},
-									DefaultMode: func() *int32 { mode := int32(0400); return &mode }(),
+									DefaultMode: func() *int32 { mode := int32(0440); return &mode }(),
 								},
 							},
 						},
 					},
 					Containers: []corev1.Container{
 						{
-							Name:  "worker",
-							Image: k.workerImage,
+							Name:            "worker",
+							Image:           k.workerImage,
+							ImagePullPolicy: corev1.PullIfNotPresent,
 							Env: []corev1.EnvVar{
 								{Name: "JOB_ID", Value: jobID},
 								{Name: "MANAGER_ADDR", Value: managerAddr},
 								{Name: "GRPC_TLS_CERT_FILE", Value: "/tls/tls.crt"},
-								secretEnvVar("S3_ENDPOINT", k.workerSecretName, "MINIO_ENDPOINT"),
-								secretEnvVar("S3_ACCESS_KEY", k.workerSecretName, "MINIO_ACCESS_KEY"),
-								secretEnvVar("S3_SECRET_KEY", k.workerSecretName, "MINIO_SECRET_KEY"),
-								secretEnvVar("MINIO_BUCKET", k.workerSecretName, "MINIO_BUCKET"),
+								// MinIO credentials are read from /etc/worker-secrets/* files (volume
+								// mount below). Env vars are omitted to avoid credential exposure via
+								// /proc/<pid>/environ, kubectl describe, and crash dumps.
 								secretEnvVar("WORKER_RPC_TOKEN", k.workerSecretName, "MANAGER_WORKER_RPC_TOKEN"),
 							},
 							Resources: resources,

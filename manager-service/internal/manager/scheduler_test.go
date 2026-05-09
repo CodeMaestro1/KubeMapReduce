@@ -332,6 +332,10 @@ func TestScheduler_GetNextTask_NoMapIdle_ReduceSuccess(t *testing.T) {
 		WithArgs(jobID.String(), "Map").
 		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
 
+	mock.ExpectQuery(regexp.QuoteMeta(QueryCompleteEmptyReduceTasks)).
+		WithArgs(jobID.String()).
+		WillReturnRows(sqlmock.NewRows([]string{"task_id"}))
+
 	mock.ExpectQuery(regexp.QuoteMeta(QuerySelectIdleTask)).
 		WithArgs(jobID.String(), 0, "Reduce").
 		WillReturnRows(sqlmock.NewRows([]string{"task_id", "job_id", "task_type", "replica_index"}).AddRow(taskID, jobID, "Reduce", 3))
@@ -397,6 +401,10 @@ func TestScheduler_GetNextTask_JobCompleted(t *testing.T) {
 		WithArgs(jobID, "Map").
 		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
 
+	mock.ExpectQuery(regexp.QuoteMeta(QueryCompleteEmptyReduceTasks)).
+		WithArgs(jobID).
+		WillReturnRows(sqlmock.NewRows([]string{"task_id"}))
+
 	mock.ExpectQuery(regexp.QuoteMeta(QuerySelectIdleTask)).
 		WithArgs(jobID, 0, "Reduce").
 		WillReturnError(sql.ErrNoRows)
@@ -405,7 +413,7 @@ func TestScheduler_GetNextTask_JobCompleted(t *testing.T) {
 		WithArgs(jobID, "Reduce").
 		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
 
-	mock.ExpectRollback()
+	mock.ExpectCommit()
 
 	_, err := scheduler.GetNextTask(context.Background(), jobID, "worker-1")
 	if !errors.Is(err, ErrJobCompleted) {

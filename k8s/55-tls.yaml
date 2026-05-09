@@ -86,6 +86,10 @@ spec:
     - manager.mapreduce.svc.cluster.local
     - manager.mapreduce
     - manager
+    - "*.manager-headless.mapreduce.svc.cluster.local"
+    - manager-0.manager-headless.mapreduce.svc.cluster.local
+    - manager-1.manager-headless.mapreduce.svc.cluster.local
+    - manager-2.manager-headless.mapreduce.svc.cluster.local
   issuerRef:
     name: mapreduce-ca-issuer
     kind: Issuer

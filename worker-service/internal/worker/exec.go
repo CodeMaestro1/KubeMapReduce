@@ -165,6 +165,37 @@ func ensureSafePath(p string) string {
 	return "./" + p
 }
 
+// runUserCodeStreaming starts the user binary with JSONL on stdin and returns
+// a streaming stdout reader plus a wait func that returns the process exit
+// error. Callers MUST close the returned ReadCloser and invoke wait() once
+// the stdout pipe is fully drained. cmd.Env uses sandboxedEnv so user code
+// cannot read credentials from the worker environment.
+func runUserCodeStreaming(ctx context.Context, codePath, runtimeEnv string, stdin io.Reader) (io.ReadCloser, func() error, error) {
+	cmd, err := buildCmd(ctx, filepath.Base(codePath), runtimeEnv)
+	if err != nil {
+		return nil, nil, err
+	}
+	cmd.Env = sandboxedEnv()
+	cmd.Stdin = stdin
+	cmd.Stderr = os.Stderr
+	cmd.Dir = filepath.Dir(codePath)
+
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return nil, nil, fmt.Errorf("stdout pipe: %w", err)
+	}
+	if err := cmd.Start(); err != nil {
+		return nil, nil, fmt.Errorf("start user code %q: %w", codePath, err)
+	}
+	wait := func() error {
+		if err := cmd.Wait(); err != nil {
+			return fmt.Errorf("user code %q: %w", codePath, err)
+		}
+		return nil
+	}
+	return stdout, wait, nil
+}
+
 // runUserCode executes the user code with JSONL piped on stdin and captures stdout.
 // cmd.Env uses sandboxedEnv so user-supplied code cannot read credentials
 // (S3 keys, RPC tokens) from the worker's environment.

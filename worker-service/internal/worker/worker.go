@@ -39,7 +39,14 @@ type Worker struct {
 	// Swappable in tests to avoid real subprocess execution.
 	execCode func(ctx context.Context, codePath, runtimeEnv string, stdin io.Reader) ([]byte, error)
 
-	// NATS subscription for event-driven task assignment
+	// execCodeStream runs the user binary and returns a stdout reader plus a
+	// wait func that reports the process exit error. Used by runReduce to
+	// stream reducer output directly into object storage without buffering
+	// the full result in memory. Swappable in tests; when nil, runReduce
+	// falls back to execCode via an in-memory adapter.
+	execCodeStream func(ctx context.Context, codePath, runtimeEnv string, stdin io.Reader) (io.ReadCloser, func() error, error)
+
+	// NATS subscription for event-driven task assignment.
 	natsConn    *nats.Conn
 	natsInbound chan *pb.TaskAssignment
 }
@@ -55,12 +62,13 @@ func New(cfg *config.Config, client pb.WorkerServiceClient, shuffleClient pb.Shu
 		s = newUnavailableStorage(fmt.Errorf("object storage is not configured"))
 	}
 	return &Worker{
-		cfg:           cfg,
-		client:        client,
-		shuffleClient: shuffleClient,
-		storage:       s,
-		prepareCode:   downloadCode,
-		execCode:      runUserCode,
+		cfg:            cfg,
+		client:         client,
+		shuffleClient:  shuffleClient,
+		storage:        s,
+		prepareCode:    downloadCode,
+		execCode:       runUserCode,
+		execCodeStream: runUserCodeStreaming,
 	}
 }
 
@@ -84,6 +92,11 @@ func (w *Worker) Run(ctx context.Context) error {
 			},
 		})
 		if err != nil {
+			if err == io.EOF {
+				if _, recvErr := stream.Recv(); recvErr != nil && recvErr != io.EOF {
+					return fmt.Errorf("send ready (server closed stream): %w", recvErr)
+				}
+			}
 			return fmt.Errorf("send ready: %w", err)
 		}
 

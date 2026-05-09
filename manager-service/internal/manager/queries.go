@@ -105,6 +105,30 @@ const QueryGetReduceTaskInputs = `
 	  AND (o.partition_index IS NULL OR o.partition_index = reduce_task.replica_index)
 	ORDER BY o.output_id`
 
+// QueryCompleteEmptyReduceTasks marks every Idle Reduce task whose partition
+// received zero map outputs as Completed and returns their task IDs. Run
+// once per GetNextTask call after the Map phase finishes so the scheduler
+// never dispatches a worker pod for a partition with no input data.
+//
+// "No inputs" matches the same predicate used by QueryGetReduceTaskInputs:
+// no completed Map task contributed an output whose partition_index is NULL
+// (broadcast/legacy) or equals this Reduce task's replica_index.
+const QueryCompleteEmptyReduceTasks = `
+	UPDATE TASKS
+	SET status = 'Completed', current_attempt_id = NULL
+	WHERE job_id = $1
+	  AND task_type = 'Reduce'
+	  AND status = 'Idle'
+	  AND NOT EXISTS (
+	    SELECT 1 FROM TASK_OUTPUTS o
+	    JOIN TASKS m ON m.task_id = o.task_id
+	    WHERE m.job_id = TASKS.job_id
+	      AND m.task_type = 'Map'
+	      AND m.status = 'Completed'
+	      AND (o.partition_index IS NULL OR o.partition_index = TASKS.replica_index)
+	  )
+	RETURNING task_id`
+
 // QuerySelectTaskForUpdate locks a task row for safe state transition.
 // Used by CompleteTask, FailTask, and RenewLease to enforce serializable access.
 const QuerySelectTaskForUpdate = `SELECT status, current_attempt_id FROM TASKS WHERE task_id = $1 FOR UPDATE`

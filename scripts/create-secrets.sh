@@ -40,9 +40,21 @@ kubectl -n "$NAMESPACE" create secret generic minio-creds \
   --from-literal=S3_ENDPOINT="$S3_ENDPOINT" \
   --dry-run=client -o yaml | kubectl apply -f -
 
+WORKER_RPC_TOKEN="$(openssl rand -hex 16)"
 kubectl -n "$NAMESPACE" create secret generic manager-secrets \
   --from-literal=MANAGER_INTERNAL_API_KEY="$(openssl rand -hex 16)" \
-  --from-literal=MANAGER_WORKER_RPC_TOKEN="$(openssl rand -hex 16)" \
+  --from-literal=MANAGER_WORKER_RPC_TOKEN="$WORKER_RPC_TOKEN" \
+  --dry-run=client -o yaml | kubectl apply -f -
+
+# kubemapreduce-secrets is mounted into every worker pod by KubeOrchestrator.
+# Keys must match what orchestrator.go reads: MINIO_ENDPOINT, MINIO_ACCESS_KEY,
+# MINIO_SECRET_KEY, MINIO_BUCKET, MANAGER_WORKER_RPC_TOKEN.
+kubectl -n "$NAMESPACE" create secret generic kubemapreduce-secrets \
+  --from-literal=MINIO_ENDPOINT="$S3_ENDPOINT" \
+  --from-literal=MINIO_ACCESS_KEY=mapreduce \
+  --from-literal=MINIO_SECRET_KEY="$MINIO_PASSWORD" \
+  --from-literal=MINIO_BUCKET=mapreduce-shuffle \
+  --from-literal=MANAGER_WORKER_RPC_TOKEN="$WORKER_RPC_TOKEN" \
   --dry-run=client -o yaml | kubectl apply -f -
 
 kubectl -n "$NAMESPACE" create secret generic keycloak-creds \

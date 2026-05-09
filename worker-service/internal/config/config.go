@@ -75,13 +75,7 @@ func Load() (*Config, error) {
 	// jobID might be empty for older tests, but required for pull-based workers.
 
 	taskID := strings.TrimSpace(os.Getenv("TASK_ID"))
-	if taskID == "" {
-		return nil, fmt.Errorf("TASK_ID is required")
-	}
 	attemptID := strings.TrimSpace(os.Getenv("ATTEMPT_ID"))
-	if attemptID == "" {
-		return nil, fmt.Errorf("ATTEMPT_ID is required")
-	}
 	managerAddr := strings.TrimSpace(os.Getenv("MANAGER_ADDR"))
 	if managerAddr == "" {
 		return nil, fmt.Errorf("MANAGER_ADDR is required")

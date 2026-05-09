@@ -20,25 +20,25 @@ func TestTimeoutConfig_ValidatesSLAs(t *testing.T) {
 	}{
 		{
 			name:        "Heartbeat timeout is 2s",
-			method:      "/proto.WorkerService/Heartbeat",
+			method:      "/mapreduce.WorkerService/Heartbeat",
 			expectedMax: 2 * time.Second,
 			shouldExist: true,
 		},
 		{
 			name:        "Register timeout is 5s",
-			method:      "/proto.WorkerService/Register",
+			method:      "/mapreduce.WorkerService/Register",
 			expectedMax: 5 * time.Second,
 			shouldExist: true,
 		},
 		{
 			name:        "TaskComplete timeout is 10s",
-			method:      "/proto.WorkerService/TaskComplete",
+			method:      "/mapreduce.WorkerService/TaskComplete",
 			expectedMax: 10 * time.Second,
 			shouldExist: true,
 		},
 		{
 			name:        "TaskFailed timeout is 10s",
-			method:      "/proto.WorkerService/TaskFailed",
+			method:      "/mapreduce.WorkerService/TaskFailed",
 			expectedMax: 10 * time.Second,
 			shouldExist: true,
 		},
@@ -103,7 +103,7 @@ func TestTimeoutConfig_CircuitBreakerSettings(t *testing.T) {
 // TestTimeoutEnforcement_ContextDeadline verifies context deadline is enforced
 func TestTimeoutEnforcement_ContextDeadline(t *testing.T) {
 	cfg := NewDefaultTimeoutConfig()
-	method := "/proto.WorkerService/Heartbeat"
+	method := "/mapreduce.WorkerService/Heartbeat"
 	timeout, _ := cfg.TimeoutForMethod(method)
 
 	// Create context with timeout
@@ -137,19 +137,19 @@ func TestTimeoutConfig_RetryStrategy(t *testing.T) {
 	}{
 		{
 			name:               "Heartbeat should NOT retry",
-			method:             "/proto.WorkerService/Heartbeat",
+			method:             "/mapreduce.WorkerService/Heartbeat",
 			shouldAllowRetries: false,
 			maxRetries:         0,
 		},
 		{
 			name:               "Register should allow 3 retries",
-			method:             "/proto.WorkerService/Register",
+			method:             "/mapreduce.WorkerService/Register",
 			shouldAllowRetries: true,
 			maxRetries:         3,
 		},
 		{
 			name:               "TaskComplete should allow 2 retries",
-			method:             "/proto.WorkerService/TaskComplete",
+			method:             "/mapreduce.WorkerService/TaskComplete",
 			shouldAllowRetries: true,
 			maxRetries:         2,
 		},
@@ -178,7 +178,7 @@ func TestTimeoutConfig_RetryStrategy(t *testing.T) {
 // BenchmarkTimeoutLookup measures performance of timeout lookup
 func BenchmarkTimeoutLookup(b *testing.B) {
 	cfg := NewDefaultTimeoutConfig()
-	method := "/proto.WorkerService/Heartbeat"
+	method := "/mapreduce.WorkerService/Heartbeat"
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
@@ -191,13 +191,13 @@ func TestTimeoutConfig_CriticalPathOptimized(t *testing.T) {
 	cfg := NewDefaultTimeoutConfig()
 
 	// Heartbeat is the critical path and must fail-fast
-	timeout, _ := cfg.TimeoutForMethod("/proto.WorkerService/Heartbeat")
+	timeout, _ := cfg.TimeoutForMethod("/mapreduce.WorkerService/Heartbeat")
 	if timeout > 3*time.Second {
 		t.Errorf("Heartbeat timeout too high (%v); should be ≤2s for fail-fast", timeout)
 	}
 
 	// Register is less frequent, so can have longer timeout
-	regTimeout, _ := cfg.TimeoutForMethod("/proto.WorkerService/Register")
+	regTimeout, _ := cfg.TimeoutForMethod("/mapreduce.WorkerService/Register")
 	if regTimeout < 3*time.Second || regTimeout > 10*time.Second {
 		t.Errorf("Register timeout out of range (%v); expected 5s", regTimeout)
 	}

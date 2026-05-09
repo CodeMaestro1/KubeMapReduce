@@ -20,7 +20,7 @@ func TestNewPostgresJobStore(t *testing.T) {
 	}
 	defer db.Close()
 
-	store := NewPostgresJobStore(db)
+	store := NewPostgresJobStore(db, 1)
 	if store == nil {
 		t.Fatalf("NewPostgresJobStore returned nil")
 	}
@@ -36,14 +36,14 @@ func TestPostgresJobStore_CreateJob_PersistsToDatabase(t *testing.T) {
 	}
 	defer db.Close()
 
-	store := NewPostgresJobStore(db)
+	store := NewPostgresJobStore(db, 1)
 	jobID := uuid.New().String()
 	ownerUUID := uuid.New()
 	now := time.Date(2026, 4, 18, 12, 0, 0, 0, time.UTC)
 
 	mock.ExpectBegin()
 	mock.ExpectExec("INSERT INTO JOBS").
-		WithArgs(sqlmock.AnyArg(), ownerUUID, now, now).
+		WithArgs(sqlmock.AnyArg(), ownerUUID, now, now, 0).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec("INSERT INTO JOB_CONFIGS").
 		WithArgs(sqlmock.AnyArg(), "data.csv", "", "", "", 0, 4, "").
@@ -74,7 +74,7 @@ func TestPostgresJobStore_GetJob_ReturnsPersistedJob(t *testing.T) {
 	}
 	defer db.Close()
 
-	store := NewPostgresJobStore(db)
+	store := NewPostgresJobStore(db, 1)
 	jobUUID := uuid.New()
 	ownerUUID := uuid.New()
 	created := time.Date(2026, 4, 18, 12, 0, 0, 0, time.UTC)
@@ -117,7 +117,7 @@ func TestPostgresJobStore_GetJob_ReturnsNilForMissing(t *testing.T) {
 	}
 	defer db.Close()
 
-	store := NewPostgresJobStore(db)
+	store := NewPostgresJobStore(db, 1)
 	jobUUID := uuid.New()
 	ownerUUID := uuid.New()
 
@@ -142,7 +142,7 @@ func TestPostgresJobStore_GetJob_ReturnsErrorForInvalidUUID(t *testing.T) {
 	}
 	defer db.Close()
 
-	store := NewPostgresJobStore(db)
+	store := NewPostgresJobStore(db, 1)
 
 	rec, err := store.GetJob(context.Background(), uuid.New().String(), "not-a-uuid")
 	if !errors.Is(err, ErrInvalidJobID) {
@@ -160,7 +160,7 @@ func TestPostgresJobStore_ListJobs_ReturnsAllJobs(t *testing.T) {
 	}
 	defer db.Close()
 
-	store := NewPostgresJobStore(db)
+	store := NewPostgresJobStore(db, 1)
 	ownerUUID := uuid.New()
 	id1 := uuid.New()
 	id2 := uuid.New()
@@ -191,7 +191,7 @@ func TestPostgresJobStore_ListJobs_ReturnsEmptySlice(t *testing.T) {
 	}
 	defer db.Close()
 
-	store := NewPostgresJobStore(db)
+	store := NewPostgresJobStore(db, 1)
 	ownerUUID := uuid.New()
 	rows := sqlmock.NewRows([]string{"job_id", "status", "input_uri", "r_tasks", "created_at"})
 	mock.ExpectQuery("SELECT j.job_id").WithArgs(ownerUUID, 100, 0).WillReturnRows(rows)
@@ -214,7 +214,7 @@ func TestPostgresJobStore_CreateThenGet_Consistent(t *testing.T) {
 	}
 	defer db.Close()
 
-	store := NewPostgresJobStore(db)
+	store := NewPostgresJobStore(db, 1)
 	jobUUID := uuid.New()
 	ownerUUID := uuid.New()
 	now := time.Date(2026, 4, 18, 14, 0, 0, 0, time.UTC)
@@ -222,7 +222,7 @@ func TestPostgresJobStore_CreateThenGet_Consistent(t *testing.T) {
 	// Create
 	mock.ExpectBegin()
 	mock.ExpectExec("INSERT INTO JOBS").
-		WithArgs(sqlmock.AnyArg(), ownerUUID, now, now).
+		WithArgs(sqlmock.AnyArg(), ownerUUID, now, now, 0).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec("INSERT INTO JOB_CONFIGS").
 		WithArgs(sqlmock.AnyArg(), "input.jsonl", "", "", "", 0, 3, "").
@@ -279,7 +279,7 @@ func TestPostgresJobStore_GetJobOutputs_ReturnsReduceURIs(t *testing.T) {
 	}
 	defer db.Close()
 
-	store := NewPostgresJobStore(db)
+	store := NewPostgresJobStore(db, 1)
 	jobID := uuid.New()
 
 	mock.ExpectQuery(regexp.QuoteMeta(QueryGetJobOutputURIs)).
@@ -310,7 +310,7 @@ func TestPostgresJobStore_GetJobOutputs_EmptyForNoOutputs(t *testing.T) {
 	}
 	defer db.Close()
 
-	store := NewPostgresJobStore(db)
+	store := NewPostgresJobStore(db, 1)
 	jobID := uuid.New()
 
 	mock.ExpectQuery(regexp.QuoteMeta(QueryGetJobOutputURIs)).
@@ -336,7 +336,7 @@ func TestPostgresJobStore_GetJobOutputs_InvalidUUIDReturnsError(t *testing.T) {
 	}
 	defer db.Close()
 
-	store := NewPostgresJobStore(db)
+	store := NewPostgresJobStore(db, 1)
 	_, err = store.GetJobOutputs(context.Background(), "not-a-uuid")
 	if !errors.Is(err, ErrInvalidJobID) {
 		t.Fatalf("expected ErrInvalidJobID, got %v", err)

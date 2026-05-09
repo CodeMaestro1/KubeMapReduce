@@ -102,7 +102,7 @@ func main() {
 		if err != nil {
 			log.Fatalf("failed to create k8s clientset: %v", err)
 		}
-		orchestrator = manager.NewKubeOrchestrator(clientset, namespace, "kubemapreduce-worker:latest", cfg.WorkerSecretName).
+		orchestrator = manager.NewKubeOrchestrator(clientset, namespace, "kubemapreduce/worker:latest", cfg.WorkerSecretName).
 			WithResourceProvider(manager.NewDBResourceConfigProvider(db))
 	}
 

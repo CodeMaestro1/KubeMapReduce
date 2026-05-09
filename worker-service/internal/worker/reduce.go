@@ -205,22 +205,52 @@ func (w *Worker) mergeShuffleInputs(a *pb.TaskAssignment, taskTempDir string, re
 	return mergedFile, mergedFile, nil
 }
 
-func (w *Worker) uploadReduceOutput(ctx context.Context, a *pb.TaskAssignment, reduceOut []byte) (uri, checksum string, err error) {
-	// Upload reducer output.
+// uploadEmptyReduceOutput writes a zero-byte partition object so the
+// downstream contract (one output URI per reduce task) is preserved without
+// spawning the reducer subprocess or running an empty merge pass.
+func (w *Worker) uploadEmptyReduceOutput(ctx context.Context, a *pb.TaskAssignment) (uri, checksum string, err error) {
+	key := fmt.Sprintf("%s/partition-%d.jsonl", a.JobId, a.PartitionId)
+	if _, err := w.storage.PutObject(ctx, outputBucket, key,
+		bytes.NewReader(nil), 0,
+		minio.PutObjectOptions{ContentType: "application/x-ndjson"}); err != nil {
+		return "", "", fmt.Errorf("upload empty output: %w", err)
+	}
+	h := sha256.Sum256(nil)
+	return fmt.Sprintf("s3://%s/%s", outputBucket, key), hex.EncodeToString(h[:]), nil
+}
+
+// streamReduceOutput pipes the reducer's stdout reader directly into MinIO
+// while computing the SHA-256 incrementally. This avoids buffering the full
+// reducer output in worker RAM (issue: large reductions OOMed under the
+// previous []byte-based path). Returns the resulting object URI and checksum.
+func (w *Worker) streamReduceOutput(ctx context.Context, a *pb.TaskAssignment, stdout io.Reader) (uri, checksum string, err error) {
 	key := fmt.Sprintf("%s/partition-%d.jsonl", a.JobId, a.PartitionId)
 	h := sha256.New()
-	h.Write(reduceOut)
-	_, err = w.storage.PutObject(ctx, outputBucket, key,
-		bytes.NewReader(reduceOut), int64(len(reduceOut)),
-		minio.PutObjectOptions{ContentType: "application/x-ndjson"})
-	if err != nil {
+	tee := io.TeeReader(stdout, h)
+	if _, err := w.storage.PutObject(ctx, outputBucket, key,
+		tee, -1,
+		minio.PutObjectOptions{ContentType: "application/x-ndjson"}); err != nil {
 		return "", "", fmt.Errorf("upload output: %w", err)
 	}
-
 	uri = fmt.Sprintf("s3://%s/%s", outputBucket, key)
 	checksum = hex.EncodeToString(h.Sum(nil))
 	log.Printf("[reduce] done task=%s output=%s", a.TaskId, uri)
 	return uri, checksum, nil
+}
+
+// reducerStream returns a streaming stdout reader for the reducer process.
+// When execCodeStream is nil (older test wiring) it falls back to execCode and
+// wraps the buffered []byte result as an io.ReadCloser so the streaming path
+// remains the single code path in runReduce.
+func (w *Worker) reducerStream(ctx context.Context, codePath, runtimeEnv string, stdin io.Reader) (io.ReadCloser, func() error, error) {
+	if w.execCodeStream != nil {
+		return w.execCodeStream(ctx, codePath, runtimeEnv, stdin)
+	}
+	out, err := w.execCode(ctx, codePath, runtimeEnv, stdin)
+	if err != nil {
+		return nil, nil, err
+	}
+	return io.NopCloser(bytes.NewReader(out)), func() error { return nil }, nil
 }
 
 func (w *Worker) runReduce(ctx context.Context, a *pb.TaskAssignment) (outputURIs, outputChecksums []string, err error) {
@@ -251,6 +281,19 @@ func (w *Worker) runReduce(ctx context.Context, a *pb.TaskAssignment) (outputURI
 		return nil, nil, err
 	}
 
+	// Empty-partition short-circuit: skip merge + reducer subprocess + tee
+	// upload when no shuffle inputs arrived (zero map outputs hashed into
+	// this partition). Still write an empty output object so downstream
+	// consumers see a 1:1 partition→object mapping.
+	if len(readers) == 0 {
+		uri, chk, err := w.uploadEmptyReduceOutput(ctx, a)
+		if err != nil {
+			return nil, nil, err
+		}
+		log.Printf("[reduce] empty-partition short-circuit task=%s output=%s", a.TaskId, uri)
+		return []string{uri}, []string{chk}, nil
+	}
+
 	// External k-way merge sort over pre-sorted mapper output files.
 	mergedReader, mergedCloser, err := w.mergeShuffleInputs(a, taskTempDir, readers)
 	if err != nil {
@@ -258,17 +301,24 @@ func (w *Worker) runReduce(ctx context.Context, a *pb.TaskAssignment) (outputURI
 	}
 	defer mergedCloser.Close()
 
-	// Execute reducer with globally sorted JSONL on stdin.
-	reduceOut, err := w.execCode(ctx, codePath, a.RuntimeEnv, mergedReader)
+	// Execute reducer with globally sorted JSONL on stdin and stream stdout
+	// directly into object storage to keep peak memory bounded by the user
+	// code's own buffering, not the full reducer output size.
+	stdout, wait, err := w.reducerStream(ctx, codePath, a.RuntimeEnv, mergedReader)
 	if err != nil {
 		return nil, nil, fmt.Errorf("reducer: %w", err)
 	}
+	defer stdout.Close()
 
-	// Upload reducer output.
-	uri, chk, err := w.uploadReduceOutput(ctx, a, reduceOut)
-	if err != nil {
-		return nil, nil, err
+	uri, chk, putErr := w.streamReduceOutput(ctx, a, stdout)
+	// Always wait for the reducer to exit so we surface its error and avoid
+	// leaking a zombie process when PutObject succeeds but the user code
+	// itself crashed mid-stream.
+	if waitErr := wait(); waitErr != nil {
+		return nil, nil, fmt.Errorf("reducer: %w", waitErr)
 	}
-
+	if putErr != nil {
+		return nil, nil, putErr
+	}
 	return []string{uri}, []string{chk}, nil
 }
