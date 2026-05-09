@@ -54,10 +54,10 @@ func New(cfg *config.Config, client pb.WorkerServiceClient, shuffleClient pb.Shu
 		s = newUnavailableStorage(fmt.Errorf("object storage is not configured"))
 	}
 	return &Worker{
-		cfg:           cfg,
-		client:        client,
-		shuffleClient: shuffleClient,
-		storage:       s,
+		cfg:            cfg,
+		client:         client,
+		shuffleClient:  shuffleClient,
+		storage:        s,
 		prepareCode:    downloadCode,
 		execCode:       runUserCode,
 		execCodeStream: runUserCodeStreaming,
