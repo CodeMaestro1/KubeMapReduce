@@ -353,6 +353,19 @@ func (k *KubeOrchestrator) EnsureWorkerPool(ctx context.Context, jobID string, n
 		},
 	}
 
+	// Storage-tier locality (NOT per-input data locality).
+	//
+	// The PodAffinity below biases the worker Deployment toward nodes/zones that
+	// already host pods matching localityLabelSelector (by default the MinIO
+	// pods). This co-locates workers with the *storage tier*, which improves
+	// throughput when MinIO is rack/zone-local but is NOT the same as Hadoop-
+	// style data locality: the manager has no per-task knowledge of which node
+	// physically holds the bytes of a given input split, so two workers reading
+	// different splits will both be scheduled toward the same storage pods.
+	//
+	// True per-task data locality requires (1) querying MinIO for object
+	// placement metadata, and (2) emitting NodeAffinity on individual worker
+	// pods. That is deferred; see docs/operations/data-locality.md.
 	localityKey := k.resolveLocalityKey(ctx)
 	localityLabelSelector := k.resolveLocalityLabelSelector(ctx)
 	if localityKey != "" && localityLabelSelector != "" {
