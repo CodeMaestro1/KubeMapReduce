@@ -201,12 +201,6 @@ const QueryBulkFailNonCompletedTasksByJob = `
 // QueryFailAttempt marks an attempt as Failed with an end timestamp.
 const QueryFailAttempt = `UPDATE TASK_ATTEMPTS SET status = 'Failed', end_time = NOW() WHERE attempt_id = $1`
 
-// QueryBulkFailNonCompletedTasksByJob bulk-fails all non-Completed tasks for a job.
-// Always preceded by QueryLockNonCompletedTasksByJob within the same transaction.
-const QueryBulkFailNonCompletedTasksByJob = `
-	UPDATE TASKS SET status = 'Failed'
-	WHERE job_id = $1 AND status != 'Completed'`
-
 // QuerySelectCleaningJobs finds all jobs stuck in the Cleaning state so the
 // reconciler can deduce their terminal state.
 const QuerySelectCleaningJobs = `SELECT job_id FROM JOBS WHERE status = 'Cleaning'`
