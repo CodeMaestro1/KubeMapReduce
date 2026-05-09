@@ -10,6 +10,14 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 )
 
+// WorkerUID is the numeric UID of the non-root user in the worker container
+// image (Dockerfile.worker: useradd --uid 65532). Must be numeric for
+// runAsNonRoot verification to work in Kubernetes.
+const WorkerUID int64 = 65532
+
+// WorkerGID is the primary group ID matching WorkerUID in the worker image.
+const WorkerGID int64 = 65532
+
 // DefaultWorkerCPULimit is the fallback CPU limit applied to worker pods when
 // the SYSTEM_CONFIG.cpu_limit value is missing, unparseable, or otherwise
 // unavailable. The value matches the schema default in
