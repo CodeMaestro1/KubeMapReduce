@@ -139,6 +139,14 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
+	// Tracked across the shutdown path so we can drain the relay and close
+	// the broker connection cleanly on SIGTERM.
+	var (
+		relaySvc       *relay.RelayService
+		brokerToClose  relay.BrokerPublisher
+		outboxForPurge *store.OutboxStore
+	)
+
 	if cfg.EnableOutboxRelay {
 		outboxStore := store.NewOutboxStore(db)
 		// Install the SQL backoff helper used by RecordDeliveryFailures. Errors
@@ -196,7 +204,7 @@ func main() {
 			},
 		}
 
-		relaySvc := relay.NewRelayService(outboxStore, publisher, relay.RelayConfig{
+		relaySvc = relay.NewRelayService(outboxStore, publisher, relay.RelayConfig{
 			Enabled:    cfg.EnableOutboxRelay,
 			MaxRetries: cfg.OutboxMaxRetries,
 			Interval:   cfg.OutboxRelayInterval,
@@ -204,10 +212,16 @@ func main() {
 			Metrics:    metricsHook,
 		})
 		relaySvc.Start(ctx)
+		brokerToClose = publisher
+		outboxForPurge = outboxStore
 
 		// Periodic queue-depth refresh so kubemapreduce_outbox_queue_depth is
 		// usable for alerting independently of relay activity.
 		go runOutboxQueueDepthLoop(ctx, outboxStore, cfg.OutboxQueueDepthInterval)
+
+		// Periodic purge of delivered rows so the outbox does not grow
+		// unbounded under healthy operation.
+		go runOutboxPurgeLoop(ctx, outboxStore)
 
 		slog.Info("outbox relay enabled",
 			"emitter_mode", emitterMode,
@@ -313,12 +327,22 @@ func main() {
 	<-sigCtx.Done()
 	log.Println("shutdown signal received, initiating graceful shutdown")
 
-	cancel() // Stop reaper
+	cancel() // Stop reaper, queue-depth poll, purge loop
+	if relaySvc != nil {
+		relaySvc.Stop()
+	}
 	grpcServer.GracefulStop()
 
 	httpCtx, httpCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer httpCancel()
 	httpSrv.Shutdown(httpCtx)
+
+	if brokerToClose != nil {
+		if err := brokerToClose.Close(); err != nil {
+			slog.Warn("broker publisher close failed", "err", err)
+		}
+	}
+	_ = outboxForPurge // referenced by runOutboxPurgeLoop goroutine
 
 	log.Println("manager service stopped")
 }
@@ -505,6 +529,35 @@ func runOutboxQueueDepthLoop(ctx context.Context, store *store.OutboxStore, inte
 			}
 			if m := observability.DefaultMetrics(); m != nil {
 				m.OutboxQueueDepth.Set(float64(undelivered))
+			}
+		}
+	}
+}
+
+// runOutboxPurgeLoop deletes successfully-delivered outbox rows older than a
+// retention window so the table does not grow unbounded under healthy
+// operation. Runs hourly and retains the last 24 hours of delivered rows.
+func runOutboxPurgeLoop(ctx context.Context, s *store.OutboxStore) {
+	if s == nil {
+		return
+	}
+	const interval = time.Hour
+	const retention = 24 * time.Hour
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			cutoff := time.Now().Add(-retention)
+			n, err := s.PurgeDeliveredOlderThan(ctx, cutoff)
+			if err != nil {
+				slog.Warn("outbox purge failed", "err", err)
+				continue
+			}
+			if n > 0 {
+				slog.Info("outbox purge", "rows_deleted", n, "older_than", cutoff)
 			}
 		}
 	}
