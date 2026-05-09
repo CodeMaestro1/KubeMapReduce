@@ -1665,7 +1665,7 @@ func (s *Scheduler) StartCleanupReconciler(ctx context.Context, interval time.Du
 	}
 
 	// Recovery: Deduce terminal state for jobs stuck in Cleaning
-	rows, err := s.db.QueryContext(ctx, "SELECT job_id FROM JOBS WHERE status = 'Cleaning'")
+	rows, err := s.db.QueryContext(ctx, QuerySelectCleaningJobs)
 	if err == nil {
 		defer rows.Close()
 		for rows.Next() {

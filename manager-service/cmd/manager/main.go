@@ -14,6 +14,7 @@ import (
 	"os/signal"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -149,6 +150,7 @@ func main() {
 		relaySvc       *relay.RelayService
 		brokerToClose  relay.BrokerPublisher
 		outboxForPurge *store.OutboxStore
+		outboxWg       sync.WaitGroup
 	)
 
 	if cfg.EnableOutboxRelay {
@@ -221,11 +223,19 @@ func main() {
 
 		// Periodic queue-depth refresh so kubemapreduce_outbox_queue_depth is
 		// usable for alerting independently of relay activity.
-		go runOutboxQueueDepthLoop(ctx, outboxStore, cfg.OutboxQueueDepthInterval)
+		outboxWg.Add(1)
+		go func() {
+			defer outboxWg.Done()
+			runOutboxQueueDepthLoop(ctx, outboxStore, cfg.OutboxQueueDepthInterval)
+		}()
 
 		// Periodic purge of delivered rows so the outbox does not grow
 		// unbounded under healthy operation.
-		go runOutboxPurgeLoop(ctx, outboxStore)
+		outboxWg.Add(1)
+		go func() {
+			defer outboxWg.Done()
+			runOutboxPurgeLoop(ctx, outboxStore)
+		}()
 
 		slog.Info("outbox relay enabled",
 			"emitter_mode", emitterMode,
@@ -331,7 +341,8 @@ func main() {
 	<-sigCtx.Done()
 	log.Println("shutdown signal received, initiating graceful shutdown")
 
-	cancel() // Stop reaper, queue-depth poll, purge loop
+	cancel()        // Stop reaper, queue-depth poll, purge loop
+	outboxWg.Wait() // Drain outbox goroutines before closing connections
 	if relaySvc != nil {
 		relaySvc.Stop()
 	}
