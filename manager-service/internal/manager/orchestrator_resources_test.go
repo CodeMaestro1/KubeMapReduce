@@ -16,10 +16,11 @@ import (
 // the configured cpu/mem strings or, when err is non-nil, propagates that
 // error to exercise the orchestrator's fallback path.
 type stubResourceProvider struct {
-	cpu         string
-	mem         string
-	localityKey string
-	err         error
+	cpu                   string
+	mem                   string
+	localityKey           string
+	localityLabelSelector string
+	err                   error
 }
 
 func (s *stubResourceProvider) GetWorkerResourceLimits(_ context.Context) (string, string, error) {
@@ -28,6 +29,10 @@ func (s *stubResourceProvider) GetWorkerResourceLimits(_ context.Context) (strin
 
 func (s *stubResourceProvider) GetLocalityKey(_ context.Context) (string, error) {
 	return s.localityKey, s.err
+}
+
+func (s *stubResourceProvider) GetLocalityLabelSelector(_ context.Context) (string, error) {
+	return s.localityLabelSelector, s.err
 }
 
 // spawnAndFetchContainer is a small helper that runs SpawnWorker against the

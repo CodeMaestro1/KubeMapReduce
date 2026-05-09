@@ -19,7 +19,7 @@ func TestRunAdminConfigureNodes_SendsPutToCorrectEndpoint(t *testing.T) {
 	adminRequireAdminRole = func(_ string) {}
 
 	var capturedMethod, capturedURL string
-	stub := func(method, url, _ string, body []byte) (*http.Response, error) {
+	stub := func(method, url string, token string, body []byte) (*http.Response, error) {
 		capturedMethod = method
 		capturedURL = url
 		var m map[string]any

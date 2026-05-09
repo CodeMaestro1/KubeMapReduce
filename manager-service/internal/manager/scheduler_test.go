@@ -1412,16 +1412,17 @@ func TestScheduler_UpsertSystemConfig(t *testing.T) {
 	defer db.Close()
 
 	mock.ExpectExec(regexp.QuoteMeta(QueryUpsertSystemConfig)).
-		WithArgs(20, "500m", "1Gi", 5, 2, "topology.kubernetes.io/zone").
+		WithArgs(20, "500m", "1Gi", 5, 2, "topology.kubernetes.io/zone", "app.kubernetes.io/name=minio").
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
 	if err := scheduler.UpsertSystemConfig(context.Background(), SystemConfigUpdate{
-		MaxConcurrentPods: 20,
-		CPULimit:          "500m",
-		MemoryLimit:       "1Gi",
-		WorkerReplicas:    5,
-		MaxJobsPerNode:    2,
-		LocalityKey:       "topology.kubernetes.io/zone",
+		MaxConcurrentPods:     20,
+		CPULimit:              "500m",
+		MemoryLimit:           "1Gi",
+		WorkerReplicas:        5,
+		MaxJobsPerNode:        2,
+		LocalityKey:           "topology.kubernetes.io/zone",
+		LocalityLabelSelector: "app.kubernetes.io/name=minio",
 	}); err != nil {
 		t.Fatalf("expected upsert success, got %v", err)
 	}

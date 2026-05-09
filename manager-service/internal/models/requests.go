@@ -81,12 +81,13 @@ type NodeConfigRequest struct {
 // AdminWorkerConfigRequest is the unified payload for POST /api/v1/admin/config/workers.
 // It combines node-level resource constraints and worker scaling parameters.
 type AdminWorkerConfigRequest struct {
-	MaxPods        int    `json:"maxPods,omitempty"`
-	CPULimit       string `json:"cpuLimit,omitempty"`
-	MemoryLimit    string `json:"memoryLimit,omitempty"`
-	WorkerReplicas int    `json:"workerReplicas,omitempty"`
-	MaxJobsPerNode int    `json:"maxJobsPerNode,omitempty"`
-	LocalityKey    string `json:"localityKey,omitempty"`
+	MaxPods               int    `json:"maxPods,omitempty"`
+	CPULimit              string `json:"cpuLimit,omitempty"`
+	MemoryLimit           string `json:"memoryLimit,omitempty"`
+	WorkerReplicas        int    `json:"workerReplicas,omitempty"`
+	MaxJobsPerNode        int    `json:"maxJobsPerNode,omitempty"`
+	LocalityKey           string `json:"localityKey,omitempty"`
+	LocalityLabelSelector string `json:"localityLabelSelector,omitempty"`
 }
 
 // DeleteUserRequest is used by the Admin CLI to deprovision users.

@@ -529,18 +529,20 @@ func (h *Handlers) HandleAdminConfigWorkers(w http.ResponseWriter, r *http.Reque
 	}
 	// Better check: at least one field must be non-zero or non-empty
 	if req.MaxPods <= 0 && req.WorkerReplicas <= 0 && req.MaxJobsPerNode <= 0 &&
-		req.CPULimit == "" && req.MemoryLimit == "" && req.LocalityKey == "" {
+		req.CPULimit == "" && req.MemoryLimit == "" && req.LocalityKey == "" &&
+		req.LocalityLabelSelector == "" {
 		httputil.WriteErrorJSON(w, http.StatusBadRequest, "at least one configuration field must be provided")
 		return
 	}
 
 	update := manager.SystemConfigUpdate{
-		MaxConcurrentPods: req.MaxPods,
-		CPULimit:          req.CPULimit,
-		MemoryLimit:       req.MemoryLimit,
-		WorkerReplicas:    req.WorkerReplicas,
-		MaxJobsPerNode:    req.MaxJobsPerNode,
-		LocalityKey:       req.LocalityKey,
+		MaxConcurrentPods:     req.MaxPods,
+		CPULimit:              req.CPULimit,
+		MemoryLimit:           req.MemoryLimit,
+		WorkerReplicas:        req.WorkerReplicas,
+		MaxJobsPerNode:        req.MaxJobsPerNode,
+		LocalityKey:           req.LocalityKey,
+		LocalityLabelSelector: req.LocalityLabelSelector,
 	}
 
 	payload, err := json.Marshal(update)
@@ -571,13 +573,14 @@ func (h *Handlers) HandleAdminConfigWorkers(w http.ResponseWriter, r *http.Reque
 	}
 
 	if err := httputil.WriteJSON(w, http.StatusOK, map[string]any{
-		"status":         "accepted",
-		"maxPods":        req.MaxPods,
-		"cpuLimit":       req.CPULimit,
-		"memoryLimit":    req.MemoryLimit,
-		"workerReplicas": req.WorkerReplicas,
-		"maxJobsPerNode": req.MaxJobsPerNode,
-		"localityKey":    req.LocalityKey,
+		"status":                "accepted",
+		"maxPods":               req.MaxPods,
+		"cpuLimit":              req.CPULimit,
+		"memoryLimit":           req.MemoryLimit,
+		"workerReplicas":        req.WorkerReplicas,
+		"maxJobsPerNode":        req.MaxJobsPerNode,
+		"localityKey":           req.LocalityKey,
+		"localityLabelSelector": req.LocalityLabelSelector,
 	}); err != nil {
 		return
 	}

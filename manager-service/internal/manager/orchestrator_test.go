@@ -381,8 +381,11 @@ func TestEnsureWorkerPool_LocalityAffinity(t *testing.T) {
 	client := fake.NewSimpleClientset()
 	orchestrator := NewKubeOrchestrator(client, "mapreduce", "worker:latest", "worker-secrets")
 
-	t.Run("injects podAffinity when locality key is configured", func(t *testing.T) {
-		provider := &mockLocalityProvider{key: "topology.kubernetes.io/zone"}
+	t.Run("injects podAffinity when locality key and label selector are configured", func(t *testing.T) {
+		provider := &mockLocalityProvider{
+			key:           "topology.kubernetes.io/zone",
+			labelSelector: "app.kubernetes.io/name=minio",
+		}
 		orchestrator.WithResourceProvider(provider)
 
 		jobID := "locality-job"
@@ -416,8 +419,91 @@ func TestEnsureWorkerPool_LocalityAffinity(t *testing.T) {
 		}
 	})
 
+	t.Run("injects podAffinity with custom label selector", func(t *testing.T) {
+		provider := &mockLocalityProvider{
+			key:           "topology.kubernetes.io/zone",
+			labelSelector: "app.kubernetes.io/name=minio,app.kubernetes.io/instance=test-minio",
+		}
+		orchestrator.WithResourceProvider(provider)
+
+		jobID := "custom-locality-job"
+		err := orchestrator.EnsureWorkerPool(context.Background(), jobID, 1, "manager:8081")
+		if err != nil {
+			t.Fatalf("EnsureWorkerPool failed: %v", err)
+		}
+
+		sanitized := sanitizeForDNSLabel(jobID)
+		deploy, err := client.AppsV1().Deployments("mapreduce").Get(context.Background(), "worker-pool-"+sanitized, metav1.GetOptions{})
+		if err != nil {
+			t.Fatalf("failed to get deployment: %v", err)
+		}
+
+		affinity := deploy.Spec.Template.Spec.Affinity
+		if affinity == nil || affinity.PodAffinity == nil {
+			t.Fatal("expected PodAffinity to be set")
+		}
+
+		terms := affinity.PodAffinity.PreferredDuringSchedulingIgnoredDuringExecution
+		if len(terms) == 0 {
+			t.Fatal("expected at least one preferred affinity term")
+		}
+
+		term := terms[0].PodAffinityTerm
+		if term.TopologyKey != "topology.kubernetes.io/zone" {
+			t.Errorf("expected topology key %q, got %q", "topology.kubernetes.io/zone", term.TopologyKey)
+		}
+		// Check that both labels are present
+		if term.LabelSelector.MatchLabels["app.kubernetes.io/name"] != "minio" {
+			t.Errorf("expected app.kubernetes.io/name=minio, got %v", term.LabelSelector.MatchLabels)
+		}
+		if term.LabelSelector.MatchLabels["app.kubernetes.io/instance"] != "test-minio" {
+			t.Errorf("expected app.kubernetes.io/instance=test-minio, got %v", term.LabelSelector.MatchLabels)
+		}
+	})
+
+	t.Run("uses default label selector when empty string configured", func(t *testing.T) {
+		provider := &mockLocalityProvider{
+			key:           "topology.kubernetes.io/zone",
+			labelSelector: "",
+		}
+		orchestrator.WithResourceProvider(provider)
+
+		jobID := "default-selector-job"
+		err := orchestrator.EnsureWorkerPool(context.Background(), jobID, 1, "manager:8081")
+		if err != nil {
+			t.Fatalf("EnsureWorkerPool failed: %v", err)
+		}
+
+		sanitized := sanitizeForDNSLabel(jobID)
+		deploy, _ := client.AppsV1().Deployments("mapreduce").Get(context.Background(), "worker-pool-"+sanitized, metav1.GetOptions{})
+		if deploy.Spec.Template.Spec.Affinity == nil {
+			t.Fatalf("failed to get deployment")
+		}
+
+		affinity := deploy.Spec.Template.Spec.Affinity
+		if affinity == nil || affinity.PodAffinity == nil {
+			t.Fatal("expected PodAffinity to be set")
+		}
+
+		terms := affinity.PodAffinity.PreferredDuringSchedulingIgnoredDuringExecution
+		if len(terms) == 0 {
+			t.Fatal("expected at least one preferred affinity term")
+		}
+
+		term := terms[0].PodAffinityTerm
+		if term.TopologyKey != "topology.kubernetes.io/zone" {
+			t.Errorf("expected topology key %q, got %q", "topology.kubernetes.io/zone", term.TopologyKey)
+		}
+		if term.LabelSelector.MatchLabels["app.kubernetes.io/name"] != "minio" {
+			t.Errorf("expected label selector for minio, got %v", term.LabelSelector.MatchLabels)
+		}
+	})
+
 	t.Run("skips affinity when locality key is empty", func(t *testing.T) {
-		provider := &mockLocalityProvider{key: ""}
+		provider := &mockLocalityProvider{
+			key:           "",
+			labelSelector: "app.kubernetes.io/name=minio",
+		}
 		orchestrator.WithResourceProvider(provider)
 
 		jobID := "no-locality-job"
@@ -429,10 +515,49 @@ func TestEnsureWorkerPool_LocalityAffinity(t *testing.T) {
 			t.Errorf("expected nil affinity for empty locality key")
 		}
 	})
+
+	t.Run("uses default label selector when empty string configured", func(t *testing.T) {
+		provider := &mockLocalityProvider{
+			key:           "topology.kubernetes.io/zone",
+			labelSelector: "",
+		}
+		orchestrator.WithResourceProvider(provider)
+
+		jobID := "default-label-selector-job"
+		err := orchestrator.EnsureWorkerPool(context.Background(), jobID, 1, "manager:8081")
+		if err != nil {
+			t.Fatalf("EnsureWorkerPool failed: %v", err)
+		}
+
+		sanitized := sanitizeForDNSLabel(jobID)
+		deploy, err := client.AppsV1().Deployments("mapreduce").Get(context.Background(), "worker-pool-"+sanitized, metav1.GetOptions{})
+		if err != nil {
+			t.Fatalf("failed to get deployment: %v", err)
+		}
+
+		affinity := deploy.Spec.Template.Spec.Affinity
+		if affinity == nil || affinity.PodAffinity == nil {
+			t.Fatal("expected PodAffinity to be set")
+		}
+
+		terms := affinity.PodAffinity.PreferredDuringSchedulingIgnoredDuringExecution
+		if len(terms) == 0 {
+			t.Fatal("expected at least one preferred affinity term")
+		}
+
+		term := terms[0].PodAffinityTerm
+		if term.TopologyKey != "topology.kubernetes.io/zone" {
+			t.Errorf("expected topology key %q, got %q", "topology.kubernetes.io/zone", term.TopologyKey)
+		}
+		if term.LabelSelector.MatchLabels["app.kubernetes.io/name"] != "minio" {
+			t.Errorf("expected label selector for minio, got %v", term.LabelSelector.MatchLabels)
+		}
+	})
 }
 
 type mockLocalityProvider struct {
-	key string
+	key           string
+	labelSelector string
 }
 
 func (m *mockLocalityProvider) GetWorkerResourceLimits(ctx context.Context) (string, string, error) {
@@ -441,4 +566,8 @@ func (m *mockLocalityProvider) GetWorkerResourceLimits(ctx context.Context) (str
 
 func (m *mockLocalityProvider) GetLocalityKey(ctx context.Context) (string, error) {
 	return m.key, nil
+}
+
+func (m *mockLocalityProvider) GetLocalityLabelSelector(ctx context.Context) (string, error) {
+	return m.labelSelector, nil
 }

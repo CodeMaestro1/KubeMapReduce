@@ -77,3 +77,79 @@ func TestDBResourceConfigProvider_GetLocalityKey(t *testing.T) {
 		}
 	})
 }
+
+func TestDBResourceConfigProvider_GetLocalityLabelSelector(t *testing.T) {
+	t.Run("returns empty string on nil provider", func(t *testing.T) {
+		var p *DBResourceConfigProvider
+		selector, err := p.GetLocalityLabelSelector(context.Background())
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if selector != "" {
+			t.Errorf("expected empty string, got %q", selector)
+		}
+	})
+
+	t.Run("returns empty string on no config found", func(t *testing.T) {
+		db, mock, _ := sqlmock.New()
+		defer db.Close()
+		mock.ExpectQuery(regexp.QuoteMeta(QueryGetLocalityLabelSelector)).WillReturnError(sql.ErrNoRows)
+
+		provider := NewDBResourceConfigProvider(db)
+		selector, err := provider.GetLocalityLabelSelector(context.Background())
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if selector != "" {
+			t.Errorf("expected empty string, got %q", selector)
+		}
+	})
+
+	t.Run("returns configured locality label selector", func(t *testing.T) {
+		db, mock, _ := sqlmock.New()
+		defer db.Close()
+		mock.ExpectQuery(regexp.QuoteMeta(QueryGetLocalityLabelSelector)).
+			WillReturnRows(sqlmock.NewRows([]string{"locality_label_selector"}).AddRow("app.kubernetes.io/name=minio"))
+
+		provider := NewDBResourceConfigProvider(db)
+		selector, err := provider.GetLocalityLabelSelector(context.Background())
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if selector != "app.kubernetes.io/name=minio" {
+			t.Errorf("expected label selector, got %q", selector)
+		}
+	})
+
+	t.Run("returns default selector when empty string configured", func(t *testing.T) {
+		db, mock, _ := sqlmock.New()
+		defer db.Close()
+		mock.ExpectQuery(regexp.QuoteMeta(QueryGetLocalityLabelSelector)).
+			WillReturnRows(sqlmock.NewRows([]string{"locality_label_selector"}).AddRow(""))
+
+		provider := NewDBResourceConfigProvider(db)
+		selector, err := provider.GetLocalityLabelSelector(context.Background())
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if selector != "app.kubernetes.io/name=minio" {
+			t.Errorf("expected default label selector, got %q", selector)
+		}
+	})
+
+	t.Run("parses complex label selector", func(t *testing.T) {
+		db, mock, _ := sqlmock.New()
+		defer db.Close()
+		mock.ExpectQuery(regexp.QuoteMeta(QueryGetLocalityLabelSelector)).
+			WillReturnRows(sqlmock.NewRows([]string{"locality_label_selector"}).AddRow("app.kubernetes.io/name=minio,app.kubernetes.io/instance=test"))
+
+		provider := NewDBResourceConfigProvider(db)
+		selector, err := provider.GetLocalityLabelSelector(context.Background())
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if selector != "app.kubernetes.io/name=minio,app.kubernetes.io/instance=test" {
+			t.Errorf("expected label selector, got %q", selector)
+		}
+	})
+}
