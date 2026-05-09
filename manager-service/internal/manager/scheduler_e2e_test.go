@@ -161,7 +161,7 @@ func TestE2E_ZombieFencing(t *testing.T) {
 	mock.ExpectBegin()
 	// Job lock query (new)
 	expectJobLockQuery(mock, taskID, uuid.New().String(), "Running")
-	mock.ExpectQuery(regexp.QuoteMeta(QuerySelectTaskForUpdate)).WithArgs(taskID).WillReturnRows(sqlmock.NewRows([]string{"status", "current_attempt_id"}).AddRow("Idle", uuid.New().String()))
+	mock.ExpectQuery(regexp.QuoteMeta(QuerySelectTaskForUpdate)).WithArgs(taskID).WillReturnRows(sqlmock.NewRows([]string{"status", "current_attempt_id", "job_id"}).AddRow("Idle", uuid.New().String(), uuid.New().String()))
 	// validateLeaseTx fails because attempt is not current
 	mock.ExpectQuery(regexp.QuoteMeta(QueryCheckLeaseValid)).WithArgs(attemptID1, leaseID1, 5).WillReturnRows(sqlmock.NewRows([]string{"valid"}).AddRow(false))
 	mock.ExpectRollback()

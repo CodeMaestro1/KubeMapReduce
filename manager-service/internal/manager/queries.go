@@ -131,7 +131,9 @@ const QueryCompleteEmptyReduceTasks = `
 
 // QuerySelectTaskForUpdate locks a task row for safe state transition.
 // Used by CompleteTask, FailTask, and RenewLease to enforce serializable access.
-const QuerySelectTaskForUpdate = `SELECT status, current_attempt_id FROM TASKS WHERE task_id = $1 FOR UPDATE`
+// job_id is selected so callers can build job-scoped events (e.g. heartbeat
+// fan-out subjects) without a second query.
+const QuerySelectTaskForUpdate = `SELECT status, current_attempt_id, job_id FROM TASKS WHERE task_id = $1 FOR UPDATE`
 
 // QueryCompleteTask marks a task as Completed and clears the attempt binding.
 const QueryCompleteTask = `UPDATE TASKS SET status = 'Completed', current_attempt_id = NULL WHERE task_id = $1`

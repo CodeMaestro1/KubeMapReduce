@@ -463,7 +463,7 @@ func TestScheduler_CompleteTask_Success(t *testing.T) {
 	expectJobLockQuery(mock, taskID, jobID, "Running")
 	mock.ExpectQuery(regexp.QuoteMeta(QuerySelectTaskForUpdate)).
 		WithArgs(taskID).
-		WillReturnRows(sqlmock.NewRows([]string{"status", "current_attempt_id"}).AddRow("In-Progress", attemptID))
+		WillReturnRows(sqlmock.NewRows([]string{"status", "current_attempt_id", "job_id"}).AddRow("In-Progress", attemptID, uuid.New().String()))
 	expectLeaseValidation(mock, attemptID, "mock-lease", true)
 
 	mock.ExpectExec(regexp.QuoteMeta(QueryCompleteTask)).
@@ -517,7 +517,7 @@ func TestScheduler_CompleteTask_AlreadyCompleted(t *testing.T) {
 	expectJobLockQuery(mock, taskID, jobID, "Running")
 	mock.ExpectQuery(regexp.QuoteMeta(QuerySelectTaskForUpdate)).
 		WithArgs(taskID).
-		WillReturnRows(sqlmock.NewRows([]string{"status", "current_attempt_id"}).AddRow("Completed", attemptID))
+		WillReturnRows(sqlmock.NewRows([]string{"status", "current_attempt_id", "job_id"}).AddRow("Completed", attemptID, uuid.New().String()))
 	mock.ExpectRollback()
 
 	err := scheduler.CompleteTask(context.Background(), taskID, attemptID, "mock-lease", nil, nil)
@@ -540,7 +540,7 @@ func TestScheduler_CompleteTask_StaleAttempt(t *testing.T) {
 	expectJobLockQuery(mock, taskID, jobID, "Running")
 	mock.ExpectQuery(regexp.QuoteMeta(QuerySelectTaskForUpdate)).
 		WithArgs(taskID).
-		WillReturnRows(sqlmock.NewRows([]string{"status", "current_attempt_id"}).AddRow("In-Progress", attemptID))
+		WillReturnRows(sqlmock.NewRows([]string{"status", "current_attempt_id", "job_id"}).AddRow("In-Progress", attemptID, uuid.New().String()))
 	mock.ExpectRollback()
 
 	err := scheduler.CompleteTask(context.Background(), taskID, staleAttemptID, "mock-lease", nil, nil)
@@ -581,7 +581,7 @@ func TestScheduler_FailTask_MaxAttempts(t *testing.T) {
 	expectJobLockQuery(mock, taskID, jobID, "Running")
 	mock.ExpectQuery(regexp.QuoteMeta(QuerySelectTaskForUpdate)).
 		WithArgs(taskID).
-		WillReturnRows(sqlmock.NewRows([]string{"status", "current_attempt_id"}).AddRow("In-Progress", attemptID))
+		WillReturnRows(sqlmock.NewRows([]string{"status", "current_attempt_id", "job_id"}).AddRow("In-Progress", attemptID, uuid.New().String()))
 	expectLeaseValidation(mock, attemptID, leaseID, true)
 
 	mock.ExpectQuery(regexp.QuoteMeta(QueryCountAttemptsByTask)).
@@ -622,7 +622,7 @@ func TestScheduler_FailTask_RetryableSuccess(t *testing.T) {
 	expectJobLockQuery(mock, taskID, jobID, "Running")
 	mock.ExpectQuery(regexp.QuoteMeta(QuerySelectTaskForUpdate)).
 		WithArgs(taskID).
-		WillReturnRows(sqlmock.NewRows([]string{"status", "current_attempt_id"}).AddRow("In-Progress", attemptID))
+		WillReturnRows(sqlmock.NewRows([]string{"status", "current_attempt_id", "job_id"}).AddRow("In-Progress", attemptID, uuid.New().String()))
 	expectLeaseValidation(mock, attemptID, leaseID, true)
 
 	mock.ExpectQuery(regexp.QuoteMeta(QueryCountAttemptsByTask)).
@@ -667,7 +667,7 @@ func TestScheduler_FailTask_DBClockExpiredEvenIfAppWouldThinkValid(t *testing.T)
 	expectJobLockQuery(mock, taskID, jobID, "Running")
 	mock.ExpectQuery(regexp.QuoteMeta(QuerySelectTaskForUpdate)).
 		WithArgs(taskID).
-		WillReturnRows(sqlmock.NewRows([]string{"status", "current_attempt_id"}).AddRow("In-Progress", attemptID))
+		WillReturnRows(sqlmock.NewRows([]string{"status", "current_attempt_id", "job_id"}).AddRow("In-Progress", attemptID, uuid.New().String()))
 
 	// Simulates DB clock ahead of the manager pod: local time could still consider the
 	// lease active, but the DB is the authority and rejects it as expired.
@@ -690,7 +690,7 @@ func TestScheduler_RenewLease_Success(t *testing.T) {
 	mock.ExpectBegin()
 	mock.ExpectQuery(regexp.QuoteMeta(QuerySelectTaskForUpdate)).
 		WithArgs(taskID).
-		WillReturnRows(sqlmock.NewRows([]string{"status", "current_attempt_id"}).AddRow("In-Progress", attemptID))
+		WillReturnRows(sqlmock.NewRows([]string{"status", "current_attempt_id", "job_id"}).AddRow("In-Progress", attemptID, uuid.New().String()))
 	expectLeaseValidation(mock, attemptID, leaseID, true)
 	mock.ExpectExec(regexp.QuoteMeta(QueryRenewLease)).
 		WithArgs(attemptID).
@@ -715,7 +715,7 @@ func TestScheduler_RenewLease_DBClockValidEvenIfAppWouldThinkExpired(t *testing.
 	mock.ExpectBegin()
 	mock.ExpectQuery(regexp.QuoteMeta(QuerySelectTaskForUpdate)).
 		WithArgs(taskID).
-		WillReturnRows(sqlmock.NewRows([]string{"status", "current_attempt_id"}).AddRow("In-Progress", attemptID))
+		WillReturnRows(sqlmock.NewRows([]string{"status", "current_attempt_id", "job_id"}).AddRow("In-Progress", attemptID, uuid.New().String()))
 
 	// Simulates DB clock behind the manager pod: a local check might think the lease
 	// expired already, but renewal succeeds because DB time is the lease authority.
@@ -743,7 +743,7 @@ func TestScheduler_RenewLease_Expired(t *testing.T) {
 	mock.ExpectBegin()
 	mock.ExpectQuery(regexp.QuoteMeta(QuerySelectTaskForUpdate)).
 		WithArgs(taskID).
-		WillReturnRows(sqlmock.NewRows([]string{"status", "current_attempt_id"}).AddRow("In-Progress", attemptID))
+		WillReturnRows(sqlmock.NewRows([]string{"status", "current_attempt_id", "job_id"}).AddRow("In-Progress", attemptID, uuid.New().String()))
 	expectLeaseValidation(mock, attemptID, leaseID, false)
 	mock.ExpectRollback()
 
@@ -763,7 +763,7 @@ func TestScheduler_RenewLease_Mismatched(t *testing.T) {
 	mock.ExpectBegin()
 	mock.ExpectQuery(regexp.QuoteMeta(QuerySelectTaskForUpdate)).
 		WithArgs(taskID).
-		WillReturnRows(sqlmock.NewRows([]string{"status", "current_attempt_id"}).AddRow("In-Progress", attemptID))
+		WillReturnRows(sqlmock.NewRows([]string{"status", "current_attempt_id", "job_id"}).AddRow("In-Progress", attemptID, uuid.New().String()))
 	expectLeaseValidation(mock, attemptID, leaseID, false)
 	mock.ExpectRollback()
 
@@ -1221,7 +1221,7 @@ func TestScheduler_CompleteTask_LeaseExpired(t *testing.T) {
 	expectJobLockQuery(mock, taskID, jobID, "Running")
 	mock.ExpectQuery(regexp.QuoteMeta(QuerySelectTaskForUpdate)).
 		WithArgs(taskID).
-		WillReturnRows(sqlmock.NewRows([]string{"status", "current_attempt_id"}).AddRow("In-Progress", attemptID))
+		WillReturnRows(sqlmock.NewRows([]string{"status", "current_attempt_id", "job_id"}).AddRow("In-Progress", attemptID, uuid.New().String()))
 	expectLeaseValidation(mock, attemptID, leaseID, false)
 	mock.ExpectRollback()
 
@@ -1245,7 +1245,7 @@ func TestScheduler_CompleteTask_DBClockExpiredEvenIfAppWouldThinkValid(t *testin
 	expectJobLockQuery(mock, taskID, jobID, "Running")
 	mock.ExpectQuery(regexp.QuoteMeta(QuerySelectTaskForUpdate)).
 		WithArgs(taskID).
-		WillReturnRows(sqlmock.NewRows([]string{"status", "current_attempt_id"}).AddRow("In-Progress", attemptID))
+		WillReturnRows(sqlmock.NewRows([]string{"status", "current_attempt_id", "job_id"}).AddRow("In-Progress", attemptID, uuid.New().String()))
 
 	// Simulates DB clock ahead of the app clock. Completion must fence on DB time.
 	expectLeaseValidation(mock, attemptID, leaseID, false)
@@ -1283,7 +1283,7 @@ func TestScheduler_CompleteTask_NoMutation(t *testing.T) {
 	expectJobLockQuery(mock, taskID, jobID, "Running")
 	mock.ExpectQuery(regexp.QuoteMeta(QuerySelectTaskForUpdate)).
 		WithArgs(taskID).
-		WillReturnRows(sqlmock.NewRows([]string{"status", "current_attempt_id"}).AddRow("In-Progress", attemptID))
+		WillReturnRows(sqlmock.NewRows([]string{"status", "current_attempt_id", "job_id"}).AddRow("In-Progress", attemptID, uuid.New().String()))
 	expectLeaseValidation(mock, attemptID, leaseID, true)
 	mock.ExpectExec(regexp.QuoteMeta(QueryCompleteTask)).
 		WithArgs(taskID).
@@ -1470,7 +1470,7 @@ func TestScheduler_CompleteTask_JobCompleted_TriggersCleanup(t *testing.T) {
 	expectJobLockQuery(mock, taskID, jobID, "Running")
 	mock.ExpectQuery(regexp.QuoteMeta(QuerySelectTaskForUpdate)).
 		WithArgs(taskID).
-		WillReturnRows(sqlmock.NewRows([]string{"status", "current_attempt_id"}).AddRow("In-Progress", attemptID))
+		WillReturnRows(sqlmock.NewRows([]string{"status", "current_attempt_id", "job_id"}).AddRow("In-Progress", attemptID, uuid.New().String()))
 	expectLeaseValidation(mock, attemptID, leaseID, true)
 	mock.ExpectExec(regexp.QuoteMeta(QueryCompleteTask)).
 		WithArgs(taskID).
@@ -1738,7 +1738,7 @@ func TestScheduler_ExpiredLeaseFencedByDB(t *testing.T) {
 			}
 			mock.ExpectQuery(regexp.QuoteMeta(QuerySelectTaskForUpdate)).
 				WithArgs(taskID).
-				WillReturnRows(sqlmock.NewRows([]string{"status", "current_attempt_id"}).AddRow("In-Progress", attemptID))
+				WillReturnRows(sqlmock.NewRows([]string{"status", "current_attempt_id", "job_id"}).AddRow("In-Progress", attemptID, uuid.New().String()))
 
 			// Mock DB clock reporting the lease is expired (false).
 			expectLeaseValidation(mock, attemptID, leaseID, false)
