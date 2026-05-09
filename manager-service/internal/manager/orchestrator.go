@@ -302,7 +302,7 @@ func (k *KubeOrchestrator) EnsureWorkerPool(ctx context.Context, jobID string, n
 										{Key: "MINIO_ACCESS_KEY", Path: "access-key"},
 										{Key: "MINIO_SECRET_KEY", Path: "secret-key"},
 									},
-									DefaultMode: func() *int32 { mode := int32(0400); return &mode }(),
+									DefaultMode: func() *int32 { mode := int32(0440); return &mode }(),
 								},
 							},
 						},
