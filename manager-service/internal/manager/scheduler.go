@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"kubemapreduce/manager-service/pkg/observability"
@@ -69,6 +70,8 @@ type Scheduler struct {
 	heartbeats            sync.Map
 	emitter               EventEmitter
 	builder               *eventBuilder
+	heartbeatEventSampleN uint64
+	heartbeatEventCounter atomic.Uint64
 }
 
 type taskMetadataQuerier interface {
@@ -118,6 +121,29 @@ func NewScheduler(db *sql.DB, replicaIndex int, totalReplicas int, orchestrator 
 // This is set during bootstrap when the outbox relay feature flag is enabled.
 func (s *Scheduler) SetEventEmitter(emitter EventEmitter) {
 	s.emitter = emitter
+}
+
+// SetHeartbeatEventSampleN configures sampling of tasks.heartbeat.received
+// events. n <= 1 emits every heartbeat (default). For n > 1, only every n-th
+// successful RenewLease call emits an event, reducing outbox pressure under
+// high heartbeat fan-in. Sampling is best-effort and uses an atomic counter;
+// it is acceptable for tasks with very few heartbeats to never emit.
+func (s *Scheduler) SetHeartbeatEventSampleN(n int) {
+	if n < 1 {
+		n = 1
+	}
+	atomic.StoreUint64(&s.heartbeatEventSampleN, uint64(n))
+}
+
+// shouldEmitHeartbeatEvent returns true when the next heartbeat event should
+// be inserted into the outbox under the configured sampling rate.
+func (s *Scheduler) shouldEmitHeartbeatEvent() bool {
+	n := atomic.LoadUint64(&s.heartbeatEventSampleN)
+	if n <= 1 {
+		return true
+	}
+	c := s.heartbeatEventCounter.Add(1)
+	return c%n == 0
 }
 
 // Recover reconciles active attempts assigned to this replica and re-spawns workers.
@@ -1019,9 +1045,11 @@ func (s *Scheduler) RenewLease(ctx context.Context, taskID string, attemptID str
 	attemptUUID, _ := uuid.Parse(attemptID)
 	taskUUID, _ := uuid.Parse(taskID)
 	jobUUID, _ := uuid.Parse(taskJobID)
-	if err := s.emitter.Emit(ctx, tx, s.builder.heartbeatReceived(taskUUID, jobUUID, attemptUUID)); err != nil {
-		slog.ErrorContext(ctx, "failed to emit tasks.heartbeat.received event",
-			slog.String("task_id", taskID), slog.Any("err", err))
+	if s.shouldEmitHeartbeatEvent() {
+		if err := s.emitter.Emit(ctx, tx, s.builder.heartbeatReceived(taskUUID, jobUUID, attemptUUID)); err != nil {
+			slog.ErrorContext(ctx, "failed to emit tasks.heartbeat.received event",
+				slog.String("task_id", taskID), slog.Any("err", err))
+		}
 	}
 
 	if err := tx.Commit(); err != nil {

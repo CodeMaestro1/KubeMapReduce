@@ -22,14 +22,18 @@ func NewLiveEventEmitter(outboxStore *store.OutboxStore) *LiveEventEmitter {
 
 // Emit inserts the event into the outbox table within the given transaction
 // (transactional outbox pattern) or in a standalone transaction when tx is nil.
-// It also increments the events_emitted Prometheus counter. Errors are returned
-// for logging only — the caller must never fail the orchestration path because
-// of an emission failure.
+// On a successful insert it increments the events_emitted Prometheus counter so
+// the metric reflects events that actually entered the outbox (not failed
+// inserts). Errors are returned for logging only — the caller must never fail
+// the orchestration path because of an emission failure.
 func (l *LiveEventEmitter) Emit(ctx context.Context, tx *sql.Tx, event *events.EventEnvelope) error {
+	if err := l.outboxStore.InsertEvent(ctx, tx, event); err != nil {
+		return err
+	}
 	if m := observability.DefaultMetrics(); m != nil {
 		m.EventsEmitted.WithLabelValues(string(event.EventType)).Inc()
 	}
-	return l.outboxStore.InsertEvent(ctx, tx, event)
+	return nil
 }
 
 // Close is a no-op for the outbox-backed emitter.

@@ -141,29 +141,80 @@ func main() {
 
 	if cfg.EnableOutboxRelay {
 		outboxStore := store.NewOutboxStore(db)
+		// Install the SQL backoff helper used by RecordDeliveryFailures. Errors
+		// are non-fatal — the relay will fall back to the function being absent
+		// only if the migration has not been applied yet, which would surface
+		// as failures on the first claim and is loud enough on its own.
+		if err := outboxStore.EnsureBackoffFunction(ctx); err != nil {
+			slog.Warn("failed to ensure outbox_backoff helper", "err", err)
+		}
 		emitter := manager.NewLiveEventEmitter(outboxStore)
 		scheduler.SetEventEmitter(emitter)
+		scheduler.SetHeartbeatEventSampleN(cfg.HeartbeatEventSampleN)
 
-		// Choose publisher: NATS if configured, otherwise NoopPublisher
+		// Choose publisher: NATS if configured, otherwise NoopPublisher.
+		// Log the resolved emitter mode so operators can verify configuration.
 		var publisher relay.BrokerPublisher = &relay.NoopPublisher{}
+		emitterMode := "noop"
 		if cfg.NATSURL != "" {
+			if cfg.NATSRequireTLS && !strings.HasPrefix(cfg.NATSURL, "tls://") {
+				log.Fatalf("NATS_REQUIRE_TLS=true but NATS_URL does not use tls:// scheme: %s", cfg.NATSURL)
+			}
 			natsPublisher, err := relay.NewNATSPublisher(cfg.NATSURL, cfg.NATSCredsFile)
 			if err != nil {
 				log.Fatalf("failed to create NATS publisher: %v", err)
 			}
 			publisher = natsPublisher
-			slog.Info("NATS publisher configured", "url", cfg.NATSURL)
+			emitterMode = "nats"
+			slog.Info("NATS publisher configured", "url", cfg.NATSURL, "tls_required", cfg.NATSRequireTLS)
 		} else {
 			slog.Info("NATS not configured, using NoopPublisher (events logged to outbox only)")
+		}
+
+		metricsHook := &relay.MetricsHook{
+			ObservePublishLatency: func(eventType string, seconds float64) {
+				if m := observability.DefaultMetrics(); m != nil {
+					m.EventPublishLatencySeconds.WithLabelValues(eventType).Observe(seconds)
+				}
+			},
+			IncRetry: func(eventType string) {
+				if m := observability.DefaultMetrics(); m != nil {
+					m.EventRetries.WithLabelValues(eventType).Inc()
+				}
+			},
+			IncDeadLetter: func(eventType string) {
+				if m := observability.DefaultMetrics(); m != nil {
+					m.EventDeadLettered.WithLabelValues(eventType).Inc()
+				}
+			},
+			IncPublishedTotal: func(eventType string, success bool) {
+				// Successful publishes are accounted for via OutboxQueueDepth
+				// drainage and EventPublishLatencySeconds; failures roll up
+				// through IncRetry/IncDeadLetter.
+				_ = eventType
+				_ = success
+			},
 		}
 
 		relaySvc := relay.NewRelayService(outboxStore, publisher, relay.RelayConfig{
 			Enabled:    cfg.EnableOutboxRelay,
 			MaxRetries: cfg.OutboxMaxRetries,
 			Interval:   cfg.OutboxRelayInterval,
+			BatchSize:  cfg.OutboxBatchSize,
+			Metrics:    metricsHook,
 		})
 		relaySvc.Start(ctx)
-		slog.Info("outbox relay enabled")
+
+		// Periodic queue-depth refresh so kubemapreduce_outbox_queue_depth is
+		// usable for alerting independently of relay activity.
+		go runOutboxQueueDepthLoop(ctx, outboxStore, cfg.OutboxQueueDepthInterval)
+
+		slog.Info("outbox relay enabled",
+			"emitter_mode", emitterMode,
+			"batch_size", cfg.OutboxBatchSize,
+			"max_retries", cfg.OutboxMaxRetries,
+			"interval", cfg.OutboxRelayInterval,
+			"heartbeat_sample_n", cfg.HeartbeatEventSampleN)
 	}
 
 	if err := scheduler.Recover(context.Background()); err != nil {
@@ -428,6 +479,35 @@ func defaultReaperInterval(leaseTTLSeconds int) time.Duration {
 		return time.Second
 	}
 	return interval
+}
+
+// runOutboxQueueDepthLoop periodically samples the undelivered-outbox count
+// and exposes it on the OutboxQueueDepth gauge so alerting works even when
+// the relay loop is healthy and draining slower than producers.
+func runOutboxQueueDepthLoop(ctx context.Context, store *store.OutboxStore, interval time.Duration) {
+	if store == nil {
+		return
+	}
+	if interval <= 0 {
+		interval = 15 * time.Second
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			undelivered, _, _, err := store.GetOutboxStats(ctx)
+			if err != nil {
+				slog.Warn("failed to sample outbox queue depth", "err", err)
+				continue
+			}
+			if m := observability.DefaultMetrics(); m != nil {
+				m.OutboxQueueDepth.Set(float64(undelivered))
+			}
+		}
+	}
 }
 
 func startReaper(ctx context.Context, scheduler ReaperScheduler, interval time.Duration) {

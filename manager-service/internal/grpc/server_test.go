@@ -422,7 +422,7 @@ func TestWorkerServer_Heartbeat_Success(t *testing.T) {
 	mock.ExpectBegin()
 	mock.ExpectQuery(regexp.QuoteMeta(manager.QuerySelectTaskForUpdate)).
 		WithArgs(taskID).
-		WillReturnRows(sqlmock.NewRows([]string{"status", "current_attempt_id"}).AddRow("In-Progress", attemptID))
+		WillReturnRows(sqlmock.NewRows([]string{"status", "current_attempt_id", "job_id"}).AddRow("In-Progress", attemptID, uuid.New().String()))
 
 	mock.ExpectQuery(regexp.QuoteMeta(manager.QueryCheckLeaseValid)).
 		WithArgs(attemptID, leaseID, 5).
@@ -459,7 +459,7 @@ func TestWorkerServer_Heartbeat_Expired(t *testing.T) {
 	mock.ExpectBegin()
 	mock.ExpectQuery(regexp.QuoteMeta(manager.QuerySelectTaskForUpdate)).
 		WithArgs(taskID).
-		WillReturnRows(sqlmock.NewRows([]string{"status", "current_attempt_id"}).AddRow("In-Progress", attemptID))
+		WillReturnRows(sqlmock.NewRows([]string{"status", "current_attempt_id", "job_id"}).AddRow("In-Progress", attemptID, uuid.New().String()))
 
 	mock.ExpectQuery(regexp.QuoteMeta(manager.QueryCheckLeaseValid)).
 		WithArgs(attemptID, leaseID, 5).
@@ -787,7 +787,7 @@ func TestWorkerServer_TaskComplete_StaleAttemptReturnsPermissionDenied(t *testin
 
 	mock.ExpectQuery(regexp.QuoteMeta(manager.QuerySelectTaskForUpdate)).
 		WithArgs(taskID).
-		WillReturnRows(sqlmock.NewRows([]string{"status", "current_attempt_id"}).AddRow("In-Progress", currentAttemptID))
+		WillReturnRows(sqlmock.NewRows([]string{"status", "current_attempt_id", "job_id"}).AddRow("In-Progress", currentAttemptID, uuid.New().String()))
 	mock.ExpectRollback()
 
 	_, err := server.TaskComplete(context.Background(), &pb.TaskCompleteRequest{
@@ -821,7 +821,7 @@ func TestWorkerServer_TaskComplete_ExpiredLeaseReturnsPermissionDenied(t *testin
 
 	mock.ExpectQuery(regexp.QuoteMeta(manager.QuerySelectTaskForUpdate)).
 		WithArgs(taskID).
-		WillReturnRows(sqlmock.NewRows([]string{"status", "current_attempt_id"}).AddRow("In-Progress", attemptID))
+		WillReturnRows(sqlmock.NewRows([]string{"status", "current_attempt_id", "job_id"}).AddRow("In-Progress", attemptID, uuid.New().String()))
 	mock.ExpectQuery(regexp.QuoteMeta(manager.QueryCheckLeaseValid)).
 		WithArgs(attemptID, "lease123", 5).
 		WillReturnRows(sqlmock.NewRows([]string{"lease_valid"}).AddRow(false))
@@ -935,7 +935,7 @@ func TestWorkerServer_TaskComplete_SuccessReturnsAck(t *testing.T) {
 
 	mock.ExpectQuery(regexp.QuoteMeta(manager.QuerySelectTaskForUpdate)).
 		WithArgs(taskID).
-		WillReturnRows(sqlmock.NewRows([]string{"status", "current_attempt_id"}).AddRow("In-Progress", attemptID))
+		WillReturnRows(sqlmock.NewRows([]string{"status", "current_attempt_id", "job_id"}).AddRow("In-Progress", attemptID, uuid.New().String()))
 	mock.ExpectQuery(regexp.QuoteMeta(manager.QueryCheckLeaseValid)).
 		WithArgs(attemptID, "lease123", 5).
 		WillReturnRows(sqlmock.NewRows([]string{"lease_valid"}).AddRow(true))
@@ -1072,7 +1072,7 @@ func TestWorkerServer_TaskFailed_StaleAttemptReturnsPermissionDenied(t *testing.
 
 	mock.ExpectQuery(regexp.QuoteMeta(manager.QuerySelectTaskForUpdate)).
 		WithArgs(taskID).
-		WillReturnRows(sqlmock.NewRows([]string{"status", "current_attempt_id"}).AddRow("In-Progress", currentAttemptID))
+		WillReturnRows(sqlmock.NewRows([]string{"status", "current_attempt_id", "job_id"}).AddRow("In-Progress", currentAttemptID, uuid.New().String()))
 	mock.ExpectRollback()
 
 	_, err := server.TaskFailed(context.Background(), &pb.TaskFailedRequest{
@@ -1210,7 +1210,7 @@ func TestWorkerServer_TaskFailed_ExpiredLeaseReturnsPermissionDenied(t *testing.
 
 	mock.ExpectQuery(regexp.QuoteMeta(manager.QuerySelectTaskForUpdate)).
 		WithArgs(taskID).
-		WillReturnRows(sqlmock.NewRows([]string{"status", "current_attempt_id"}).AddRow("In-Progress", attemptID))
+		WillReturnRows(sqlmock.NewRows([]string{"status", "current_attempt_id", "job_id"}).AddRow("In-Progress", attemptID, uuid.New().String()))
 	mock.ExpectQuery(regexp.QuoteMeta(manager.QueryCheckLeaseValid)).
 		WithArgs(attemptID, "lease123", 5).
 		WillReturnRows(sqlmock.NewRows([]string{"lease_valid"}).AddRow(false))
@@ -1246,7 +1246,7 @@ func TestWorkerServer_TaskFailed_SuccessReturnsAck(t *testing.T) {
 
 	mock.ExpectQuery(regexp.QuoteMeta(manager.QuerySelectTaskForUpdate)).
 		WithArgs(taskID).
-		WillReturnRows(sqlmock.NewRows([]string{"status", "current_attempt_id"}).AddRow("In-Progress", attemptID))
+		WillReturnRows(sqlmock.NewRows([]string{"status", "current_attempt_id", "job_id"}).AddRow("In-Progress", attemptID, uuid.New().String()))
 	mock.ExpectQuery(regexp.QuoteMeta(manager.QueryCheckLeaseValid)).
 		WithArgs(attemptID, "lease123", 5).
 		WillReturnRows(sqlmock.NewRows([]string{"lease_valid"}).AddRow(true))

@@ -83,6 +83,15 @@ type Config struct {
 	OutboxRelayInterval time.Duration
 	// OutboxMaxRetries is the maximum number of delivery attempts before moving to DLQ.
 	OutboxMaxRetries int
+	// OutboxBatchSize bounds how many outbox rows the relay claims per cycle.
+	OutboxBatchSize int
+	// OutboxQueueDepthInterval is how often the queue-depth gauge is refreshed.
+	OutboxQueueDepthInterval time.Duration
+	// HeartbeatEventSampleN emits the tasks.heartbeat.received event only on
+	// every N-th heartbeat to control outbox volume. 0 or 1 emits every heartbeat.
+	HeartbeatEventSampleN int
+	// NATSRequireTLS, when true, refuses to start with a plain nats:// URL.
+	NATSRequireTLS bool
 
 	// NATS configuration for event publishing
 	NATSURL       string
@@ -136,6 +145,18 @@ func Load() (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
+	outboxBatchSize, err := getEnvInt("OUTBOX_BATCH_SIZE", 100)
+	if err != nil {
+		return nil, err
+	}
+	outboxDepthIntervalSec, err := getEnvInt("OUTBOX_QUEUE_DEPTH_INTERVAL_SEC", 15)
+	if err != nil {
+		return nil, err
+	}
+	heartbeatEventSampleN, err := getEnvInt("HEARTBEAT_EVENT_SAMPLE_N", 1)
+	if err != nil {
+		return nil, err
+	}
 
 	cfg := &Config{
 		KeycloakBaseURL:                 keycloakBaseURL,
@@ -168,6 +189,10 @@ func Load() (*Config, error) {
 		EnableOutboxRelay:               getEnvBool("ENABLE_OUTBOX_RELAY", false),
 		OutboxRelayInterval:             time.Duration(outboxRelayIntervalSec) * time.Second,
 		OutboxMaxRetries:                outboxMaxRetries,
+		OutboxBatchSize:                 outboxBatchSize,
+		OutboxQueueDepthInterval:        time.Duration(outboxDepthIntervalSec) * time.Second,
+		HeartbeatEventSampleN:           heartbeatEventSampleN,
+		NATSRequireTLS:                  getEnvBool("NATS_REQUIRE_TLS", false),
 		NATSURL:                         getEnv("NATS_URL", ""),
 		NATSCredsFile:                   getEnv("NATS_CREDS_FILE", ""),
 	}

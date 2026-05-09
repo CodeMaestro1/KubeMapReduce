@@ -39,6 +39,9 @@ type Metrics struct {
 	OutboxQueueDepth prometheus.Gauge
 	// EventRetries counts delivery failures by event_type.
 	EventRetries *prometheus.CounterVec
+	// EventDeadLettered counts events promoted to the dead-letter queue,
+	// partitioned by their original event_type.
+	EventDeadLettered *prometheus.CounterVec
 	// SchedulerCycleSeconds is the duration of a single FailStaleTasks
 	// reaper cycle, regardless of whether any tasks were recovered.
 	SchedulerCycleSeconds prometheus.Histogram
@@ -97,6 +100,10 @@ func NewMetrics() *Metrics {
 			Name: "kubemapreduce_event_retries_total",
 			Help: "Total number of event delivery failures, partitioned by event_type.",
 		}, []string{"event_type"}),
+		EventDeadLettered: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "kubemapreduce_event_dead_lettered_total",
+			Help: "Total number of events moved to the dead-letter queue, partitioned by original event_type.",
+		}, []string{"event_type"}),
 		SchedulerCycleSeconds: prometheus.NewHistogram(prometheus.HistogramOpts{
 			Name:    "kubemapreduce_reaper_cycle_seconds",
 			Help:    "Duration of a single FailStaleTasks reaper cycle in seconds.",
@@ -118,6 +125,7 @@ func NewMetrics() *Metrics {
 		m.EventPublishLatencySeconds,
 		m.OutboxQueueDepth,
 		m.EventRetries,
+		m.EventDeadLettered,
 		m.SchedulerCycleSeconds,
 		m.HTTPRequestDurationSeconds,
 	)
