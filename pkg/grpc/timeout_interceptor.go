@@ -242,9 +242,11 @@ func (s *cancelOnCloseClientStream) RecvMsg(m interface{}) error {
 }
 
 func (s *cancelOnCloseClientStream) CloseSend() error {
-	err := s.ClientStream.CloseSend()
-	s.once.Do(s.cancel)
-	return err
+	// Do NOT cancel here. CloseSend signals end-of-send only; the server
+	// may still write the response/trailer. Canceling now would race with
+	// RecvMsg and surface as "context canceled" on client-streaming RPCs
+	// (e.g. ShuffleService/PushShuffleData via CloseAndRecv).
+	return s.ClientStream.CloseSend()
 }
 
 // ValidateConfig checks that timeouts are positive and reasonable.
