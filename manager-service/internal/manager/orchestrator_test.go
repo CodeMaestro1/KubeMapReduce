@@ -29,7 +29,7 @@ func TestNewKubeOrchestrator(t *testing.T) {
 			workerImage:          "",
 			workerSecretName:     "",
 			wantNamespace:        "default",
-			wantWorkerImage:      "kubemapreduce-worker:latest",
+			wantWorkerImage:      "kubemapreduce/worker:latest",
 			wantWorkerSecretName: "kubemapreduce-secrets",
 		},
 		{
@@ -47,7 +47,7 @@ func TestNewKubeOrchestrator(t *testing.T) {
 			workerImage:          "",
 			workerSecretName:     "partial-secret",
 			wantNamespace:        "partial-ns",
-			wantWorkerImage:      "kubemapreduce-worker:latest",
+			wantWorkerImage:      "kubemapreduce/worker:latest",
 			wantWorkerSecretName: "partial-secret",
 		},
 	}

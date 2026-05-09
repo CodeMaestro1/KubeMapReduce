@@ -50,7 +50,7 @@ type KubeOrchestrator struct {
 
 // NewKubeOrchestrator creates a new Kubernetes-backed orchestrator.
 //
-// It defaults to the "default" namespace and "kubemapreduce-worker:latest" image if not
+// It defaults to the "default" namespace and "kubemapreduce/worker:latest" image if not
 // specified. If workerSecretName is empty it defaults to "kubemapreduce-secrets"; that
 // Kubernetes Secret must contain the MinIO and RPC credentials that are injected into
 // every worker pod via SecretKeyRef so that plaintext credentials never appear in the
@@ -60,7 +60,7 @@ func NewKubeOrchestrator(clientset kubernetes.Interface, namespace, workerImage,
 		namespace = "default"
 	}
 	if workerImage == "" {
-		workerImage = "kubemapreduce-worker:latest"
+		workerImage = "kubemapreduce/worker:latest"
 	}
 	if workerSecretName == "" {
 		workerSecretName = "kubemapreduce-secrets"
