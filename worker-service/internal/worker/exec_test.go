@@ -6,7 +6,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -118,21 +117,21 @@ func TestBuildCmd(t *testing.T) {
 }
 
 func TestRunUserCode(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("shell scripts not natively executable on Windows")
+	// Use python3 as the test runtime — it is available on all CI platforms
+	// and avoids the shell-injection vector that sh-based scripts would create.
+	if _, err := exec.LookPath("python3"); err != nil {
+		t.Skip("python3 not found in PATH")
 	}
-	// Create a temporary executable that echoes stdin to stdout
-	tempDir := t.TempDir()
-	binPath := filepath.Join(tempDir, "echo.sh")
 
-	scriptContent := `#!/bin/sh
-cat
-`
-	if err := os.WriteFile(binPath, []byte(scriptContent), 0755); err != nil {
-		t.Fatalf("failed to write temp script: %v", err)
-	}
+	tempDir := t.TempDir()
 
 	t.Run("success", func(t *testing.T) {
+		binPath := filepath.Join(tempDir, "echo.py")
+		script := "import sys\nsys.stdout.write(sys.stdin.read())\n"
+		if err := os.WriteFile(binPath, []byte(script), 0644); err != nil {
+			t.Fatalf("failed to write temp script: %v", err)
+		}
+
 		ctx := context.Background()
 		input := []byte("hello world\n")
 		out, err := runUserCode(ctx, binPath, "", bytes.NewReader(input))
@@ -145,13 +144,13 @@ cat
 	})
 
 	t.Run("failure (non-zero exit)", func(t *testing.T) {
-		failBinPath := filepath.Join(tempDir, "fail.sh")
-		if err := os.WriteFile(failBinPath, []byte("#!/bin/sh\nexit 1\n"), 0755); err != nil {
+		failPath := filepath.Join(tempDir, "fail.py")
+		if err := os.WriteFile(failPath, []byte("import sys\nsys.exit(1)\n"), 0644); err != nil {
 			t.Fatalf("failed to write temp script: %v", err)
 		}
 
 		ctx := context.Background()
-		_, err := runUserCode(ctx, failBinPath, "", bytes.NewReader([]byte{}))
+		_, err := runUserCode(ctx, failPath, "", bytes.NewReader([]byte{}))
 		if err == nil {
 			t.Fatal("runUserCode() expected error for non-zero exit code")
 		}
@@ -161,15 +160,15 @@ cat
 	})
 
 	t.Run("context cancellation", func(t *testing.T) {
-		sleepBinPath := filepath.Join(tempDir, "sleep.sh")
-		if err := os.WriteFile(sleepBinPath, []byte("#!/bin/sh\nsleep 1\n"), 0755); err != nil {
+		sleepPath := filepath.Join(tempDir, "sleep.py")
+		if err := os.WriteFile(sleepPath, []byte("import time\ntime.sleep(10)\n"), 0644); err != nil {
 			t.Fatalf("failed to write temp script: %v", err)
 		}
 
 		ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 		defer cancel()
 
-		_, err := runUserCode(ctx, sleepBinPath, "", bytes.NewReader([]byte{}))
+		_, err := runUserCode(ctx, sleepPath, "", bytes.NewReader([]byte{}))
 		if err == nil {
 			t.Fatal("runUserCode() expected error due to context cancellation")
 		}
