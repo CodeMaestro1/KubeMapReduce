@@ -302,13 +302,16 @@ func TestScheduler_GetNextTask_FifoStarvationFreedom(t *testing.T) {
 	mock.ExpectQuery(regexp.QuoteMeta(QueryCountPendingTasksByType)).
 		WithArgs(jobID, "Map").
 		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
+	mock.ExpectQuery(regexp.QuoteMeta(QueryCompleteEmptyReduceTasks)).
+		WithArgs(jobID).
+		WillReturnRows(sqlmock.NewRows([]string{"task_id"}))
 	mock.ExpectQuery(regexp.QuoteMeta(QuerySelectIdleTask)).
 		WithArgs(jobID, 0, "Reduce").
 		WillReturnError(sql.ErrNoRows)
 	mock.ExpectQuery(regexp.QuoteMeta(QueryCountPendingTasksByType)).
 		WithArgs(jobID, "Reduce").
 		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
-	mock.ExpectRollback()
+	mock.ExpectCommit()
 
 	seen := make(map[string]int)
 	for range taskIDs {

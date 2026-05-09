@@ -97,12 +97,22 @@ func (w *Worker) runMap(ctx context.Context, a *pb.TaskAssignment) (outputURIs, 
 		combinedRecords = nil // help GC
 	}
 
-	// Hash-partition into R buckets by streaming the sorted JSONL output.
+	// Hash-partition into R buckets by streaming the sorted JSONL output
+	// directly to per-partition writers — no [][]shuffle.Record buffer, no
+	// per-partition bytes.Buffer. Peak RAM is bounded by one chunk per open
+	// writer (~1 MiB) instead of the full mapper output.
 	R := int(a.TotalReducers)
 	if R <= 0 {
 		R = 1
 	}
-	partitions := make([][]shuffle.Record, R)
+	writers := make(map[int]partitionWriter)
+	openOrder := make([]int, 0, R)
+	defer func() {
+		for _, pw := range writers {
+			pw.Abort()
+		}
+	}()
+
 	totalRecords := 0
 	sc := bufio.NewScanner(sortedReader)
 	sc.Buffer(make([]byte, 64*1024), shuffle.DefaultMaxRecordBytes)
@@ -116,69 +126,61 @@ func (w *Worker) runMap(ctx context.Context, a *pb.TaskAssignment) (outputURIs, 
 			return nil, nil, fmt.Errorf("decode sorted record: %w", err)
 		}
 		p := hashPartition(rec.Key, R)
-		partitions[p] = append(partitions[p], rec)
+		pw, ok := writers[p]
+		if !ok {
+			pw, err = w.openPartitionWriter(ctx, a.JobId, a.TaskId, p)
+			if err != nil {
+				return nil, nil, err
+			}
+			writers[p] = pw
+			openOrder = append(openOrder, p)
+		}
+		// Write the record line followed by a newline. The sorted reader
+		// emits valid JSONL records, so no re-marshal is needed.
+		if _, err := pw.Write(line); err != nil {
+			return nil, nil, fmt.Errorf("write partition %d: %w", p, err)
+		}
+		if _, err := pw.Write(newlineBytes); err != nil {
+			return nil, nil, fmt.Errorf("write partition %d newline: %w", p, err)
+		}
 		totalRecords++
 	}
 	if err := sc.Err(); err != nil {
 		return nil, nil, fmt.Errorf("read sorted stream: %w", err)
 	}
 
-	// Upload each partition — prefer ShuffleService, fall back to object storage.
-	for i, part := range partitions {
-		if len(part) == 0 {
-			continue
+	// Close partitions in their original ascending index order so output
+	// URIs / checksums remain deterministic for downstream consumers.
+	sortInts(openOrder)
+	for _, i := range openOrder {
+		pw := writers[i]
+		uri, chk, err := pw.Close()
+		delete(writers, i)
+		if err != nil {
+			return nil, nil, fmt.Errorf("close partition %d: %w", i, err)
 		}
-
-		var buf bytes.Buffer
-		for _, rec := range part {
-			b, marshalErr := json.Marshal(rec)
-			if marshalErr != nil {
-				return nil, nil, fmt.Errorf("marshal partition %d record: %w", i, marshalErr)
-			}
-			buf.Write(b)
-			buf.WriteByte('\n')
-		}
-		data := buf.Bytes()
-		h := sha256.Sum256(data)
-		checksum := hex.EncodeToString(h[:])
-
-		if w.shuffleClient != nil {
-			stream, err := w.shuffleClient.PushShuffleData(ctx)
-			if err != nil {
-				return nil, nil, fmt.Errorf("open shuffle stream: %w", err)
-			}
-			for off := 0; off < len(data); off += shuffleChunkSizeBytes {
-				end := off + shuffleChunkSizeBytes
-				if end > len(data) {
-					end = len(data)
-				}
-				if err := stream.Send(&pb.ShuffleDataChunk{
-					JobId:       a.JobId,
-					PartitionId: int32(i),
-					Data:        data[off:end],
-				}); err != nil {
-					return nil, nil, fmt.Errorf("send shuffle data %d: %w", i, err)
-				}
-			}
-			if _, err := stream.CloseAndRecv(); err != nil {
-				return nil, nil, fmt.Errorf("close shuffle stream %d: %w", i, err)
-			}
-			outputURIs = append(outputURIs, fmt.Sprintf("shuffle://%s/%d", a.JobId, i))
-			outputChecksums = append(outputChecksums, checksum)
-		} else {
-			// Legacy / test fallback: write to object storage.
-			objKey := fmt.Sprintf("%s/%s/partition-%d.jsonl", a.JobId, a.TaskId, i)
-			_, err := w.storage.PutObject(ctx, stagingBucket, objKey, bytes.NewReader(data), int64(len(data)), minio.PutObjectOptions{ContentType: "application/jsonl"})
-			if err != nil {
-				return nil, nil, fmt.Errorf("upload partition %d: %w", i, err)
-			}
-			outputURIs = append(outputURIs, fmt.Sprintf("s3://%s/%s", stagingBucket, objKey))
-			outputChecksums = append(outputChecksums, checksum)
-		}
+		outputURIs = append(outputURIs, uri)
+		outputChecksums = append(outputChecksums, chk)
 	}
 
 	log.Printf("[map] done task=%s records=%d partitions=%d", a.TaskId, totalRecords, R)
 	return outputURIs, outputChecksums, nil
+}
+
+var newlineBytes = []byte{'\n'}
+
+func sortInts(xs []int) {
+	// Tiny insertion sort: partition counts are small (R, typically <100)
+	// and we want to avoid pulling in sort just for this.
+	for i := 1; i < len(xs); i++ {
+		v := xs[i]
+		j := i - 1
+		for j >= 0 && xs[j] > v {
+			xs[j+1] = xs[j]
+			j--
+		}
+		xs[j+1] = v
+	}
 }
 
 // spillThresholdBytes returns the configured map sort spill threshold in bytes,

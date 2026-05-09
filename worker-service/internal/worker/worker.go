@@ -36,6 +36,13 @@ type Worker struct {
 	// execCode runs the user binary with JSONL on stdin and returns stdout.
 	// Swappable in tests to avoid real subprocess execution.
 	execCode func(ctx context.Context, codePath, runtimeEnv string, stdin io.Reader) ([]byte, error)
+
+	// execCodeStream runs the user binary and returns a stdout reader plus a
+	// wait func that reports the process exit error. Used by runReduce to
+	// stream reducer output directly into object storage without buffering
+	// the full result in memory. Swappable in tests; when nil, runReduce
+	// falls back to execCode via an in-memory adapter.
+	execCodeStream func(ctx context.Context, codePath, runtimeEnv string, stdin io.Reader) (io.ReadCloser, func() error, error)
 }
 
 // New creates a production Worker wired to the given gRPC client and MinIO instance.
@@ -51,8 +58,9 @@ func New(cfg *config.Config, client pb.WorkerServiceClient, shuffleClient pb.Shu
 		client:        client,
 		shuffleClient: shuffleClient,
 		storage:       s,
-		prepareCode:   downloadCode,
-		execCode:      runUserCode,
+		prepareCode:    downloadCode,
+		execCode:       runUserCode,
+		execCodeStream: runUserCodeStreaming,
 	}
 }
 

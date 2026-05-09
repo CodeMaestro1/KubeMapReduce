@@ -298,6 +298,16 @@ func (s *Scheduler) GetNextTask(ctx context.Context, jobID string, workerID stri
 		return nil, ErrNoIdleTasks
 	}
 
+	// 3.5. Auto-complete Reduce tasks for empty partitions before any
+	// dispatch. Saves a worker pod + image pull + reducer artifact download
+	// + temp-dir churn per empty partition. Idempotent: only Idle rows
+	// match, so subsequent calls become no-ops once the map phase output
+	// distribution has stabilised.
+	autoCompletedJobNowDone, err := s.autoCompleteEmptyReducesTx(ctx, tx, jobID)
+	if err != nil {
+		return nil, err
+	}
+
 	// 4. Try to schedule Reduce tasks
 	task, err = s.tryAssignTask(ctx, tx, jobID, workerID, "Reduce")
 	if err == nil {
@@ -320,10 +330,73 @@ func (s *Scheduler) GetNextTask(ctx context.Context, jobID string, workerID stri
 		return nil, err
 	}
 	if pendingReduceTasks > 0 {
+		// No idle work right now, but the auto-complete pass may have
+		// transitioned tasks; commit so those updates persist.
+		if errCommit := tx.Commit(); errCommit != nil {
+			return nil, errCommit
+		}
+		if autoCompletedJobNowDone {
+			s.enqueueCleanup(jobID, "Completed")
+		}
 		return nil, ErrNoIdleTasks
 	}
 
+	if errCommit := tx.Commit(); errCommit != nil {
+		return nil, errCommit
+	}
+	if autoCompletedJobNowDone {
+		s.enqueueCleanup(jobID, "Completed")
+	}
 	return nil, ErrJobCompleted
+}
+
+// autoCompleteEmptyReducesTx marks Idle Reduce tasks with no shuffle inputs
+// as Completed inside the supplied transaction. Returns whether the job
+// reached zero pending tasks as a result, so the caller can enqueue cleanup
+// once the transaction commits.
+func (s *Scheduler) autoCompleteEmptyReducesTx(ctx context.Context, tx *sql.Tx, jobID string) (jobNowDone bool, err error) {
+	rows, err := tx.QueryContext(ctx, QueryCompleteEmptyReduceTasks, jobID)
+	if err != nil {
+		return false, fmt.Errorf("auto-complete empty reduces: %w", err)
+	}
+	defer rows.Close()
+
+	completed := 0
+	for rows.Next() {
+		var taskID string
+		if err := rows.Scan(&taskID); err != nil {
+			return false, err
+		}
+		completed++
+		slog.InfoContext(ctx, "auto-completed empty reduce partition",
+			slog.String("task_id", taskID),
+			slog.String("job_id", jobID),
+		)
+	}
+	if err := rows.Err(); err != nil {
+		return false, err
+	}
+	if completed == 0 {
+		return false, nil
+	}
+
+	if m := observability.DefaultMetrics(); m != nil {
+		for i := 0; i < completed; i++ {
+			m.TasksCompleted.Inc()
+		}
+	}
+
+	var pending int
+	if err := tx.QueryRowContext(ctx, QueryCountAllPendingTasks, jobID).Scan(&pending); err != nil {
+		return false, err
+	}
+	if pending == 0 {
+		if err := s.updateJobStatusTx(ctx, tx, jobID, "Cleaning"); err != nil {
+			return false, err
+		}
+		return true, nil
+	}
+	return false, nil
 }
 
 func (s *Scheduler) tryAssignTask(ctx context.Context, tx *sql.Tx, requestedJobID string, workerID string, taskType string) (*Task, error) {
