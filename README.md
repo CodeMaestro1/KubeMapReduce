@@ -418,10 +418,13 @@ Comprehensive guides for deploying, configuring, and troubleshooting KubeMapRedu
 
 ### Development
 
-- **Build all services:** `go build ./...`
-- **Run tests:** `go test ./...`
-- **Format code:** `go fmt ./...`
-- **Lint code:** `go vet ./...`
+- **Build all services:** `make` or `make build`
+- **Build specific services:** `make cli`, `make manager`, `make api`, `make worker`, `make auth-setup`
+- **Run tests:** `make test`
+- **Format code:** `make fmt`
+- **Vet code:** `make vet`
+- **Lint code:** `make lint` (requires golangci-lint)
+- **Clean build artifacts:** `make clean`
 
 ## Configuration
 

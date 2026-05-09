@@ -44,6 +44,7 @@ replay_pid*
 manager-service/manager
 auth-service/auth-service
 cli-service/cli
+bin/
 
 # Output of the go coverage tool, specifically when used with LiteIDE
 *.out
