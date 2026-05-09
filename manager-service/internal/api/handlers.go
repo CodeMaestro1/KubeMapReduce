@@ -524,13 +524,7 @@ func (h *Handlers) HandleAdminConfigWorkers(w http.ResponseWriter, r *http.Reque
 	}
 	if req.MaxPods == 0 && req.WorkerReplicas == 0 && req.MaxJobsPerNode == 0 &&
 		strings.TrimSpace(req.CPULimit) == "" && strings.TrimSpace(req.MemoryLimit) == "" &&
-		r.Method != http.MethodPost { // Method check is redundant here but keeping logic flow
-		// Actually, we want to allow updating ONLY localityKey if provided.
-	}
-	// Better check: at least one field must be non-zero or non-empty
-	if req.MaxPods <= 0 && req.WorkerReplicas <= 0 && req.MaxJobsPerNode <= 0 &&
-		req.CPULimit == "" && req.MemoryLimit == "" && req.LocalityKey == "" &&
-		req.LocalityLabelSelector == "" {
+		strings.TrimSpace(req.LocalityKey) == "" && strings.TrimSpace(req.LocalityLabelSelector) == "" {
 		httputil.WriteErrorJSON(w, http.StatusBadRequest, "at least one configuration field must be provided")
 		return
 	}
