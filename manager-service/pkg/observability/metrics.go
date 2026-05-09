@@ -30,6 +30,18 @@ type Metrics struct {
 	// ReaperRecovered counts stale task attempts reclaimed by the active
 	// reaper. Each label set value represents one reaped attempt.
 	ReaperRecovered prometheus.Counter
+	// EventsEmitted counts each event envelope emitted by the scheduler,
+	// partitioned by event_type (e.g. "jobs.submitted", "tasks.assigned").
+	EventsEmitted *prometheus.CounterVec
+	// EventPublishLatencySeconds tracks how long it takes for the relay to publish events.
+	EventPublishLatencySeconds *prometheus.HistogramVec
+	// OutboxQueueDepth tracks undelivered event count for alerting.
+	OutboxQueueDepth prometheus.Gauge
+	// EventRetries counts delivery failures by event_type.
+	EventRetries *prometheus.CounterVec
+	// EventDeadLettered counts events promoted to the dead-letter queue,
+	// partitioned by their original event_type.
+	EventDeadLettered *prometheus.CounterVec
 	// SchedulerCycleSeconds is the duration of a single FailStaleTasks
 	// reaper cycle, regardless of whether any tasks were recovered.
 	SchedulerCycleSeconds prometheus.Histogram
@@ -71,6 +83,27 @@ func NewMetrics() *Metrics {
 			Name: "kubemapreduce_reaper_recovered_total",
 			Help: "Total number of stale task attempts reclaimed by the active reaper.",
 		}),
+		EventsEmitted: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "kubemapreduce_events_emitted_total",
+			Help: "Total number of event envelopes emitted, partitioned by event_type.",
+		}, []string{"event_type"}),
+		EventPublishLatencySeconds: prometheus.NewHistogramVec(prometheus.HistogramOpts{
+			Name:    "kubemapreduce_event_publish_latency_seconds",
+			Help:    "Latency from event emission to relay publishing, partitioned by event_type.",
+			Buckets: []float64{.001, .005, .01, .05, .1, .5, 1},
+		}, []string{"event_type"}),
+		OutboxQueueDepth: prometheus.NewGauge(prometheus.GaugeOpts{
+			Name: "kubemapreduce_outbox_queue_depth",
+			Help: "Current number of undelivered events in the outbox table.",
+		}),
+		EventRetries: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "kubemapreduce_event_retries_total",
+			Help: "Total number of event delivery failures, partitioned by event_type.",
+		}, []string{"event_type"}),
+		EventDeadLettered: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "kubemapreduce_event_dead_lettered_total",
+			Help: "Total number of events moved to the dead-letter queue, partitioned by original event_type.",
+		}, []string{"event_type"}),
 		SchedulerCycleSeconds: prometheus.NewHistogram(prometheus.HistogramOpts{
 			Name:    "kubemapreduce_reaper_cycle_seconds",
 			Help:    "Duration of a single FailStaleTasks reaper cycle in seconds.",
@@ -88,6 +121,11 @@ func NewMetrics() *Metrics {
 		m.TasksFailed,
 		m.HeartbeatsTotal,
 		m.ReaperRecovered,
+		m.EventsEmitted,
+		m.EventPublishLatencySeconds,
+		m.OutboxQueueDepth,
+		m.EventRetries,
+		m.EventDeadLettered,
 		m.SchedulerCycleSeconds,
 		m.HTTPRequestDurationSeconds,
 	)

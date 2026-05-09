@@ -5,11 +5,13 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"kubemapreduce/manager-service/pkg/observability"
 	"log/slog"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
+
+	"kubemapreduce/manager-service/pkg/observability"
 
 	"github.com/google/uuid"
 )
@@ -66,6 +68,10 @@ type Scheduler struct {
 	cleanupMu             sync.Mutex
 	pendingCleanup        map[string]string
 	heartbeats            sync.Map
+	emitter               EventEmitter
+	builder               *eventBuilder
+	heartbeatEventSampleN uint64
+	heartbeatEventCounter atomic.Uint64
 }
 
 type taskMetadataQuerier interface {
@@ -106,7 +112,38 @@ func NewScheduler(db *sql.DB, replicaIndex int, totalReplicas int, orchestrator 
 		staging:               staging,
 		pendingCleanup:        make(map[string]string),
 		heartbeats:            sync.Map{},
+		emitter:               &NoopEventEmitter{},
+		builder:               newEventBuilder("manager-scheduler"),
 	}, nil
+}
+
+// SetEventEmitter replaces the default no-op emitter with a live implementation.
+// This is set during bootstrap when the outbox relay feature flag is enabled.
+func (s *Scheduler) SetEventEmitter(emitter EventEmitter) {
+	s.emitter = emitter
+}
+
+// SetHeartbeatEventSampleN configures sampling of tasks.heartbeat.received
+// events. n <= 1 emits every heartbeat (default). For n > 1, only every n-th
+// successful RenewLease call emits an event, reducing outbox pressure under
+// high heartbeat fan-in. Sampling is best-effort and uses an atomic counter;
+// it is acceptable for tasks with very few heartbeats to never emit.
+func (s *Scheduler) SetHeartbeatEventSampleN(n int) {
+	if n < 1 {
+		n = 1
+	}
+	atomic.StoreUint64(&s.heartbeatEventSampleN, uint64(n))
+}
+
+// shouldEmitHeartbeatEvent returns true when the next heartbeat event should
+// be inserted into the outbox under the configured sampling rate.
+func (s *Scheduler) shouldEmitHeartbeatEvent() bool {
+	n := atomic.LoadUint64(&s.heartbeatEventSampleN)
+	if n <= 1 {
+		return true
+	}
+	c := s.heartbeatEventCounter.Add(1)
+	return c%n == 0
 }
 
 // Recover reconciles active attempts assigned to this replica and re-spawns workers.
@@ -278,6 +315,19 @@ func (s *Scheduler) GetNextTask(ctx context.Context, jobID string, workerID stri
 	if err == nil {
 		if err := s.updateJobStatusTx(ctx, tx, jobID, "Running"); err != nil {
 			return nil, err
+		}
+
+		taskID, _ := uuid.Parse(task.ID)
+		jobIDp, _ := uuid.Parse(task.JobID)
+		taskTypeStr := "Map"
+		if task.Type == ReduceTask {
+			taskTypeStr = "Reduce"
+		}
+		if err := s.emitter.Emit(ctx, tx, s.builder.taskAssigned(taskID, jobIDp, taskTypeStr, workerID, s.leaseTTL)); err != nil {
+			slog.ErrorContext(ctx, "failed to emit tasks.assigned event",
+				slog.String("task_id", task.ID),
+				slog.String("job_id", task.JobID),
+				slog.Any("err", err))
 		}
 		if errCommit := tx.Commit(); errCommit != nil {
 			return nil, errCommit
@@ -721,6 +771,12 @@ func (s *Scheduler) ScheduleJob(ctx context.Context, req ScheduleJobRequest) err
 		}
 	}
 
+	if err := s.emitter.Emit(ctx, tx, s.builder.jobSubmitted(jobID, userID, req.InputURI, req.MTasks, req.RTasks)); err != nil {
+		slog.ErrorContext(ctx, "failed to emit job.submitted event",
+			slog.String("job_id", req.JobID),
+			slog.Any("err", err))
+	}
+
 	if err := tx.Commit(); err != nil {
 		return err
 	}
@@ -787,24 +843,25 @@ func (s *Scheduler) updateJobStatusTx(ctx context.Context, tx *sql.Tx, jobID str
 
 // applyJobTransitionTx reads the current job status with FOR UPDATE, validates the
 // transition via ValidateJobTransition, and applies QueryUpdateJobStatus.
-// If the current status already equals to, it returns nil (idempotent no-op).
-func (s *Scheduler) applyJobTransitionTx(ctx context.Context, tx *sql.Tx, jobID string, to string) error {
+// Returns the prior status so callers can emit events with a correct OldStatus.
+// If the current status already equals to, it returns (current, nil) (idempotent no-op).
+func (s *Scheduler) applyJobTransitionTx(ctx context.Context, tx *sql.Tx, jobID string, to string) (string, error) {
 	var current string
 	err := tx.QueryRowContext(ctx, QueryGetJobStatusForUpdate, jobID).Scan(&current)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return ErrTaskNotFound
+			return "", ErrTaskNotFound
 		}
-		return err
+		return "", err
 	}
 	if current == to {
-		return nil
+		return current, nil
 	}
 	if err := ValidateJobTransition(current, to); err != nil {
-		return err
+		return current, err
 	}
 	_, err = tx.ExecContext(ctx, QueryUpdateJobStatus, jobID, to)
-	return err
+	return current, err
 }
 
 func (s *Scheduler) validateLeaseTx(ctx context.Context, tx *sql.Tx, attemptID string, leaseID string) error {
@@ -863,13 +920,15 @@ func (s *Scheduler) CompleteTask(ctx context.Context, taskID string, attemptID s
 
 	var state string
 	var currAttempt sql.NullString
-	err = tx.QueryRowContext(ctx, QuerySelectTaskForUpdate, taskID).Scan(&state, &currAttempt)
+	var taskJobID string
+	err = tx.QueryRowContext(ctx, QuerySelectTaskForUpdate, taskID).Scan(&state, &currAttempt, &taskJobID)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return ErrTaskNotFound
 		}
 		return err
 	}
+	_ = taskJobID
 
 	if state != "In-Progress" {
 		return ErrInvalidStateTransition
@@ -920,6 +979,21 @@ func (s *Scheduler) CompleteTask(ctx context.Context, taskID string, attemptID s
 		jobCompleted = true
 	}
 
+	taskUUID, _ := uuid.Parse(taskID)
+	jobUUID, _ := uuid.Parse(jobID)
+	attemptUUID, _ := uuid.Parse(attemptID)
+	if err := s.emitter.Emit(ctx, tx, s.builder.attemptCompleted(taskUUID, jobUUID, attemptUUID, attemptID)); err != nil {
+		slog.ErrorContext(ctx, "failed to emit tasks.attempt.completed event",
+			slog.String("task_id", taskID), slog.Any("err", err))
+	}
+
+	if jobCompleted {
+		if err := s.emitter.Emit(ctx, tx, s.builder.jobStateChanged(jobUUID, "Running", "Cleaning")); err != nil {
+			slog.ErrorContext(ctx, "failed to emit jobs.state.changed event",
+				slog.String("job_id", jobID), slog.Any("err", err))
+		}
+	}
+
 	if err := tx.Commit(); err != nil {
 		return err
 	}
@@ -950,7 +1024,8 @@ func (s *Scheduler) RenewLease(ctx context.Context, taskID string, attemptID str
 
 	var state string
 	var currAttempt sql.NullString
-	err = tx.QueryRowContext(ctx, QuerySelectTaskForUpdate, taskID).Scan(&state, &currAttempt)
+	var taskJobID string
+	err = tx.QueryRowContext(ctx, QuerySelectTaskForUpdate, taskID).Scan(&state, &currAttempt, &taskJobID)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return ErrTaskNotFound
@@ -973,11 +1048,22 @@ func (s *Scheduler) RenewLease(ctx context.Context, taskID string, attemptID str
 		return err
 	}
 
+	attemptUUID, _ := uuid.Parse(attemptID)
+	taskUUID, _ := uuid.Parse(taskID)
+	jobUUID, _ := uuid.Parse(taskJobID)
+	if s.shouldEmitHeartbeatEvent() {
+		if err := s.emitter.Emit(ctx, tx, s.builder.heartbeatReceived(taskUUID, jobUUID, attemptUUID)); err != nil {
+			slog.ErrorContext(ctx, "failed to emit tasks.heartbeat.received event",
+				slog.String("task_id", taskID), slog.Any("err", err))
+		}
+	}
+
 	if err := tx.Commit(); err != nil {
 		return err
 	}
 
 	s.heartbeats.Store(attemptID, time.Now())
+
 	return nil
 }
 
@@ -989,7 +1075,8 @@ func (s *Scheduler) CancelJob(ctx context.Context, jobID string) error {
 	}
 	defer tx.Rollback()
 
-	if err := s.applyJobTransitionTx(ctx, tx, jobID, "Cleaning"); err != nil {
+	oldStatus, err := s.applyJobTransitionTx(ctx, tx, jobID, "Cleaning")
+	if err != nil {
 		if errors.Is(err, ErrForbiddenTransition) {
 			// Job already in a terminal state — idempotent cancel is a no-op.
 			return nil
@@ -1004,6 +1091,16 @@ func (s *Scheduler) CancelJob(ctx context.Context, jobID string) error {
 	_, err = tx.ExecContext(ctx, QueryFailRunningAttemptsByJob, jobID)
 	if err != nil {
 		return err
+	}
+
+	jobUUID, _ := uuid.Parse(jobID)
+	if err := s.emitter.Emit(ctx, tx, s.builder.jobCancelRequested(jobUUID)); err != nil {
+		slog.ErrorContext(ctx, "failed to emit jobs.cancel.requested event",
+			slog.String("job_id", jobID), slog.Any("err", err))
+	}
+	if err := s.emitter.Emit(ctx, tx, s.builder.jobStateChanged(jobUUID, oldStatus, "Cleaning")); err != nil {
+		slog.ErrorContext(ctx, "failed to emit jobs.state.changed event",
+			slog.String("job_id", jobID), slog.Any("err", err))
 	}
 
 	if err := tx.Commit(); err != nil {
@@ -1041,13 +1138,15 @@ func (s *Scheduler) FailTask(ctx context.Context, taskID string, attemptID strin
 
 	var state string
 	var currAttempt sql.NullString
-	err = tx.QueryRowContext(ctx, QuerySelectTaskForUpdate, taskID).Scan(&state, &currAttempt)
+	var taskJobID string
+	err = tx.QueryRowContext(ctx, QuerySelectTaskForUpdate, taskID).Scan(&state, &currAttempt, &taskJobID)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return ErrTaskNotFound
 		}
 		return err
 	}
+	_ = taskJobID
 
 	if state != "In-Progress" {
 		return ErrInvalidStateTransition
@@ -1091,6 +1190,22 @@ func (s *Scheduler) FailTask(ctx context.Context, taskID string, attemptID strin
 		_, err = s.prepareRetryAttemptTx(ctx, tx, taskID)
 		if err != nil {
 			return err
+		}
+	}
+
+	taskUUID, _ := uuid.Parse(taskID)
+	attemptUUID, _ := uuid.Parse(attemptID)
+	jobUUID, _ := uuid.Parse(jobID)
+	var workerID string // workerID not available in FailTask scope
+	if err := s.emitter.Emit(ctx, tx, s.builder.attemptFailed(taskUUID, jobUUID, attemptUUID, workerID, reason)); err != nil {
+		slog.ErrorContext(ctx, "failed to emit tasks.attempt.failed event",
+			slog.String("task_id", taskID), slog.Any("err", err))
+	}
+
+	if newState == "Failed" {
+		if err := s.emitter.Emit(ctx, tx, s.builder.jobStateChanged(jobUUID, "Running", "Cleaning")); err != nil {
+			slog.ErrorContext(ctx, "failed to emit jobs.state.changed event",
+				slog.String("job_id", jobID), slog.Any("err", err))
 		}
 	}
 
@@ -1220,6 +1335,24 @@ func (s *Scheduler) FailStaleTasks(ctx context.Context) (int, error) {
 			respawnTasks = append(respawnTasks, retrySpawn{taskID: rec.taskID, attemptID: retryAttemptID, jobID: rec.jobID})
 		}
 		recoveredCount++
+	}
+
+	for _, rec := range stales {
+		taskUUID, _ := uuid.Parse(rec.taskID)
+		jobUUID, _ := uuid.Parse(rec.jobID)
+		attemptUUID, _ := uuid.Parse(rec.attemptID)
+		if err := s.emitter.Emit(ctx, tx, s.builder.taskReaped(taskUUID, jobUUID, attemptUUID, "lease expired")); err != nil {
+			slog.ErrorContext(ctx, "failed to emit tasks.reaped event",
+				slog.String("task_id", rec.taskID), slog.Any("err", err))
+		}
+	}
+
+	for jobID := range failedJobs {
+		jobUUID, _ := uuid.Parse(jobID)
+		if err := s.emitter.Emit(ctx, tx, s.builder.jobStateChanged(jobUUID, "Running", "Cleaning")); err != nil {
+			slog.ErrorContext(ctx, "failed to emit jobs.state.changed event",
+				slog.String("job_id", jobID), slog.Any("err", err))
+		}
 	}
 
 	if err := tx.Commit(); err != nil {
@@ -1465,7 +1598,7 @@ func (s *Scheduler) finalizeJob(ctx context.Context, jobID, terminalState string
 	}
 	defer tx.Rollback()
 
-	if err := s.applyJobTransitionTx(ctx, tx, jobID, terminalState); err != nil {
+	if _, err := s.applyJobTransitionTx(ctx, tx, jobID, terminalState); err != nil {
 		slog.ErrorContext(ctx, "failed to update terminal status",
 			slog.String("job_id", jobID),
 			slog.String("terminal_state", terminalState),

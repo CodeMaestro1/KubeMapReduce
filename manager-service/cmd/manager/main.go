@@ -32,6 +32,8 @@ import (
 	"kubemapreduce/manager-service/internal/config"
 	mgrpc "kubemapreduce/manager-service/internal/grpc"
 	"kubemapreduce/manager-service/internal/manager"
+	"kubemapreduce/manager-service/internal/relay"
+	"kubemapreduce/manager-service/internal/store"
 	"kubemapreduce/manager-service/pkg/observability"
 	pb "kubemapreduce/proto"
 )
@@ -133,13 +135,107 @@ func main() {
 	}
 	workerServer.SetScheduler(scheduler)
 
+	// Background context for reaper, reconciler, and outbox relay.
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Tracked across the shutdown path so we can drain the relay and close
+	// the broker connection cleanly on SIGTERM.
+	var (
+		relaySvc       *relay.RelayService
+		brokerToClose  relay.BrokerPublisher
+		outboxForPurge *store.OutboxStore
+	)
+
+	if cfg.EnableOutboxRelay {
+		outboxStore := store.NewOutboxStore(db)
+		// Install the SQL backoff helper used by RecordDeliveryFailures. Errors
+		// are non-fatal — the relay will fall back to the function being absent
+		// only if the migration has not been applied yet, which would surface
+		// as failures on the first claim and is loud enough on its own.
+		if err := outboxStore.EnsureBackoffFunction(ctx); err != nil {
+			slog.Warn("failed to ensure outbox_backoff helper", "err", err)
+		}
+		emitter := manager.NewLiveEventEmitter(outboxStore)
+		scheduler.SetEventEmitter(emitter)
+		scheduler.SetHeartbeatEventSampleN(cfg.HeartbeatEventSampleN)
+
+		// Choose publisher: NATS if configured, otherwise NoopPublisher.
+		// Log the resolved emitter mode so operators can verify configuration.
+		var publisher relay.BrokerPublisher = &relay.NoopPublisher{}
+		emitterMode := "noop"
+		if cfg.NATSURL != "" {
+			if cfg.NATSRequireTLS && !strings.HasPrefix(cfg.NATSURL, "tls://") {
+				log.Fatalf("NATS_REQUIRE_TLS=true but NATS_URL does not use tls:// scheme: %s", cfg.NATSURL)
+			}
+			natsPublisher, err := relay.NewNATSPublisher(cfg.NATSURL, cfg.NATSCredsFile)
+			if err != nil {
+				log.Fatalf("failed to create NATS publisher: %v", err)
+			}
+			publisher = natsPublisher
+			emitterMode = "nats"
+			slog.Info("NATS publisher configured", "url", cfg.NATSURL, "tls_required", cfg.NATSRequireTLS)
+		} else {
+			slog.Info("NATS not configured, using NoopPublisher (events logged to outbox only)")
+		}
+
+		metricsHook := &relay.MetricsHook{
+			ObservePublishLatency: func(eventType string, seconds float64) {
+				if m := observability.DefaultMetrics(); m != nil {
+					m.EventPublishLatencySeconds.WithLabelValues(eventType).Observe(seconds)
+				}
+			},
+			IncRetry: func(eventType string) {
+				if m := observability.DefaultMetrics(); m != nil {
+					m.EventRetries.WithLabelValues(eventType).Inc()
+				}
+			},
+			IncDeadLetter: func(eventType string) {
+				if m := observability.DefaultMetrics(); m != nil {
+					m.EventDeadLettered.WithLabelValues(eventType).Inc()
+				}
+			},
+			IncPublishedTotal: func(eventType string, success bool) {
+				// Successful publishes are accounted for via OutboxQueueDepth
+				// drainage and EventPublishLatencySeconds; failures roll up
+				// through IncRetry/IncDeadLetter.
+				_ = eventType
+				_ = success
+			},
+		}
+
+		relaySvc = relay.NewRelayService(outboxStore, publisher, relay.RelayConfig{
+			Enabled:    cfg.EnableOutboxRelay,
+			MaxRetries: cfg.OutboxMaxRetries,
+			Interval:   cfg.OutboxRelayInterval,
+			BatchSize:  cfg.OutboxBatchSize,
+			Metrics:    metricsHook,
+		})
+		relaySvc.Start(ctx)
+		brokerToClose = publisher
+		outboxForPurge = outboxStore
+
+		// Periodic queue-depth refresh so kubemapreduce_outbox_queue_depth is
+		// usable for alerting independently of relay activity.
+		go runOutboxQueueDepthLoop(ctx, outboxStore, cfg.OutboxQueueDepthInterval)
+
+		// Periodic purge of delivered rows so the outbox does not grow
+		// unbounded under healthy operation.
+		go runOutboxPurgeLoop(ctx, outboxStore)
+
+		slog.Info("outbox relay enabled",
+			"emitter_mode", emitterMode,
+			"batch_size", cfg.OutboxBatchSize,
+			"max_retries", cfg.OutboxMaxRetries,
+			"interval", cfg.OutboxRelayInterval,
+			"heartbeat_sample_n", cfg.HeartbeatEventSampleN)
+	}
+
 	if err := scheduler.Recover(context.Background()); err != nil {
 		log.Fatalf("failed to recover scheduler tasks: %v", err)
 	}
 
 	// 3. Start background loops
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
 	scheduler.StartCleanupReconciler(ctx, 15*time.Second)
 	startReaper(ctx, scheduler, defaultReaperInterval(cfg.LeaseTTL))
 
@@ -231,12 +327,22 @@ func main() {
 	<-sigCtx.Done()
 	log.Println("shutdown signal received, initiating graceful shutdown")
 
-	cancel() // Stop reaper
+	cancel() // Stop reaper, queue-depth poll, purge loop
+	if relaySvc != nil {
+		relaySvc.Stop()
+	}
 	grpcServer.GracefulStop()
 
 	httpCtx, httpCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer httpCancel()
 	httpSrv.Shutdown(httpCtx)
+
+	if brokerToClose != nil {
+		if err := brokerToClose.Close(); err != nil {
+			slog.Warn("broker publisher close failed", "err", err)
+		}
+	}
+	_ = outboxForPurge // referenced by runOutboxPurgeLoop goroutine
 
 	log.Println("manager service stopped")
 }
@@ -397,6 +503,64 @@ func defaultReaperInterval(leaseTTLSeconds int) time.Duration {
 		return time.Second
 	}
 	return interval
+}
+
+// runOutboxQueueDepthLoop periodically samples the undelivered-outbox count
+// and exposes it on the OutboxQueueDepth gauge so alerting works even when
+// the relay loop is healthy and draining slower than producers.
+func runOutboxQueueDepthLoop(ctx context.Context, store *store.OutboxStore, interval time.Duration) {
+	if store == nil {
+		return
+	}
+	if interval <= 0 {
+		interval = 15 * time.Second
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			undelivered, _, _, err := store.GetOutboxStats(ctx)
+			if err != nil {
+				slog.Warn("failed to sample outbox queue depth", "err", err)
+				continue
+			}
+			if m := observability.DefaultMetrics(); m != nil {
+				m.OutboxQueueDepth.Set(float64(undelivered))
+			}
+		}
+	}
+}
+
+// runOutboxPurgeLoop deletes successfully-delivered outbox rows older than a
+// retention window so the table does not grow unbounded under healthy
+// operation. Runs hourly and retains the last 24 hours of delivered rows.
+func runOutboxPurgeLoop(ctx context.Context, s *store.OutboxStore) {
+	if s == nil {
+		return
+	}
+	const interval = time.Hour
+	const retention = 24 * time.Hour
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			cutoff := time.Now().Add(-retention)
+			n, err := s.PurgeDeliveredOlderThan(ctx, cutoff)
+			if err != nil {
+				slog.Warn("outbox purge failed", "err", err)
+				continue
+			}
+			if n > 0 {
+				slog.Info("outbox purge", "rows_deleted", n, "older_than", cutoff)
+			}
+		}
+	}
 }
 
 func startReaper(ctx context.Context, scheduler ReaperScheduler, interval time.Duration) {
