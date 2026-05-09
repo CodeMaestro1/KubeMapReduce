@@ -5,9 +5,10 @@ import (
 	"testing"
 	"time"
 
+	"kubemapreduce/manager-service/internal/events"
+
 	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/google/uuid"
-	"kubemapreduce/manager-service/internal/events"
 )
 
 func TestInsertEvent(t *testing.T) {
@@ -125,7 +126,7 @@ func TestInsertEvent_Tx(t *testing.T) {
 	}
 }
 
-func TestMarkDelivered(t *testing.T) {
+func TestMarkBatchDelivered(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	if err != nil {
 		t.Fatalf("failed to create sqlmock: %v", err)
@@ -133,76 +134,159 @@ func TestMarkDelivered(t *testing.T) {
 	defer db.Close()
 
 	s := NewOutboxStore(db)
-	eventID := uuid.New()
+	id1, id2 := uuid.New(), uuid.New()
 
-	mock.ExpectExec(`UPDATE EVENT_OUTBOX SET delivered = TRUE, delivered_at = NOW\(\) WHERE event_id = \$1`).
-		WithArgs(eventID).
-		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectBegin()
+	mock.ExpectExec(`UPDATE EVENT_OUTBOX SET delivered = TRUE, delivered_at = NOW\(\) WHERE event_id = ANY\(\$1::uuid\[\]\)`).
+		WillReturnResult(sqlmock.NewResult(0, 2))
+	mock.ExpectCommit()
 
-	if err := s.MarkDelivered(context.Background(), eventID); err != nil {
-		t.Fatalf("MarkDelivered() returned error: %v", err)
+	tx, err := db.Begin()
+	if err != nil {
+		t.Fatalf("begin: %v", err)
 	}
-
+	if err := s.MarkBatchDelivered(context.Background(), tx, []uuid.UUID{id1, id2}); err != nil {
+		t.Fatalf("MarkBatchDelivered: %v", err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Errorf("unmet mock expectations: %v", err)
 	}
 }
 
-func TestRecordDeliveryFailure_MaxRetries(t *testing.T) {
-	db, mock, err := sqlmock.New()
+func TestMarkBatchDelivered_Empty(t *testing.T) {
+	db, _, err := sqlmock.New()
 	if err != nil {
-		t.Fatalf("failed to create sqlmock: %v", err)
+		t.Fatalf("sqlmock: %v", err)
 	}
 	defer db.Close()
 
 	s := NewOutboxStore(db)
-	eventID := uuid.New()
+	// Should be a no-op without touching the DB or tx.
+	if err := s.MarkBatchDelivered(context.Background(), nil, nil); err != nil {
+		t.Fatalf("expected nil error, got %v", err)
+	}
+}
+
+func TestRecordDeliveryFailures_NoOpOnEmpty(t *testing.T) {
+	db, _, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock: %v", err)
+	}
+	defer db.Close()
+
+	s := NewOutboxStore(db)
+	if err := s.RecordDeliveryFailures(context.Background(), nil, nil, 3); err != nil {
+		t.Fatalf("expected nil, got %v", err)
+	}
+}
+
+func TestRecordDeliveryFailures_BatchedSingleStatement(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock: %v", err)
+	}
+	defer db.Close()
+
+	s := NewOutboxStore(db)
+	id1, id2 := uuid.New(), uuid.New()
 
 	mock.ExpectBegin()
-	rows := sqlmock.NewRows([]string{"retry_count"}).AddRow(2)
-	mock.ExpectQuery(`SELECT retry_count FROM EVENT_OUTBOX WHERE event_id = \$1 FOR UPDATE`).
-		WithArgs(eventID).
-		WillReturnRows(rows)
-	mock.ExpectExec(`UPDATE EVENT_OUTBOX SET event_type = \$1, last_error = \$2, retry_count = \$3 WHERE event_id = \$4`).
-		WithArgs(string(events.EventDeadLetter), "broker unreachable", 3, eventID).
-		WillReturnResult(sqlmock.NewResult(0, 1))
+	// One UPDATE for both rows; we don't pin the exact SQL so the
+	// helper retains room to evolve, but we do assert it is a single
+	// statement, not one per row.
+	mock.ExpectExec(`UPDATE EVENT_OUTBOX o SET`).
+		WillReturnResult(sqlmock.NewResult(0, 2))
 	mock.ExpectCommit()
 
-	if err := s.RecordDeliveryFailure(context.Background(), eventID, "broker unreachable", 3); err != nil {
-		t.Fatalf("RecordDeliveryFailure() returned error: %v", err)
+	tx, err := db.Begin()
+	if err != nil {
+		t.Fatalf("begin: %v", err)
 	}
-
+	failures := []FailureRecord{{EventID: id1, Err: "boom"}, {EventID: id2, Err: "boom"}}
+	if err := s.RecordDeliveryFailures(context.Background(), tx, failures, 3); err != nil {
+		t.Fatalf("RecordDeliveryFailures: %v", err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Errorf("unmet mock expectations: %v", err)
 	}
 }
 
-func TestRecordDeliveryFailure_Retry(t *testing.T) {
+func TestClaimUndeliveredEvents_RejectsZeroLimit(t *testing.T) {
+	db, _, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock: %v", err)
+	}
+	defer db.Close()
+
+	s := NewOutboxStore(db)
+	if _, _, err := s.ClaimUndeliveredEvents(context.Background(), 0); err == nil {
+		t.Fatal("expected error for non-positive limit")
+	}
+}
+
+func TestReprocessEvent_RestoresOriginalEventType(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	if err != nil {
-		t.Fatalf("failed to create sqlmock: %v", err)
+		t.Fatalf("sqlmock: %v", err)
 	}
 	defer db.Close()
 
 	s := NewOutboxStore(db)
 	eventID := uuid.New()
 
-	mock.ExpectBegin()
-	rows := sqlmock.NewRows([]string{"retry_count"}).AddRow(0)
-	mock.ExpectQuery(`SELECT retry_count FROM EVENT_OUTBOX WHERE event_id = \$1 FOR UPDATE`).
-		WithArgs(eventID).
-		WillReturnRows(rows)
-	mock.ExpectExec(`UPDATE EVENT_OUTBOX SET last_error = \$1, retry_count = \$2 WHERE event_id = \$3`).
-		WithArgs("timeout", 1, eventID).
+	mock.ExpectExec(`UPDATE EVENT_OUTBOX SET\s+event_type = COALESCE\(original_event_type, event_type\)`).
+		WithArgs(eventID, string(events.EventDeadLetter)).
 		WillReturnResult(sqlmock.NewResult(0, 1))
-	mock.ExpectCommit()
 
-	if err := s.RecordDeliveryFailure(context.Background(), eventID, "timeout", 3); err != nil {
-		t.Fatalf("RecordDeliveryFailure() returned error: %v", err)
+	if err := s.ReprocessEvent(context.Background(), eventID); err != nil {
+		t.Fatalf("ReprocessEvent: %v", err)
 	}
-
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Errorf("unmet mock expectations: %v", err)
+	}
+}
+
+func TestReprocessEvent_NotInDLQ(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock: %v", err)
+	}
+	defer db.Close()
+
+	s := NewOutboxStore(db)
+	eventID := uuid.New()
+
+	mock.ExpectExec(`UPDATE EVENT_OUTBOX SET`).
+		WithArgs(eventID, string(events.EventDeadLetter)).
+		WillReturnResult(sqlmock.NewResult(0, 0))
+
+	err = s.ReprocessEvent(context.Background(), eventID)
+	if err == nil {
+		t.Fatal("expected error when event not in DLQ")
+	}
+}
+
+func TestUpconvertEventSchema_UnknownTypeReturnsError(t *testing.T) {
+	db, _, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock: %v", err)
+	}
+	defer db.Close()
+
+	s := NewOutboxStore(db)
+	evt := &events.EventEnvelope{
+		EventType:     events.JobSubmitted,
+		SchemaVersion: 1,
+	}
+	_, err = s.UpconvertEventSchema(context.Background(), evt, 2)
+	if err == nil {
+		t.Fatal("expected ErrUnknownEventTypeMigration for unhandled event type")
 	}
 }
 

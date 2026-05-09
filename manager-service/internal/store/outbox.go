@@ -4,15 +4,24 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"strings"
+	"time"
+
+	"kubemapreduce/manager-service/internal/events"
 
 	"github.com/google/uuid"
-	"kubemapreduce/manager-service/internal/events"
+	"github.com/lib/pq"
 )
 
 // OutboxStore handles database operations for the EVENT_OUTBOX table.
-// It provides methods to insert, mark delivered, and fetch undelivered events
-// as part of the transactional outbox pattern.
+//
+// It implements the transactional-outbox pattern: producers insert events
+// inside their domain transaction via [InsertEvent]; a relay claims rows
+// via [ClaimUndeliveredEvents] (FOR UPDATE SKIP LOCKED) so that concurrent
+// Manager replicas do not double-publish; success and failure are reported
+// in batch via [MarkBatchDelivered] and [RecordDeliveryFailures].
 type OutboxStore struct {
 	db *sql.DB
 }
@@ -62,35 +71,69 @@ func (s *OutboxStore) InsertEvent(ctx context.Context, tx *sql.Tx, event *events
 	return nil
 }
 
-// FetchUndeliveredEvents retrieves events that have not yet been delivered to the broker.
-// Results are ordered by aggregate_type, aggregate_id, sequence to preserve ordering.
-// limit controls the maximum number of events to return (0 means no limit).
-func (s *OutboxStore) FetchUndeliveredEvents(ctx context.Context, limit int) ([]*events.EventEnvelope, error) {
-	query := `
-		SELECT event_id, event_type, aggregate_type, aggregate_id, job_id, attempt_id, lease_id, sequence, emitted_at, producer, schema_version, payload, retry_count, last_error
-		FROM EVENT_OUTBOX
-		WHERE delivered = FALSE AND event_type != $1
-		ORDER BY aggregate_type, aggregate_id, sequence ASC`
+// ClaimedEvent is an event returned by [ClaimUndeliveredEvents]. It carries
+// the row's current retry_count so the relay can derive observability
+// signals without an extra round-trip. Payload is delivered as
+// json.RawMessage to avoid a lossy interface{} -> map[string]interface{}
+// decode; consumers json.Unmarshal it into the typed payload they expect.
+type ClaimedEvent struct {
+	Envelope   *events.EventEnvelope
+	RetryCount int
+}
 
-	if limit > 0 {
-		query += fmt.Sprintf(" LIMIT %d", limit)
+// ClaimUndeliveredEvents atomically locks and returns up to `limit`
+// undelivered events whose next_attempt_at has elapsed. The query uses
+// FOR UPDATE SKIP LOCKED so concurrent relay replicas do not race on the
+// same row.
+//
+// The caller MUST commit (or rollback) the returned transaction; locked
+// rows are released only when the transaction ends. Typical use:
+// claim -> publish each event -> [MarkBatchDelivered] /
+// [RecordDeliveryFailures] -> tx.Commit().
+func (s *OutboxStore) ClaimUndeliveredEvents(ctx context.Context, limit int) (*sql.Tx, []ClaimedEvent, error) {
+	if limit <= 0 {
+		return nil, nil, errors.New("limit must be positive")
 	}
 
-	rows, err := s.db.QueryContext(ctx, query, string(events.EventDeadLetter))
+	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return nil, fmt.Errorf("failed to fetch undelivered events: %w", err)
+		return nil, nil, fmt.Errorf("failed to begin claim tx: %w", err)
 	}
-	defer rows.Close()
 
-	var outboxEvents []*events.EventEnvelope
+	const query = `
+		SELECT event_id, event_type, aggregate_type, aggregate_id, job_id, attempt_id, lease_id, sequence, emitted_at, producer, schema_version, payload, retry_count
+		FROM EVENT_OUTBOX
+		WHERE delivered = FALSE
+		  AND event_type <> $1
+		  AND next_attempt_at <= NOW()
+		ORDER BY id
+		FOR UPDATE SKIP LOCKED
+		LIMIT $2`
+
+	rows, err := tx.QueryContext(ctx, query, string(events.EventDeadLetter), limit)
+	if err != nil {
+		_ = tx.Rollback()
+		return nil, nil, fmt.Errorf("failed to claim undelivered events: %w", err)
+	}
+
+	claims, scanErr := scanClaimedEvents(rows)
+	rows.Close()
+	if scanErr != nil {
+		_ = tx.Rollback()
+		return nil, nil, scanErr
+	}
+	return tx, claims, nil
+}
+
+func scanClaimedEvents(rows *sql.Rows) ([]ClaimedEvent, error) {
+	var out []ClaimedEvent
 	for rows.Next() {
 		var e events.EventEnvelope
 		var payloadJSON []byte
 		var attemptID, leaseID sql.NullString
 		var retryCount int
-		var lastError sql.NullString
 
-		err := rows.Scan(
+		if err := rows.Scan(
 			&e.EventID,
 			&e.EventType,
 			&e.AggregateType,
@@ -104,9 +147,7 @@ func (s *OutboxStore) FetchUndeliveredEvents(ctx context.Context, limit int) ([]
 			&e.SchemaVersion,
 			&payloadJSON,
 			&retryCount,
-			&lastError,
-		)
-		if err != nil {
+		); err != nil {
 			return nil, fmt.Errorf("failed to scan outbox event: %w", err)
 		}
 
@@ -118,58 +159,120 @@ func (s *OutboxStore) FetchUndeliveredEvents(ctx context.Context, limit int) ([]
 			id, _ := uuid.Parse(leaseID.String)
 			e.LeaseID = &id
 		}
-
-		if err := json.Unmarshal(payloadJSON, &e.Payload); err != nil {
-			return nil, fmt.Errorf("failed to unmarshal payload for event %s: %w", e.EventID, err)
-		}
-
-		outboxEvents = append(outboxEvents, &e)
+		e.Payload = json.RawMessage(payloadJSON)
+		out = append(out, ClaimedEvent{Envelope: &e, RetryCount: retryCount})
 	}
-
-	return outboxEvents, rows.Err()
+	return out, rows.Err()
 }
 
-// MarkDelivered marks an event as successfully delivered to the broker.
-func (s *OutboxStore) MarkDelivered(ctx context.Context, eventID uuid.UUID) error {
-	query := `UPDATE EVENT_OUTBOX SET delivered = TRUE, delivered_at = NOW() WHERE event_id = $1`
-	_, err := s.db.ExecContext(ctx, query, eventID)
-	if err != nil {
-		return fmt.Errorf("failed to mark event %s as delivered: %w", eventID, err)
+// MarkBatchDelivered marks the given events delivered in a single UPDATE
+// against the supplied transaction. The caller is responsible for commit.
+func (s *OutboxStore) MarkBatchDelivered(ctx context.Context, tx *sql.Tx, eventIDs []uuid.UUID) error {
+	if len(eventIDs) == 0 {
+		return nil
+	}
+	ids := make([]string, len(eventIDs))
+	for i, id := range eventIDs {
+		ids[i] = id.String()
+	}
+	const query = `UPDATE EVENT_OUTBOX SET delivered = TRUE, delivered_at = NOW() WHERE event_id = ANY($1::uuid[])`
+	if _, err := tx.ExecContext(ctx, query, pq.Array(ids)); err != nil {
+		return fmt.Errorf("failed to mark events delivered: %w", err)
 	}
 	return nil
 }
 
-// RecordDeliveryFailure increments the retry count and records the error message.
-// If maxRetries is exceeded, the event is moved to the dead letter queue
-// by updating the event_type to events.EventDeadLetter.
-func (s *OutboxStore) RecordDeliveryFailure(ctx context.Context, eventID uuid.UUID, errMsg string, maxRetries int) error {
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return fmt.Errorf("failed to begin transaction: %w", err)
-	}
-	defer tx.Rollback()
+// FailureRecord describes one delivery failure for [RecordDeliveryFailures].
+type FailureRecord struct {
+	EventID uuid.UUID
+	Err     string
+}
 
-	var retryCount int
-	err = tx.QueryRowContext(ctx, `SELECT retry_count FROM EVENT_OUTBOX WHERE event_id = $1 FOR UPDATE`, eventID).Scan(&retryCount)
-	if err != nil {
-		return fmt.Errorf("failed to get retry count: %w", err)
-	}
-
-	retryCount++
-	if retryCount >= maxRetries {
-		_, err = tx.ExecContext(ctx,
-			`UPDATE EVENT_OUTBOX SET event_type = $1, last_error = $2, retry_count = $3 WHERE event_id = $4`,
-			string(events.EventDeadLetter), errMsg, retryCount, eventID)
-	} else {
-		_, err = tx.ExecContext(ctx,
-			`UPDATE EVENT_OUTBOX SET last_error = $1, retry_count = $2 WHERE event_id = $3`,
-			errMsg, retryCount, eventID)
-	}
-	if err != nil {
-		return fmt.Errorf("failed to record delivery failure: %w", err)
+// RecordDeliveryFailures bumps retry_count, stores last_error, and
+// schedules the next attempt with exponential backoff (via the
+// outbox_backoff SQL helper). Rows that exhaust maxRetries are dead-
+// lettered while their original event_type is preserved in
+// original_event_type for replay safety (review C4). All updates run in
+// one statement against the supplied transaction.
+func (s *OutboxStore) RecordDeliveryFailures(
+	ctx context.Context,
+	tx *sql.Tx,
+	failures []FailureRecord,
+	maxRetries int,
+) error {
+	if len(failures) == 0 {
+		return nil
 	}
 
-	return tx.Commit()
+	placeholders := make([]string, 0, len(failures))
+	args := make([]interface{}, 0, len(failures)*2+1)
+	args = append(args, string(events.EventDeadLetter))
+	for i, f := range failures {
+		base := i*2 + 2
+		placeholders = append(placeholders, fmt.Sprintf("($%d::uuid, $%d::text)", base, base+1))
+		args = append(args, f.EventID, f.Err)
+	}
+
+	query := fmt.Sprintf(`
+		WITH input(event_id, err) AS (
+			VALUES %s
+		)
+		UPDATE EVENT_OUTBOX o SET
+			retry_count = o.retry_count + 1,
+			last_error  = input.err,
+			next_attempt_at = NOW() + outbox_backoff(o.retry_count + 1),
+			original_event_type = CASE
+				WHEN o.retry_count + 1 >= %d AND o.event_type <> $1 THEN o.event_type
+				ELSE o.original_event_type
+			END,
+			event_type = CASE
+				WHEN o.retry_count + 1 >= %d THEN $1
+				ELSE o.event_type
+			END
+		FROM input
+		WHERE o.event_id = input.event_id`,
+		strings.Join(placeholders, ","), maxRetries, maxRetries)
+
+	if _, err := tx.ExecContext(ctx, query, args...); err != nil {
+		return fmt.Errorf("failed to record delivery failures: %w", err)
+	}
+	return nil
+}
+
+// EnsureBackoffFunction installs the outbox_backoff(retries int) helper
+// used by [RecordDeliveryFailures]. Idempotent; call once at service
+// startup. Kept as a Go-driven CREATE OR REPLACE so the algorithm can
+// evolve without a schema change.
+func (s *OutboxStore) EnsureBackoffFunction(ctx context.Context) error {
+	const ddl = `
+		CREATE OR REPLACE FUNCTION outbox_backoff(retries INT) RETURNS INTERVAL
+		LANGUAGE plpgsql AS $$
+		DECLARE
+			base_ms NUMERIC := 1000;
+			max_ms  NUMERIC := 30000;
+			expo_ms NUMERIC;
+		BEGIN
+			IF retries < 1 THEN retries := 1; END IF;
+			expo_ms := LEAST(base_ms * power(2, retries - 1), max_ms);
+			RETURN make_interval(secs => (expo_ms + random() * (expo_ms / 4)) / 1000.0);
+		END;$$;`
+	if _, err := s.db.ExecContext(ctx, ddl); err != nil {
+		return fmt.Errorf("failed to install outbox_backoff function: %w", err)
+	}
+	return nil
+}
+
+// PurgeDeliveredOlderThan deletes successfully-delivered rows older than
+// the cutoff. Run periodically to bound table growth; the relay's claim
+// query is unaffected because it filters delivered = FALSE.
+func (s *OutboxStore) PurgeDeliveredOlderThan(ctx context.Context, cutoff time.Time) (int64, error) {
+	res, err := s.db.ExecContext(ctx,
+		`DELETE FROM EVENT_OUTBOX WHERE delivered = TRUE AND delivered_at < $1`, cutoff)
+	if err != nil {
+		return 0, fmt.Errorf("failed to purge delivered events: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	return n, nil
 }
 
 // GetOutboxStats returns statistics about the outbox table for observability.
@@ -189,19 +292,23 @@ func (s *OutboxStore) GetOutboxStats(ctx context.Context) (undelivered int, deli
 	return
 }
 
-// ReplayDeadLetteredEvents retrieves events from the DLQ for manual replay.
+// ReplayDeadLetteredEvents retrieves events from the DLQ for manual
+// inspection. Payload is returned as json.RawMessage; see
+// [ClaimUndeliveredEvents] for rationale.
 func (s *OutboxStore) ReplayDeadLetteredEvents(ctx context.Context, limit int) ([]*events.EventEnvelope, error) {
-	query := `
+	const baseQuery = `
 		SELECT event_id, event_type, aggregate_type, aggregate_id, job_id, attempt_id, lease_id, sequence, emitted_at, producer, schema_version, payload
 		FROM EVENT_OUTBOX
 		WHERE event_type = $1
 		ORDER BY retry_count DESC, emitted_at ASC`
 
+	var rows *sql.Rows
+	var err error
 	if limit > 0 {
-		query += fmt.Sprintf(" LIMIT %d", limit)
+		rows, err = s.db.QueryContext(ctx, baseQuery+" LIMIT $2", string(events.EventDeadLetter), limit)
+	} else {
+		rows, err = s.db.QueryContext(ctx, baseQuery, string(events.EventDeadLetter))
 	}
-
-	rows, err := s.db.QueryContext(ctx, query, string(events.EventDeadLetter))
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch dead-lettered events: %w", err)
 	}
@@ -213,11 +320,10 @@ func (s *OutboxStore) ReplayDeadLetteredEvents(ctx context.Context, limit int) (
 		var payloadJSON []byte
 		var attemptID, leaseID sql.NullString
 
-		err := rows.Scan(
+		if err := rows.Scan(
 			&e.EventID, &e.EventType, &e.AggregateType, &e.AggregateID, &e.JobID,
 			&attemptID, &leaseID, &e.Sequence, &e.EmittedAt, &e.Producer, &e.SchemaVersion, &payloadJSON,
-		)
-		if err != nil {
+		); err != nil {
 			return nil, fmt.Errorf("failed to scan dead-lettered event: %w", err)
 		}
 
@@ -229,29 +335,49 @@ func (s *OutboxStore) ReplayDeadLetteredEvents(ctx context.Context, limit int) (
 			id, _ := uuid.Parse(leaseID.String)
 			e.LeaseID = &id
 		}
-
-		if err := json.Unmarshal(payloadJSON, &e.Payload); err != nil {
-			return nil, fmt.Errorf("failed to unmarshal payload for event %s: %w", e.EventID, err)
-		}
-
+		e.Payload = json.RawMessage(payloadJSON)
 		replayEvents = append(replayEvents, &e)
 	}
 
 	return replayEvents, rows.Err()
 }
 
-// ReprocessEvent resets a dead-lettered event for retry (moves back to pending queue).
+// ReprocessEvent resets a dead-lettered event for retry, restoring its
+// original event_type so downstream consumers see the correct semantics
+// after replay (review C4). Returns sql.ErrNoRows when the event is not
+// currently in the DLQ.
 func (s *OutboxStore) ReprocessEvent(ctx context.Context, eventID uuid.UUID) error {
-	query := `UPDATE EVENT_OUTBOX SET event_type = $1, retry_count = 0, last_error = NULL WHERE event_id = $2 AND event_type = $3`
-	_, err := s.db.ExecContext(ctx, query, string(events.TaskAttemptFailed), eventID, string(events.EventDeadLetter))
+	const query = `
+		UPDATE EVENT_OUTBOX SET
+			event_type = COALESCE(original_event_type, event_type),
+			original_event_type = NULL,
+			retry_count = 0,
+			last_error = NULL,
+			next_attempt_at = NOW()
+		WHERE event_id = $1 AND event_type = $2`
+
+	res, err := s.db.ExecContext(ctx, query, eventID, string(events.EventDeadLetter))
 	if err != nil {
 		return fmt.Errorf("failed to reprocess event %s: %w", eventID, err)
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return sql.ErrNoRows
 	}
 	return nil
 }
 
-// UpdateSchemaVersion attempts to upconvert event payload schema.
-// Returns the event with upconverted payload if migration was needed.
+// ErrUnknownEventTypeMigration is returned by [UpconvertEventSchema] when
+// the requested target version exceeds what this binary knows how to
+// migrate for the given event_type. Returning an error rather than
+// silently bumping schema_version surfaces missed producer-side updates
+// (review M3).
+var ErrUnknownEventTypeMigration = errors.New("no migration registered for event_type at requested target version")
+
+// UpconvertEventSchema upgrades a payload's schema_version when needed.
+// It refuses to bump the version for event types it does not know how to
+// migrate; callers should treat this as a hard error in tests and a
+// metric-emitting warning in production rather than ignoring it.
 func (s *OutboxStore) UpconvertEventSchema(ctx context.Context, event *events.EventEnvelope, targetVersion int) (*events.EventEnvelope, error) {
 	if event.SchemaVersion >= targetVersion {
 		return event, nil
@@ -259,7 +385,6 @@ func (s *OutboxStore) UpconvertEventSchema(ctx context.Context, event *events.Ev
 
 	switch event.EventType {
 	case events.TaskAssigned:
-		// Re-marshal payload to get bytes for unmarshaling
 		payloadBytes, err := json.Marshal(event.Payload)
 		if err != nil {
 			return nil, fmt.Errorf("failed to re-marshal payload: %w", err)
@@ -268,15 +393,14 @@ func (s *OutboxStore) UpconvertEventSchema(ctx context.Context, event *events.Ev
 		if err := json.Unmarshal(payloadBytes, &payload); err != nil {
 			return nil, fmt.Errorf("failed to unmarshal payload: %w", err)
 		}
-		// Example migration: add new field with default value
 		if payload.WorkerID == "" {
 			payload.WorkerID = "unknown-migrated"
 		}
 		event.Payload = payload
 		event.SchemaVersion = targetVersion
+		return event, nil
 	default:
-		event.SchemaVersion = targetVersion
+		return nil, fmt.Errorf("%w: type=%s current=%d target=%d",
+			ErrUnknownEventTypeMigration, event.EventType, event.SchemaVersion, targetVersion)
 	}
-
-	return event, nil
 }
