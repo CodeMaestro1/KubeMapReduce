@@ -315,10 +315,9 @@ func (k *KubeOrchestrator) EnsureWorkerPool(ctx context.Context, jobID string, n
 								{Name: "JOB_ID", Value: jobID},
 								{Name: "MANAGER_ADDR", Value: managerAddr},
 								{Name: "GRPC_TLS_CERT_FILE", Value: "/tls/tls.crt"},
-								secretEnvVar("S3_ENDPOINT", k.workerSecretName, "MINIO_ENDPOINT"),
-								secretEnvVar("S3_ACCESS_KEY", k.workerSecretName, "MINIO_ACCESS_KEY"),
-								secretEnvVar("S3_SECRET_KEY", k.workerSecretName, "MINIO_SECRET_KEY"),
-								secretEnvVar("MINIO_BUCKET", k.workerSecretName, "MINIO_BUCKET"),
+								// MinIO credentials are read from /etc/worker-secrets/* files (volume
+								// mount below). Env vars are omitted to avoid credential exposure via
+								// /proc/<pid>/environ, kubectl describe, and crash dumps.
 								secretEnvVar("WORKER_RPC_TOKEN", k.workerSecretName, "MANAGER_WORKER_RPC_TOKEN"),
 							},
 							Resources: resources,
