@@ -17,11 +17,11 @@ func TestNewDefaultTimeoutConfig(t *testing.T) {
 	}
 
 	expectedMethods := map[string]time.Duration{
-		"/proto.WorkerService/Heartbeat":    2 * time.Second,
-		"/proto.WorkerService/Register":     5 * time.Second,
-		"/proto.WorkerService/TaskComplete": 10 * time.Second,
-		"/proto.WorkerService/TaskFailed":   10 * time.Second,
-		"/proto.WorkerService/TaskStream":   4 * time.Hour,
+		"/mapreduce.WorkerService/Heartbeat":    2 * time.Second,
+		"/mapreduce.WorkerService/Register":     5 * time.Second,
+		"/mapreduce.WorkerService/TaskComplete": 10 * time.Second,
+		"/mapreduce.WorkerService/TaskFailed":   10 * time.Second,
+		"/mapreduce.WorkerService/TaskStream":   4 * time.Hour,
 	}
 
 	for method, expectedTimeout := range expectedMethods {
@@ -45,7 +45,7 @@ func TestTimeoutInterceptorUnaryServer(t *testing.T) {
 			return "ok", nil
 		}
 
-		info := &grpc.UnaryServerInfo{FullMethod: "/proto.WorkerService/Register"}
+		info := &grpc.UnaryServerInfo{FullMethod: "/mapreduce.WorkerService/Register"}
 		resp, err := interceptor(context.Background(), nil, info, handler)
 
 		if err != nil {
@@ -70,7 +70,7 @@ func TestTimeoutInterceptorUnaryServer(t *testing.T) {
 		}
 
 		// Use Heartbeat which has 2s timeout
-		info := &grpc.UnaryServerInfo{FullMethod: "/proto.WorkerService/Heartbeat"}
+		info := &grpc.UnaryServerInfo{FullMethod: "/mapreduce.WorkerService/Heartbeat"}
 		_, err := interceptor(context.Background(), nil, info, handler)
 
 		if err == nil {
@@ -89,7 +89,7 @@ func TestTimeoutInterceptorUnaryServer(t *testing.T) {
 			return nil, handlerErr
 		}
 
-		info := &grpc.UnaryServerInfo{FullMethod: "/proto.WorkerService/Register"}
+		info := &grpc.UnaryServerInfo{FullMethod: "/mapreduce.WorkerService/Register"}
 		_, err := interceptor(context.Background(), nil, info, handler)
 
 		if err != handlerErr {
@@ -112,7 +112,7 @@ func TestTimeoutInterceptorUnaryServer(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		cancel()
 
-		info := &grpc.UnaryServerInfo{FullMethod: "/proto.WorkerService/Register"}
+		info := &grpc.UnaryServerInfo{FullMethod: "/mapreduce.WorkerService/Register"}
 		_, err := interceptor(ctx, nil, info, handler)
 
 		// Should get context canceled error
@@ -134,7 +134,7 @@ func TestTimeoutInterceptorClientUnary(t *testing.T) {
 
 		err := interceptor(
 			context.Background(),
-			"/proto.WorkerService/Register",
+			"/mapreduce.WorkerService/Register",
 			nil, nil, nil, invoker,
 		)
 
@@ -158,7 +158,7 @@ func TestTimeoutInterceptorClientUnary(t *testing.T) {
 
 		err := interceptor(
 			context.Background(),
-			"/proto.WorkerService/Heartbeat", // 2s timeout
+			"/mapreduce.WorkerService/Heartbeat", // 2s timeout
 			nil, nil, nil, invoker,
 		)
 
@@ -220,11 +220,11 @@ func TestTimeoutValues(t *testing.T) {
 		method  string
 		maxTime time.Duration
 	}{
-		{"/proto.WorkerService/Heartbeat", 2 * time.Second},
-		{"/proto.WorkerService/Register", 5 * time.Second},
-		{"/proto.WorkerService/TaskComplete", 10 * time.Second},
-		{"/proto.WorkerService/TaskFailed", 10 * time.Second},
-		{"/proto.WorkerService/TaskStream", 4 * time.Hour},
+		{"/mapreduce.WorkerService/Heartbeat", 2 * time.Second},
+		{"/mapreduce.WorkerService/Register", 5 * time.Second},
+		{"/mapreduce.WorkerService/TaskComplete", 10 * time.Second},
+		{"/mapreduce.WorkerService/TaskFailed", 10 * time.Second},
+		{"/mapreduce.WorkerService/TaskStream", 4 * time.Hour},
 	}
 
 	for _, tt := range tests {
@@ -246,7 +246,7 @@ func BenchmarkUnaryServerInterceptor(b *testing.B) {
 		return "ok", nil
 	}
 
-	info := &grpc.UnaryServerInfo{FullMethod: "/proto.WorkerService/Register"}
+	info := &grpc.UnaryServerInfo{FullMethod: "/mapreduce.WorkerService/Register"}
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
@@ -266,7 +266,7 @@ func BenchmarkClientUnaryInterceptor(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		interceptor(
 			context.Background(),
-			"/proto.WorkerService/Register",
+			"/mapreduce.WorkerService/Register",
 			nil, nil, nil, invoker,
 		)
 	}

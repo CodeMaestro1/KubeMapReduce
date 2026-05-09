@@ -77,7 +77,7 @@ func (w *Worker) Run(ctx context.Context) error {
 		})
 		if err != nil {
 			if err == io.EOF {
-				if _, recvErr := stream.Recv(); recvErr != nil {
+				if _, recvErr := stream.Recv(); recvErr != nil && recvErr != io.EOF {
 					return fmt.Errorf("send ready (server closed stream): %w", recvErr)
 				}
 			}

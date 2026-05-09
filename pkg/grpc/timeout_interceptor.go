@@ -22,8 +22,8 @@ type TimeoutInterceptorConfig struct {
 	// MethodTimeouts maps full RPC method names to their timeout durations.
 	// Format: "/proto.ServiceName/MethodName"
 	// Examples:
-	//   - "/proto.WorkerService/Heartbeat" -> 2 seconds
-	//   - "/proto.WorkerService/Register" -> 5 seconds
+	//   - "/mapreduce.WorkerService/Heartbeat" -> 2 seconds
+	//   - "/mapreduce.WorkerService/Register" -> 5 seconds
 	MethodTimeouts map[string]time.Duration
 }
 
@@ -37,11 +37,11 @@ func NewDefaultTimeoutConfig() *TimeoutInterceptorConfig {
 	return &TimeoutInterceptorConfig{
 		DefaultTimeout: 10 * time.Second,
 		MethodTimeouts: map[string]time.Duration{
-			"/proto.WorkerService/Heartbeat":    2 * time.Second,
-			"/proto.WorkerService/Register":     5 * time.Second,
-			"/proto.WorkerService/TaskComplete": 10 * time.Second,
-			"/proto.WorkerService/TaskFailed":   10 * time.Second,
-			"/proto.WorkerService/TaskStream":   4 * time.Hour,
+			"/mapreduce.WorkerService/Heartbeat":    2 * time.Second,
+			"/mapreduce.WorkerService/Register":     5 * time.Second,
+			"/mapreduce.WorkerService/TaskComplete": 10 * time.Second,
+			"/mapreduce.WorkerService/TaskFailed":   10 * time.Second,
+			"/mapreduce.WorkerService/TaskStream":   4 * time.Hour,
 		},
 	}
 }
@@ -285,7 +285,7 @@ func (c *TimeoutInterceptorConfig) TimeoutForMethod(method string) (time.Duratio
 func (c *TimeoutInterceptorConfig) RetryStrategyForMethod(method string) *RetryConfig {
 	// Define which methods should NOT retry
 	noRetryMethods := map[string]bool{
-		"/proto.WorkerService/Heartbeat": true, // Heartbeat should fail-fast, no retries
+		"/mapreduce.WorkerService/Heartbeat": true, // Heartbeat should fail-fast, no retries
 	}
 
 	// If method should not retry, return nil or zero-retry config
@@ -295,11 +295,11 @@ func (c *TimeoutInterceptorConfig) RetryStrategyForMethod(method string) *RetryC
 
 	// Define retry strategies for other methods
 	switch method {
-	case "/proto.WorkerService/Register":
+	case "/mapreduce.WorkerService/Register":
 		return &RetryConfig{MaxRetries: 3, BackoffStrategy: "exponential"}
-	case "/proto.WorkerService/TaskComplete":
+	case "/mapreduce.WorkerService/TaskComplete":
 		return &RetryConfig{MaxRetries: 2, BackoffStrategy: "exponential"}
-	case "/proto.WorkerService/TaskFailed":
+	case "/mapreduce.WorkerService/TaskFailed":
 		return &RetryConfig{MaxRetries: 2, BackoffStrategy: "exponential"}
 	default:
 		return &RetryConfig{MaxRetries: 1, BackoffStrategy: "exponential"}
