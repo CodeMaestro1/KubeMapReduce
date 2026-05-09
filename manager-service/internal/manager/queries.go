@@ -178,6 +178,23 @@ const QueryCountAttemptsByTask = `SELECT COUNT(*) FROM TASK_ATTEMPTS WHERE task_
 // Used by both FailTask (→ Idle or Failed) and FailStaleTasks.
 const QueryUpdateTaskStatus = `UPDATE TASKS SET status = $1, current_attempt_id = NULL WHERE task_id = $2`
 
+// QueryLockNonCompletedTasksByJob acquires exclusive row-level locks on every
+// non-completed task for a given job. Call this inside a transaction before
+// QueryBulkFailNonCompletedTasksByJob to serialize with concurrent tryAssignTask
+// calls (which use SELECT … FOR UPDATE SKIP LOCKED) and prevent a task from
+// being assigned to a new worker after the job has been cancelled.
+const QueryLockNonCompletedTasksByJob = `
+	SELECT task_id FROM TASKS
+	WHERE job_id = $1 AND status != 'Completed'
+	FOR UPDATE`
+
+// QueryBulkFailNonCompletedTasksByJob transitions all Idle and In-Progress tasks
+// to Failed in a single statement. Must be called after QueryLockNonCompletedTasksByJob
+// so that the lock is already held for all matching rows.
+const QueryBulkFailNonCompletedTasksByJob = `
+	UPDATE TASKS SET status = 'Failed'
+	WHERE job_id = $1 AND status != 'Completed'`
+
 // QueryFailAttempt marks an attempt as Failed with an end timestamp.
 const QueryFailAttempt = `UPDATE TASK_ATTEMPTS SET status = 'Failed', end_time = NOW() WHERE attempt_id = $1`
 

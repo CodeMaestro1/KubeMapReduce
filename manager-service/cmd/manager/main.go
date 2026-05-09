@@ -78,6 +78,9 @@ func main() {
 	if err := db.Ping(); err != nil {
 		log.Fatalf("failed to ping database: %v", err)
 	}
+	db.SetMaxOpenConns(25)
+	db.SetMaxIdleConns(10)
+	db.SetConnMaxLifetime(5 * time.Minute)
 
 	// For StatefulSet replica routing
 	hostname, _ := os.Hostname()
@@ -134,6 +137,7 @@ func main() {
 		log.Fatalf("failed to create scheduler: %v", err)
 	}
 	workerServer.SetScheduler(scheduler)
+	scheduler.SetLeaseClockSkewSeconds(cfg.LeaseClockSkewSeconds)
 
 	// Background context for reaper, reconciler, and outbox relay.
 	ctx, cancel := context.WithCancel(context.Background())

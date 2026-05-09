@@ -40,6 +40,13 @@ func main() {
 		transportOption(cfg),
 		grpc.WithChainUnaryInterceptor(timeoutCfg.ClientUnaryInterceptor()),
 		grpc.WithChainStreamInterceptor(timeoutCfg.ClientStreamInterceptor()),
+		// Enforce explicit message-size limits. The manifest fallback (2 MiB) keeps
+		// normal responses well below MaxCallRecvMsgSize, but a misconfigured Manager
+		// or network error could otherwise cause unbounded memory growth.
+		grpc.WithDefaultCallOptions(
+			grpc.MaxCallRecvMsgSize(16*1024*1024), // 16 MiB receive cap
+			grpc.MaxCallSendMsgSize(4*1024*1024),  // 4 MiB send cap
+		),
 	}
 	if cfg.WorkerRPCToken != "" {
 		dialOpts = append(dialOpts, grpc.WithPerRPCCredentials(rpcToken{cfg.WorkerRPCToken}))

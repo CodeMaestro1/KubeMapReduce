@@ -1441,7 +1441,10 @@ func TestScheduler_CancelJob_Success(t *testing.T) {
 	mock.ExpectExec(regexp.QuoteMeta(QueryUpdateJobStatus)).
 		WithArgs(jobID, "Cleaning").
 		WillReturnResult(sqlmock.NewResult(1, 1))
-	mock.ExpectExec("UPDATE TASKS SET status = 'Failed' WHERE job_id =").
+	mock.ExpectQuery(regexp.QuoteMeta(QueryLockNonCompletedTasksByJob)).
+		WithArgs(jobID).
+		WillReturnRows(sqlmock.NewRows([]string{"task_id"}))
+	mock.ExpectExec(regexp.QuoteMeta(QueryBulkFailNonCompletedTasksByJob)).
 		WithArgs(jobID).
 		WillReturnResult(sqlmock.NewResult(1, 3))
 	mock.ExpectExec(regexp.QuoteMeta(QueryFailRunningAttemptsByJob)).

@@ -39,6 +39,10 @@ type Config struct {
 	MaxMissedHeartbeats int
 	// LeaseTTL is calculated as HeartbeatInterval * MaxMissedHeartbeats.
 	LeaseTTL int
+	// LeaseClockSkewSeconds is the tolerance (in seconds) added to the lease
+	// TTL check to account for clock skew between the Manager and worker nodes.
+	// Configurable via LEASE_CLOCK_SKEW_SECONDS; defaults to 5.
+	LeaseClockSkewSeconds int
 
 	// Object storage configuration for input and intermediate data.
 	MinioEndpoint string
@@ -197,6 +201,11 @@ func Load() (*Config, error) {
 		NATSCredsFile:                   getEnv("NATS_CREDS_FILE", ""),
 	}
 	cfg.LeaseTTL = cfg.HeartbeatInterval * cfg.MaxMissedHeartbeats
+	clockSkew, err := getEnvInt("LEASE_CLOCK_SKEW_SECONDS", 5)
+	if err != nil {
+		return nil, err
+	}
+	cfg.LeaseClockSkewSeconds = clockSkew
 	return cfg, nil
 }
 
