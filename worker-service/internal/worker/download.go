@@ -232,6 +232,35 @@ func splitChecksumURI(raw string) (uri, checksum string) {
 	return raw, ""
 }
 
+// fetchPrecedingByte reads the single byte immediately before position start.
+// Returns (true, nil) when that byte is '\n', meaning start falls exactly on a
+// line boundary and the caller should NOT discard the first record in the window.
+// When start == 0 the window begins at the file's first byte; returns (true, nil)
+// so no skip is performed.
+func fetchPrecedingByte(ctx context.Context, storage objectStorage, bucket, key string, start int64) (atLineBoundary bool, err error) {
+	if start == 0 {
+		return true, nil
+	}
+	opts := minio.GetObjectOptions{}
+	if setErr := opts.SetRange(start-1, start-1); setErr != nil {
+		return false, fmt.Errorf("fetchPrecedingByte SetRange: %w", setErr)
+	}
+	rc, getErr := storage.GetObject(ctx, bucket, key, opts)
+	if getErr != nil {
+		return false, fmt.Errorf("fetchPrecedingByte GetObject: %w", getErr)
+	}
+	buf := make([]byte, 1)
+	_, readErr := io.ReadFull(rc, buf)
+	closeErr := rc.Close()
+	if readErr != nil {
+		return false, fmt.Errorf("fetchPrecedingByte read: %w", readErr)
+	}
+	if closeErr != nil {
+		return false, fmt.Errorf("fetchPrecedingByte close: %w", closeErr)
+	}
+	return buf[0] == '\n', nil
+}
+
 // maxRawRangeBytes caps the total bytes getRawRange will read before giving up.
 // Guards against OOM when a malicious or corrupt input file contains no newlines.
 const maxRawRangeBytes int64 = 256 << 20 // 256 MiB

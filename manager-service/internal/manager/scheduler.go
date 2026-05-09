@@ -251,9 +251,12 @@ func (s *Scheduler) Recover(ctx context.Context) error {
 func (s *Scheduler) prepareRetryAttemptTx(ctx context.Context, tx *sql.Tx, taskID string) (string, error) {
 	attemptID := uuid.New()
 	leaseID := uuid.New()
-	_, err := tx.ExecContext(ctx, QueryUpdateTaskInProgress, attemptID, taskID)
+	res, err := tx.ExecContext(ctx, QueryUpdateTaskInProgress, attemptID, taskID)
 	if err != nil {
 		return "", err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return "", fmt.Errorf("task %s: %w", taskID, ErrInvalidStateTransition)
 	}
 	_, err = tx.ExecContext(ctx, QueryInsertAttempt,
 		attemptID,
@@ -503,9 +506,12 @@ func (s *Scheduler) tryAssignTask(ctx context.Context, tx *sql.Tx, requestedJobI
 		return nil, err
 	}
 
-	_, err = tx.ExecContext(ctx, QueryUpdateTaskInProgress, attemptID, taskID)
+	res, err := tx.ExecContext(ctx, QueryUpdateTaskInProgress, attemptID, taskID)
 	if err != nil {
 		return nil, err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return nil, fmt.Errorf("task %s: %w", taskID, ErrInvalidStateTransition)
 	}
 
 	_, err = tx.ExecContext(ctx, QueryInsertAttempt,
