@@ -75,7 +75,10 @@ const QueryCountAllPendingTasks = `SELECT COUNT(*) FROM TASKS WHERE job_id = $1 
 
 // QueryUpdateTaskInProgress transitions a task from Idle to In-Progress and
 // binds it to a specific attempt. Part of the atomic assignment transaction.
-const QueryUpdateTaskInProgress = `UPDATE TASKS SET status = 'In-Progress', current_attempt_id = $1 WHERE task_id = $2`
+// The AND status = 'Idle' guard prevents double-scheduling: if the row was
+// somehow already promoted to In-Progress by a concurrent transaction, this
+// UPDATE affects 0 rows so the caller can detect and abort the assignment.
+const QueryUpdateTaskInProgress = `UPDATE TASKS SET status = 'In-Progress', current_attempt_id = $1 WHERE task_id = $2 AND status = 'Idle'`
 
 // QueryInsertAttempt creates a new TASK_ATTEMPTS record when a worker is assigned.
 // lease_ttl is caller-provided from scheduler config (HeartbeatInterval * MaxMissedHeartbeats).

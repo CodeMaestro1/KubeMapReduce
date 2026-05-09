@@ -61,10 +61,9 @@ func buildCmd(ctx context.Context, codePath, runtimeEnv string) (*exec.Cmd, erro
 		// Compiled binary: downloadCode already stripped the extension and set
 		// execute permissions; run the binary directly.
 		return exec.CommandContext(ctx, safePath), nil
-	case rt == "sh" || ext == ".sh":
-		// Shell script: run with sh interpreter
-		return exec.CommandContext(ctx, "sh", safePath), nil
 	case rt == "":
+		// NOTE: shell scripts (.sh) are intentionally not supported to prevent
+		// arbitrary command injection through user-supplied code artifacts.
 		// No runtime specified and no recognized extension; treat as pre-compiled binary
 		// only if it has no extension (i.e., likely a compiled binary).
 		if ext == "" {
@@ -73,7 +72,7 @@ func buildCmd(ctx context.Context, codePath, runtimeEnv string) (*exec.Cmd, erro
 		fallthrough
 	default:
 		// Unknown runtime or unsupported file extension.
-		return nil, fmt.Errorf("unsupported runtime %q or unknown file extension %q; supported: python3, java, c, cpp, sh", rt, ext)
+		return nil, fmt.Errorf("unsupported runtime %q or unknown file extension %q; supported: python3, java, c, cpp", rt, ext)
 	}
 }
 
