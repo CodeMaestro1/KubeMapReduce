@@ -378,16 +378,30 @@ func (w *Worker) SubscribeToNATS(ctx context.Context, natsURL string) (<-chan *p
 	w.natsConn = conn
 	w.natsInbound = make(chan *pb.TaskAssignment, 10)
 
+	// Subject matches manager's SubjectForEvent partitioning: <event_type>.<job_id>.
+	// Subscribing per-job means each worker only receives assignments for its own job.
 	subject := fmt.Sprintf("tasks.assigned.%s", w.cfg.JobID)
 	_, err = conn.Subscribe(subject, func(msg *nats.Msg) {
 		var assignment pb.TaskAssignment
 		if err := json.Unmarshal(msg.Data, &assignment); err != nil {
 			log.Printf("[worker] failed to unmarshal task: %v", err)
+			// Note: with core NATS (non-JetStream) Nak/Ack are no-ops; the message
+			// is fire-and-forget. Manager retains authoritative state in the DDS
+			// and will redispatch via heartbeat-driven reaping if the worker drops.
 			msg.Nak()
 			return
 		}
-		w.natsInbound <- &assignment
-		msg.Ack()
+		// Non-blocking dispatch: if the inbound channel is saturated (slow
+		// consumer or a worker that is already busy), drop the hint rather than
+		// blocking the NATS callback goroutine. The DDS remains the source of
+		// truth; the worker will pick the task up on its next gRPC pull.
+		select {
+		case w.natsInbound <- &assignment:
+			msg.Ack()
+		default:
+			log.Printf("[worker] natsInbound saturated, dropping assignment hint task_id=%s", assignment.TaskId)
+			msg.Ack()
+		}
 	})
 	if err != nil {
 		conn.Close()
