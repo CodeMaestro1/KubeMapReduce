@@ -218,6 +218,7 @@ func (s *Scheduler) Recover(ctx context.Context) error {
 	}
 
 	spawnFailures := 0
+	failedSpawnJobs := make(map[string]struct{})
 	for jobID := range uniqueJobs {
 		spawnCtx, cancel := context.WithTimeout(ctx, recoverSpawnTimeout)
 		err := s.orchestrator.EnsureWorkerPool(spawnCtx, jobID, 0, s.managerAddr)
@@ -228,12 +229,16 @@ func (s *Scheduler) Recover(ctx context.Context) error {
 				slog.Any("err", err),
 			)
 			spawnFailures++
+			failedSpawnJobs[jobID] = struct{}{}
 		}
 	}
 
 	// Also need to re-populate the task queues for the WorkerServer (dispatcher)
 	// so workers can pull them.
 	for _, rec := range attemptsToSpawn {
+		if _, failed := failedSpawnJobs[rec.jobID]; failed {
+			continue
+		}
 		spawnCtx, cancel := context.WithTimeout(ctx, recoverSpawnTimeout)
 		task, err := s.GetTaskByID(spawnCtx, rec.taskID)
 		if err == nil {

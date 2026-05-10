@@ -19,6 +19,18 @@ type MockDispatcher struct{}
 
 func (m *MockDispatcher) DispatchTask(ctx context.Context, task *Task) error { return nil }
 
+type recordingDispatcher struct {
+	mu    sync.Mutex
+	tasks []*Task
+}
+
+func (d *recordingDispatcher) DispatchTask(ctx context.Context, task *Task) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.tasks = append(d.tasks, task)
+	return nil
+}
+
 // expectReplicaCheck adds the authoritative routing query expectation.
 func expectReplicaCheck(mock sqlmock.Sqlmock, jobID string, replicaIndex int) {
 	mock.ExpectQuery(`SELECT replica_index FROM JOBS`).
@@ -60,6 +72,18 @@ func setupMockDBWithOrchestrator(t *testing.T, orchestrator WorkerOrchestrator) 
 	return db, mock, scheduler
 }
 
+func setupMockDBWithOrchestratorAndDispatcher(t *testing.T, orchestrator WorkerOrchestrator, dispatcher TaskDispatcher) (*sql.DB, sqlmock.Sqlmock, *Scheduler) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("an error '%s' was not expected when opening a stub database connection", err)
+	}
+	scheduler, err := NewScheduler(db, 0, 1, orchestrator, dispatcher, "manager-0:50051", 30, nil)
+	if err != nil {
+		t.Fatalf("unexpected error creating scheduler: %v", err)
+	}
+	return db, mock, scheduler
+}
+
 type spawnCall struct {
 	taskID      string
 	attemptID   string
@@ -72,6 +96,21 @@ type recordingOrchestrator struct {
 	cancelJobs  []string
 	deletedJobs []string
 	err         error
+}
+
+type selectiveFailureOrchestrator struct {
+	failJobs map[string]struct{}
+}
+
+func (o *selectiveFailureOrchestrator) EnsureWorkerPool(ctx context.Context, jobID string, numWorkers int, managerAddr string) error {
+	if _, shouldFail := o.failJobs[jobID]; shouldFail {
+		return errors.New("k8s unavailable")
+	}
+	return nil
+}
+
+func (o *selectiveFailureOrchestrator) CancelJob(ctx context.Context, jobID string) error {
+	return nil
 }
 
 type deadlineRecordingOrchestrator struct {
@@ -827,6 +866,48 @@ func TestScheduler_Recover_PartialSpawnFailure_DoesNotReturnError(t *testing.T) 
 
 	if err := scheduler.Recover(context.Background()); err != nil {
 		t.Fatalf("expected recover to continue after partial spawn failures, got %v", err)
+	}
+}
+
+func TestScheduler_Recover_SkipsRedispatchForFailedSpawnJobs(t *testing.T) {
+	failingJobID := uuid.NewString()
+	healthyJobID := uuid.NewString()
+	failingTaskID := uuid.NewString()
+	healthyTaskID := uuid.NewString()
+	attemptID := uuid.NewString()
+
+	orchestrator := &selectiveFailureOrchestrator{failJobs: map[string]struct{}{failingJobID: {}}}
+	dispatcher := &recordingDispatcher{}
+	db, mock, scheduler := setupMockDBWithOrchestratorAndDispatcher(t, orchestrator, dispatcher)
+	defer db.Close()
+
+	mock.ExpectQuery(regexp.QuoteMeta(QuerySelectRecoverableAttempts)).
+		WithArgs(0).
+		WillReturnRows(sqlmock.NewRows([]string{"task_id", "current_attempt_id", "job_id", "last_renewed_at"}).
+			AddRow(failingTaskID, attemptID, failingJobID, time.Now()).
+			AddRow(healthyTaskID, attemptID, healthyJobID, time.Now()))
+
+	// Only the healthy job should be redispatched.
+	mock.ExpectQuery(`SELECT task_id, job_id, task_type, status, current_attempt_id, replica_index FROM TASKS`).
+		WithArgs(healthyTaskID).
+		WillReturnRows(sqlmock.NewRows([]string{"task_id", "job_id", "task_type", "status", "current_attempt_id", "replica_index"}).
+			AddRow(healthyTaskID, healthyJobID, "Map", "In-Progress", nil, 0))
+
+	healthyTaskUUID, err := uuid.Parse(healthyTaskID)
+	if err != nil {
+		t.Fatalf("invalid healthy task UUID in test setup: %v", err)
+	}
+	expectTaskMetadataQueries(mock, healthyTaskUUID, "s3://code/mapper.py", "s3://code/reducer.py", 1)
+
+	if err := scheduler.Recover(context.Background()); err != nil {
+		t.Fatalf("unexpected recover error: %v", err)
+	}
+
+	if len(dispatcher.tasks) != 1 {
+		t.Fatalf("expected exactly one redispatched task, got %d", len(dispatcher.tasks))
+	}
+	if dispatcher.tasks[0].ID != healthyTaskID {
+		t.Fatalf("expected redispatched task %s, got %s", healthyTaskID, dispatcher.tasks[0].ID)
 	}
 }
 
