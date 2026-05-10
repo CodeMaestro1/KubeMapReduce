@@ -4,6 +4,9 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
+	"log"
+	"os"
 	"sort"
 	"sync"
 	"time"
@@ -158,30 +161,39 @@ func (s *PostgresJobStore) Ping(ctx context.Context) error {
 // This atomicity is critical: it prevents a "partial" job where the metadata
 // exists but the configuration required for scheduling is missing.
 func (s *PostgresJobStore) CreateJob(ctx context.Context, rec JobRecord) error {
+	fmt.Fprintf(os.Stderr, "STORE-CreateJob: called with jobID=%s\n", rec.JobID)
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
+		log.Printf("CreateJob: BeginTx failed: %v", err)
 		return err
 	}
 	defer tx.Rollback()
 
 	jobUUID, err := uuid.Parse(rec.JobID)
 	if err != nil {
+		log.Printf("CreateJob: Parse jobID failed: %v", err)
 		return err
 	}
 
 	now := rec.CreatedAt
 	userUUID, err := parseUserUUID(rec.UserID)
 	if err != nil {
+		log.Printf("CreateJob: parseUserUUID failed: %v", err)
 		return err
 	}
 	replicaIndex, err := manager.ComputeReplicaIndex(rec.JobID, s.totalReplicas)
 	if err != nil {
+		log.Printf("CreateJob: ComputeReplicaIndex failed: %v", err)
 		return err
 	}
+	log.Printf("CreateJob: jobID=%s userID=%s replica=%d mTasks=%d reducers=%d input=%s mapper=%s reducer=%s",
+		rec.JobID, rec.UserID, replicaIndex, rec.MTasks, rec.Reducers, rec.Filename, rec.MapperURI, rec.ReducerURI)
 	if _, err := tx.ExecContext(ctx, queryInsertAPIJob, jobUUID, userUUID, now, now, replicaIndex); err != nil {
+		log.Printf("CreateJob: insert JOBS failed: %v", err)
 		return err
 	}
 	if _, err := tx.ExecContext(ctx, queryInsertAPIJobConfig, jobUUID, rec.Filename, rec.MapperURI, rec.ReducerURI, rec.CombinerURI, rec.MTasks, rec.Reducers, rec.InputChecksum); err != nil {
+		log.Printf("CreateJob: insert JOB_CONFIGS failed: %v", err)
 		return err
 	}
 

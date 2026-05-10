@@ -195,48 +195,38 @@ func (s *Scheduler) authoritativeManagerAddr(jobID string) string {
 // orchestrator to ensure a physical worker process exists for each. This ensures
 // continuity across Manager crashes without losing progress.
 func (s *Scheduler) Recover(ctx context.Context) error {
-	rows, err := s.db.QueryContext(ctx, QuerySelectRecoverableAttempts, s.replicaIndex)
+	// 1. Reset all tasks for this replica to Idle so workers can pick them up.
+	res, err := s.db.ExecContext(ctx, QueryResetTasksForReplica, s.replicaIndex)
 	if err != nil {
-		return fmt.Errorf("failed to query recoverable attempts: %w", err)
+		return fmt.Errorf("failed to reset tasks for replica: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	if n > 0 {
+		slog.InfoContext(ctx, "reset tasks to idle during recovery",
+			slog.Int("replica_index", s.replicaIndex),
+			slog.Int64("count", n),
+		)
+	}
+
+	// 2. Identify jobs that might need workers.
+	// We check all non-Completed jobs belonging to this replica.
+	rows, err := s.db.QueryContext(ctx, "SELECT job_id FROM JOBS WHERE status = 'Running' AND replica_index = $1", s.replicaIndex)
+	if err != nil {
+		return fmt.Errorf("failed to query running jobs: %w", err)
 	}
 	defer rows.Close()
 
-	type recoverableAttempt struct {
-		taskID        string
-		attemptID     string
-		jobID         string
-		lastRenewedAt time.Time
-	}
-	var attemptsToSpawn []recoverableAttempt
+	var jobIDs []string
 	for rows.Next() {
-		var rec recoverableAttempt
-		if err := rows.Scan(&rec.taskID, &rec.attemptID, &rec.jobID, &rec.lastRenewedAt); err != nil {
-			return fmt.Errorf("failed to scan recoverable attempt during recovery: %w", err)
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return err
 		}
-		attemptsToSpawn = append(attemptsToSpawn, rec)
-	}
-	if err := rows.Err(); err != nil {
-		return fmt.Errorf("row error during recovery: %w", err)
+		jobIDs = append(jobIDs, id)
 	}
 
-	// Warm the heartbeat map from DB so the reaper does not immediately evict
-	// tasks that were alive before this Manager restart.
-	for _, rec := range attemptsToSpawn {
-		s.heartbeats.Store(rec.attemptID, rec.lastRenewedAt)
-	}
-
-	const recoverSpawnTimeout = 20 * time.Second
-
-	// Deduplicate job IDs for worker pool ensuring
-	uniqueJobs := make(map[string]struct{})
-	for _, rec := range attemptsToSpawn {
-		uniqueJobs[rec.jobID] = struct{}{}
-	}
-
-	spawnFailures := 0
-	failedSpawnJobs := make(map[string]struct{})
-	for jobID := range uniqueJobs {
-		spawnCtx, cancel := context.WithTimeout(ctx, recoverSpawnTimeout)
+	for _, jobID := range jobIDs {
+		spawnCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 		err := s.orchestrator.EnsureWorkerPool(spawnCtx, jobID, 0, s.managerAddr)
 		cancel()
 		if err != nil {
@@ -244,36 +234,9 @@ func (s *Scheduler) Recover(ctx context.Context) error {
 				slog.String("job_id", jobID),
 				slog.Any("err", err),
 			)
-			spawnFailures++
-			failedSpawnJobs[jobID] = struct{}{}
 		}
 	}
 
-	// Also need to re-populate the task queues for the WorkerServer (dispatcher)
-	// so workers can pull them.
-	for _, rec := range attemptsToSpawn {
-		if _, failed := failedSpawnJobs[rec.jobID]; failed {
-			continue
-		}
-		spawnCtx, cancel := context.WithTimeout(ctx, recoverSpawnTimeout)
-		task, err := s.GetTaskByID(spawnCtx, rec.taskID)
-		if err == nil {
-			err = s.dispatcher.DispatchTask(spawnCtx, task)
-		}
-		cancel()
-		if err != nil {
-			slog.ErrorContext(ctx, "failed to redispatch recovered task",
-				slog.String("task_id", rec.taskID),
-				slog.Any("err", err),
-			)
-		}
-	}
-	if spawnFailures > 0 {
-		slog.WarnContext(ctx, "worker recovery completed with spawn failures; reaper will retry",
-			slog.Int("spawn_failures", spawnFailures),
-			slog.Int("total_attempts", len(attemptsToSpawn)),
-		)
-	}
 	return nil
 }
 
@@ -1344,15 +1307,18 @@ func (s *Scheduler) FailStaleTasks(ctx context.Context) (int, error) {
 		attemptID    string
 		jobID        string
 		attemptCount int
+		lastRenewedAt time.Time
+		leaseTTL      int
 	}
 	var stales []staleRec
 	for rows.Next() {
 		var t, a, j string
-		var c int
-		if err := rows.Scan(&t, &a, &j, &c); err != nil {
+		var c, ttl int
+		var lr time.Time
+		if err := rows.Scan(&t, &a, &j, &c, &lr, &ttl); err != nil {
 			return 0, fmt.Errorf("scanning stale task row: %w", err)
 		}
-		stales = append(stales, staleRec{t, a, j, c})
+		stales = append(stales, staleRec{t, a, j, c, lr, ttl})
 	}
 	if err := rows.Err(); err != nil {
 		return 0, fmt.Errorf("iterating stale task rows: %w", err)
@@ -1369,12 +1335,16 @@ func (s *Scheduler) FailStaleTasks(ctx context.Context) (int, error) {
 	failedJobs := make(map[string]struct{})
 	for _, rec := range stales {
 		// IN-MEMORY FILTER: skip if heartbeat is fresh
+		// FILTER: skip if heartbeat is fresh (either in memory or in DB)
+		heartbeatTime := rec.lastRenewedAt
 		if val, ok := s.heartbeats.Load(rec.attemptID); ok {
 			if last, ok := val.(time.Time); ok {
-				if time.Since(last) < time.Duration(s.leaseTTL)*time.Second {
-					continue
-				}
+				heartbeatTime = last
 			}
+		}
+
+		if time.Since(heartbeatTime) < time.Duration(rec.leaseTTL+s.leaseClockSkewSeconds)*time.Second {
+			continue
 		}
 
 		newState := "Idle"
@@ -1398,11 +1368,8 @@ func (s *Scheduler) FailStaleTasks(ctx context.Context) (int, error) {
 			failedTaskIDs = append(failedTaskIDs, rec.taskID)
 			failedJobs[rec.jobID] = struct{}{}
 		} else if newState == "Idle" {
-			retryAttemptID, err := s.prepareRetryAttemptTx(ctx, tx, rec.taskID)
-			if err != nil {
-				return 0, fmt.Errorf("creating retry attempt for task %s: %w", rec.taskID, err)
-			}
-			respawnTasks = append(respawnTasks, retrySpawn{taskID: rec.taskID, attemptID: retryAttemptID, jobID: rec.jobID})
+			// Set to Idle and let GetNextTask handle re-assignment
+			respawnTasks = append(respawnTasks, retrySpawn{taskID: rec.taskID, attemptID: "", jobID: rec.jobID})
 		}
 		recoveredCount++
 	}

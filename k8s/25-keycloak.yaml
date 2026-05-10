@@ -85,7 +85,7 @@ spec:
             - name: KC_PROXY
               value: edge
             - name: KC_HOSTNAME_STRICT
-              value: "true"
+              value: "false"
             # Force consistent issuer URL regardless of how Keycloak is accessed.
             # CLI must set KEYCLOAK_BASE_URL to this value (or use port-forward
             # with API_URL pointing here). For production replace with the real

@@ -88,8 +88,7 @@ spec:
           securityContext:
             runAsNonRoot: true
             runAsUser: 999
-          command:
-            - postgres
+          args:
             - -c
             - ssl=on
             - -c

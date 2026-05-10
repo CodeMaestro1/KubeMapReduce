@@ -80,9 +80,21 @@ func New(cfg *config.Config, client pb.WorkerServiceClient, shuffleClient pb.Shu
 // Run establishes a persistent connection to the Manager via TaskStream and
 // executes tasks as they are assigned.
 func (w *Worker) Run(ctx context.Context) error {
-	stream, err := w.client.TaskStream(ctx)
-	if err != nil {
-		return fmt.Errorf("open task stream: %w", err)
+	var stream pb.WorkerService_TaskStreamClient
+	var err error
+
+	// Retry loop for initial connection to handle transient DNS/network issues
+	// common in dynamic environments like Kubernetes during scale-up/rollout.
+	for {
+		stream, err = w.client.TaskStream(ctx)
+		if err == nil {
+			break
+		}
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		log.Printf("[worker] failed to open task stream, retrying in 2s: %v", err)
+		time.Sleep(2 * time.Second)
 	}
 
 	recvCh := make(chan streamRecvResult, 32)

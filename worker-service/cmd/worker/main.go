@@ -105,7 +105,6 @@ type loggerWriter struct {
 
 func (w loggerWriter) Write(p []byte) (int, error) {
 	msg := string(p)
-	// strip a trailing newline so JSON records read cleanly
 	if n := len(msg); n > 0 && msg[n-1] == '\n' {
 		msg = msg[:n-1]
 	}

@@ -30,8 +30,8 @@ spec:
         fsGroup: 1000
       containers:
         - name: api
-          image: konstantinospisimisis/kubemapreduce:api
-          imagePullPolicy: Always
+          image: kubemapreduce/api:latest
+          imagePullPolicy: IfNotPresent
           ports:
             - name: http
               containerPort: 8081
