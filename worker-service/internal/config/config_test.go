@@ -2,6 +2,7 @@ package config
 
 import (
 	"os"
+	"path/filepath"
 	"testing"
 )
 
@@ -194,5 +195,27 @@ func TestLoad_FileBasedSecrets_FallsBackToEnvWhenFilesMissing(t *testing.T) {
 	}
 	if cfg.MinioSecretKey != "sk" {
 		t.Errorf("MinioSecretKey = %q, want %q", cfg.MinioSecretKey, "sk")
+	}
+}
+
+func TestLoad_WorkerRPCTokenFromFile(t *testing.T) {
+	t.Setenv("TASK_ID", "t1")
+	t.Setenv("ATTEMPT_ID", "a1")
+	t.Setenv("MANAGER_ADDR", "manager:50051")
+
+	dir := t.TempDir()
+	tokenFile := filepath.Join(dir, "rpc-token")
+	if err := os.WriteFile(tokenFile, []byte("token-from-file\n"), 0o600); err != nil {
+		t.Fatalf("write token file: %v", err)
+	}
+	t.Setenv("WORKER_RPC_TOKEN_FILE", tokenFile)
+	t.Setenv("WORKER_RPC_TOKEN", "token-from-env")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.WorkerRPCToken != "token-from-file" {
+		t.Fatalf("WorkerRPCToken = %q, want %q", cfg.WorkerRPCToken, "token-from-file")
 	}
 }

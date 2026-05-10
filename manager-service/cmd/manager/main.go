@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log"
 	"log/slog"
 	"net"
@@ -27,6 +28,7 @@ import (
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/reflection"
 	"google.golang.org/grpc/status"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 
@@ -87,7 +89,8 @@ func main() {
 
 	// For StatefulSet replica routing
 	hostname, _ := os.Hostname()
-	replicaIndex := resolveReplicaIndex(hostname)
+	totalReplicas := cfg.TotalReplicas
+	replicaIndex := resolveReplicaIndex(hostname, totalReplicas)
 	namespace := strings.TrimSpace(os.Getenv("POD_NAMESPACE"))
 	if namespace == "" {
 		namespace = "default"
@@ -107,6 +110,16 @@ func main() {
 		clientset, err := kubernetes.NewForConfig(k8sConfig)
 		if err != nil {
 			log.Fatalf("failed to create k8s clientset: %v", err)
+		}
+		statefulSetName := strings.TrimSpace(os.Getenv("MANAGER_STATEFULSET_NAME"))
+		if statefulSetName == "" {
+			statefulSetName = "manager"
+		}
+		if discoveredReplicas, discoverErr := discoverStatefulSetReplicas(context.Background(), clientset, namespace, statefulSetName); discoverErr != nil {
+			log.Printf("[WARN] failed to discover StatefulSet replicas for %s/%s: %v; using configured STATEFULSET_REPLICAS=%d", namespace, statefulSetName, discoverErr, totalReplicas)
+		} else {
+			totalReplicas = discoveredReplicas
+			replicaIndex = resolveReplicaIndex(hostname, totalReplicas)
 		}
 		orchestrator = manager.NewKubeOrchestrator(clientset, namespace, "kubemapreduce/worker:latest", cfg.WorkerSecretName).
 			WithResourceProvider(manager.NewDBResourceConfigProvider(db))
@@ -135,7 +148,7 @@ func main() {
 	workerServer := mgrpc.NewWorkerServer(nil, nil, cfg.ManifestThresholdBytes)
 	shuffleServer := mgrpc.NewShuffleServer()
 
-	scheduler, err := manager.NewScheduler(db, replicaIndex, cfg.TotalReplicas, orchestrator, workerServer, managerAddr, cfg.LeaseTTL, stagingCleaner)
+	scheduler, err := manager.NewScheduler(db, replicaIndex, totalReplicas, orchestrator, workerServer, managerAddr, cfg.LeaseTTL, stagingCleaner)
 	if err != nil {
 		log.Fatalf("failed to create scheduler: %v", err)
 	}
@@ -367,18 +380,22 @@ func main() {
 	log.Println("manager service stopped")
 }
 
-func resolveReplicaIndex(hostname string) int {
+func resolveReplicaIndex(hostname string, totalReplicas int) int {
 	ordinal := strings.TrimSpace(os.Getenv("STATEFULSET_ORDINAL"))
 	if ordinal != "" {
 		if idx, err := strconv.Atoi(ordinal); err == nil && idx >= 0 {
+			if totalReplicas > 0 && idx >= totalReplicas {
+				log.Printf("[WARN] STATEFULSET_ORDINAL=%d is out of range for total replicas=%d, falling back to hostname parsing", idx, totalReplicas)
+				return parseReplicaIndexFromHostname(hostname, totalReplicas)
+			}
 			return idx
 		}
 		log.Printf("[WARN] invalid STATEFULSET_ORDINAL=%q, falling back to hostname parsing", ordinal)
 	}
-	return parseReplicaIndexFromHostname(hostname)
+	return parseReplicaIndexFromHostname(hostname, totalReplicas)
 }
 
-func parseReplicaIndexFromHostname(hostname string) int {
+func parseReplicaIndexFromHostname(hostname string, totalReplicas int) int {
 	hostname = strings.TrimSpace(hostname)
 	if hostname == "" {
 		return 0
@@ -389,6 +406,9 @@ func parseReplicaIndexFromHostname(hostname string) int {
 	}
 	idx, err := strconv.Atoi(hostname[lastDash+1:])
 	if err != nil || idx < 0 {
+		return 0
+	}
+	if totalReplicas > 0 && idx >= totalReplicas {
 		return 0
 	}
 	return idx
@@ -410,7 +430,8 @@ func resolveManagerAddr(hostname, headlessService, namespace, port string) strin
 func isAuthorizedInternalRequest(r *http.Request, expectedToken string, allowInsecureLoopback bool) bool {
 	expectedToken = strings.TrimSpace(expectedToken)
 	if expectedToken != "" {
-		return r.Header.Get("X-Internal-Token") == expectedToken
+		provided := r.Header.Get("X-Internal-Token")
+		return subtle.ConstantTimeCompare([]byte(provided), []byte(expectedToken)) == 1
 	}
 	return allowInsecureLoopback && isLoopbackRemoteAddr(r.RemoteAddr)
 }
@@ -523,6 +544,17 @@ func defaultReaperInterval(leaseTTLSeconds int) time.Duration {
 		return time.Second
 	}
 	return interval
+}
+
+func discoverStatefulSetReplicas(ctx context.Context, clientset kubernetes.Interface, namespace string, name string) (int, error) {
+	sts, err := clientset.AppsV1().StatefulSets(namespace).Get(ctx, name, metav1.GetOptions{})
+	if err != nil {
+		return 0, err
+	}
+	if sts.Spec.Replicas == nil || *sts.Spec.Replicas <= 0 {
+		return 0, fmt.Errorf("statefulset %s/%s has invalid replica count", namespace, name)
+	}
+	return int(*sts.Spec.Replicas), nil
 }
 
 // runOutboxQueueDepthLoop periodically samples the undelivered-outbox count

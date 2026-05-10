@@ -26,6 +26,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/minio/minio-go/v7"
+	"k8s.io/apimachinery/pkg/api/resource"
 )
 
 // Handlers holds HTTP handler state for the API server.
@@ -47,6 +48,9 @@ const (
 	maxJSONBodyBytes  = 1 << 20 // 1 MiB
 	inputBucketName   = "mapreduce-inputs"
 	stagingBucketName = "mapreduce-staging"
+	maxAdminPods      = 10000
+	maxWorkerReplicas = 1000
+	maxJobsPerNode    = 1000
 )
 
 var defaultTargetSplitSizeBytes int64 = 64 * 1024 * 1024
@@ -494,6 +498,14 @@ func parseOutputURI(uri string) (bucket, key string, err error) {
 	return rest[:idx], rest[idx+1:], nil
 }
 
+func buildManagerInternalURL(managerAddr string, path string) string {
+	base := strings.TrimSpace(managerAddr)
+	if strings.HasPrefix(base, "http://") || strings.HasPrefix(base, "https://") {
+		return strings.TrimRight(base, "/") + path
+	}
+	return "http://" + base + path
+}
+
 // HandleAdminConfigWorkers is the unified POST /api/v1/admin/config/workers handler.
 //
 // It replaces the legacy PUT /api/v1/admin/workers/config and PUT /api/v1/admin/nodes/config
@@ -514,13 +526,37 @@ func (h *Handlers) HandleAdminConfigWorkers(w http.ResponseWriter, r *http.Reque
 		httputil.WriteErrorJSON(w, http.StatusBadRequest, "maxPods must be non-negative")
 		return
 	}
+	if req.MaxPods > maxAdminPods {
+		httputil.WriteErrorJSON(w, http.StatusBadRequest, fmt.Sprintf("maxPods must be <= %d", maxAdminPods))
+		return
+	}
 	if req.WorkerReplicas < 0 {
 		httputil.WriteErrorJSON(w, http.StatusBadRequest, "workerReplicas must be non-negative")
+		return
+	}
+	if req.WorkerReplicas > maxWorkerReplicas {
+		httputil.WriteErrorJSON(w, http.StatusBadRequest, fmt.Sprintf("workerReplicas must be <= %d", maxWorkerReplicas))
 		return
 	}
 	if req.MaxJobsPerNode < 0 {
 		httputil.WriteErrorJSON(w, http.StatusBadRequest, "maxJobsPerNode must be non-negative")
 		return
+	}
+	if req.MaxJobsPerNode > maxJobsPerNode {
+		httputil.WriteErrorJSON(w, http.StatusBadRequest, fmt.Sprintf("maxJobsPerNode must be <= %d", maxJobsPerNode))
+		return
+	}
+	if cpu := strings.TrimSpace(req.CPULimit); cpu != "" {
+		if _, err := resource.ParseQuantity(cpu); err != nil {
+			httputil.WriteErrorJSON(w, http.StatusBadRequest, "invalid cpuLimit")
+			return
+		}
+	}
+	if mem := strings.TrimSpace(req.MemoryLimit); mem != "" {
+		if _, err := resource.ParseQuantity(mem); err != nil {
+			httputil.WriteErrorJSON(w, http.StatusBadRequest, "invalid memoryLimit")
+			return
+		}
 	}
 	if req.MaxPods == 0 && req.WorkerReplicas == 0 && req.MaxJobsPerNode == 0 &&
 		strings.TrimSpace(req.CPULimit) == "" && strings.TrimSpace(req.MemoryLimit) == "" &&
@@ -544,7 +580,7 @@ func (h *Handlers) HandleAdminConfigWorkers(w http.ResponseWriter, r *http.Reque
 		httputil.WriteErrorJSON(w, http.StatusInternalServerError, "failed to serialize config update")
 		return
 	}
-	managerURL := fmt.Sprintf("http://%s/internal/config", h.managerAddr)
+	managerURL := buildManagerInternalURL(h.managerAddr, "/internal/config")
 	proxyReq, err := http.NewRequestWithContext(r.Context(), http.MethodPut, managerURL, bytes.NewReader(payload))
 	if err != nil {
 		httputil.WriteErrorJSON(w, http.StatusInternalServerError, "failed to build proxy request")
@@ -586,7 +622,7 @@ func (h *Handlers) postSchedule(ctx context.Context, req manager.ScheduleJobRequ
 	if err != nil {
 		return fmt.Errorf("marshal schedule request: %w", err)
 	}
-	url := fmt.Sprintf("http://%s/internal/schedule", h.managerAddr)
+	url := buildManagerInternalURL(h.managerAddr, "/internal/schedule")
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
 		return fmt.Errorf("build schedule request: %w", err)
@@ -1092,7 +1128,7 @@ func (h *Handlers) HandleJobsDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	managerURL := fmt.Sprintf("http://%s/internal/jobs/%s", h.managerAddr, jobID)
+	managerURL := buildManagerInternalURL(h.managerAddr, fmt.Sprintf("/internal/jobs/%s", jobID))
 	proxyReq, err := http.NewRequestWithContext(r.Context(), http.MethodDelete, managerURL, nil)
 	if err != nil {
 		httputil.WriteErrorJSON(w, http.StatusInternalServerError, "failed to build cancellation request")

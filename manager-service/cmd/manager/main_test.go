@@ -12,6 +12,9 @@ import (
 	"time"
 
 	"google.golang.org/grpc/metadata"
+	appsv1 "k8s.io/api/apps/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/kubernetes/fake"
 
 	"kubemapreduce/manager-service/internal/config"
 	"kubemapreduce/manager-service/internal/manager"
@@ -21,18 +24,20 @@ func TestParseReplicaIndexFromHostname(t *testing.T) {
 	tests := []struct {
 		name     string
 		hostname string
+		total    int
 		want     int
 	}{
-		{name: "single digit ordinal", hostname: "manager-2", want: 2},
-		{name: "multi digit ordinal", hostname: "manager-10", want: 10},
-		{name: "missing suffix", hostname: "manager", want: 0},
-		{name: "invalid suffix", hostname: "manager-a", want: 0},
-		{name: "empty hostname", hostname: "", want: 0},
+		{name: "single digit ordinal", hostname: "manager-2", total: 3, want: 2},
+		{name: "multi digit ordinal", hostname: "manager-10", total: 11, want: 10},
+		{name: "out of range ordinal", hostname: "manager-10", total: 3, want: 0},
+		{name: "missing suffix", hostname: "manager", total: 3, want: 0},
+		{name: "invalid suffix", hostname: "manager-a", total: 3, want: 0},
+		{name: "empty hostname", hostname: "", total: 3, want: 0},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := parseReplicaIndexFromHostname(tc.hostname); got != tc.want {
+			if got := parseReplicaIndexFromHostname(tc.hostname, tc.total); got != tc.want {
 				t.Fatalf("parseReplicaIndexFromHostname(%q) = %d, want %d", tc.hostname, got, tc.want)
 			}
 		})
@@ -41,15 +46,38 @@ func TestParseReplicaIndexFromHostname(t *testing.T) {
 
 func TestResolveReplicaIndexUsesStatefulsetOrdinalWhenValid(t *testing.T) {
 	t.Setenv("STATEFULSET_ORDINAL", "7")
-	if got := resolveReplicaIndex("manager-2"); got != 7 {
+	if got := resolveReplicaIndex("manager-2", 8); got != 7 {
 		t.Fatalf("resolveReplicaIndex should use STATEFULSET_ORDINAL, got %d", got)
 	}
 }
 
 func TestResolveReplicaIndexFallsBackToHostname(t *testing.T) {
 	t.Setenv("STATEFULSET_ORDINAL", "invalid")
-	if got := resolveReplicaIndex("manager-12"); got != 12 {
+	if got := resolveReplicaIndex("manager-12", 13); got != 12 {
 		t.Fatalf("resolveReplicaIndex should fall back to hostname, got %d", got)
+	}
+}
+
+func TestResolveReplicaIndexFallsBackWhenOrdinalOutOfRange(t *testing.T) {
+	t.Setenv("STATEFULSET_ORDINAL", "12")
+	if got := resolveReplicaIndex("manager-1", 3); got != 1 {
+		t.Fatalf("resolveReplicaIndex should fall back to hostname for out-of-range ordinal, got %d", got)
+	}
+}
+
+func TestDiscoverStatefulSetReplicas(t *testing.T) {
+	replicas := int32(5)
+	client := fake.NewSimpleClientset(&appsv1.StatefulSet{
+		ObjectMeta: metav1.ObjectMeta{Name: "manager", Namespace: "mapreduce"},
+		Spec:       appsv1.StatefulSetSpec{Replicas: &replicas},
+	})
+
+	got, err := discoverStatefulSetReplicas(context.Background(), client, "mapreduce", "manager")
+	if err != nil {
+		t.Fatalf("discoverStatefulSetReplicas() error = %v", err)
+	}
+	if got != 5 {
+		t.Fatalf("discoverStatefulSetReplicas() = %d, want 5", got)
 	}
 }
 

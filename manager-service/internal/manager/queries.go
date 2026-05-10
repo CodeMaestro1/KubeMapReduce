@@ -215,6 +215,15 @@ const QueryFailRunningAttemptsByJob = `
 	  AND t.job_id = $1
 	  AND a.status = 'Running'`
 
+// QuerySelectRunningAttemptIDsByJob lists active attempt IDs for a job.
+// Used by CancelJob to purge stale in-memory heartbeat entries after commit.
+const QuerySelectRunningAttemptIDsByJob = `
+	SELECT a.attempt_id
+	FROM TASK_ATTEMPTS a
+	JOIN TASKS t ON a.task_id = t.task_id
+	WHERE t.job_id = $1
+	  AND a.status = 'Running'`
+
 // QuerySelectStaleTasks finds all in-progress tasks belonging to this manager replica.
 // The Manager's Active Reaper uses this as a starting point, then filters by in-memory heartbeats.
 const QuerySelectStaleTasks = `

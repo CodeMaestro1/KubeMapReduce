@@ -1514,6 +1514,8 @@ func TestScheduler_CancelJob_Success(t *testing.T) {
 	defer db.Close()
 
 	jobID := uuid.New().String()
+	attemptID := uuid.New().String()
+	scheduler.heartbeats.Store(attemptID, time.Now())
 
 	mock.ExpectBegin()
 	mock.ExpectQuery(regexp.QuoteMeta(QueryGetJobStatusForUpdate)).
@@ -1525,6 +1527,9 @@ func TestScheduler_CancelJob_Success(t *testing.T) {
 	mock.ExpectQuery(regexp.QuoteMeta(QueryLockNonCompletedTasksByJob)).
 		WithArgs(jobID).
 		WillReturnRows(sqlmock.NewRows([]string{"task_id"}))
+	mock.ExpectQuery(regexp.QuoteMeta(QuerySelectRunningAttemptIDsByJob)).
+		WithArgs(jobID).
+		WillReturnRows(sqlmock.NewRows([]string{"attempt_id"}).AddRow(attemptID))
 	mock.ExpectExec(regexp.QuoteMeta(QueryBulkFailNonCompletedTasksByJob)).
 		WithArgs(jobID).
 		WillReturnResult(sqlmock.NewResult(1, 3))
@@ -1540,6 +1545,10 @@ func TestScheduler_CancelJob_Success(t *testing.T) {
 
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Errorf("unfulfilled expectations: %s", err)
+	}
+
+	if _, ok := scheduler.heartbeats.Load(attemptID); ok {
+		t.Fatalf("expected heartbeat cache entry %s to be removed", attemptID)
 	}
 }
 

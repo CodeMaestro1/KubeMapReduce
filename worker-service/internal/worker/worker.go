@@ -51,6 +51,11 @@ type Worker struct {
 	natsInbound chan *pb.TaskAssignment
 }
 
+type streamRecvResult struct {
+	resp *pb.StreamResponse
+	err  error
+}
+
 // New creates a production Worker wired to the given gRPC client and MinIO instance.
 
 // New creates a production Worker wired to the given gRPC client and MinIO instance.
@@ -80,6 +85,18 @@ func (w *Worker) Run(ctx context.Context) error {
 		return fmt.Errorf("open task stream: %w", err)
 	}
 
+	recvCh := make(chan streamRecvResult, 32)
+	go func() {
+		defer close(recvCh)
+		for {
+			resp, recvErr := stream.Recv()
+			recvCh <- streamRecvResult{resp: resp, err: recvErr}
+			if recvErr != nil {
+				return
+			}
+		}
+	}()
+
 	workerID := fmt.Sprintf("worker-%s-%s", w.cfg.JobID, uuid.NewString()[:8])
 	log.Printf("[worker] pool started id=%s job=%s", workerID, w.cfg.JobID)
 
@@ -101,7 +118,12 @@ func (w *Worker) Run(ctx context.Context) error {
 		}
 
 		// 2. Wait for assignment
-		resp, err := stream.Recv()
+		result, ok := <-recvCh
+		if !ok {
+			return nil
+		}
+		resp := result.resp
+		err = result.err
 		if err == io.EOF {
 			return nil
 		}
@@ -121,14 +143,14 @@ func (w *Worker) Run(ctx context.Context) error {
 		}
 
 		log.Printf("[worker] assigned task=%s type=%s", assignment.TaskId, assignment.Type)
-		if err := w.executeTask(ctx, stream, workerID, assignment); err != nil {
+		if err := w.executeTask(ctx, stream, recvCh, workerID, assignment); err != nil {
 			log.Printf("[worker] task %s failed: %v", assignment.TaskId, err)
 			// Continue to next task
 		}
 	}
 }
 
-func (w *Worker) executeTask(ctx context.Context, stream pb.WorkerService_TaskStreamClient, workerID string, assignment *pb.TaskAssignment) error {
+func (w *Worker) executeTask(ctx context.Context, stream pb.WorkerService_TaskStreamClient, recvCh <-chan streamRecvResult, workerID string, assignment *pb.TaskAssignment) error {
 	if w.storage == nil {
 		return fmt.Errorf("object storage is not configured")
 	}
@@ -154,7 +176,7 @@ func (w *Worker) executeTask(ctx context.Context, stream pb.WorkerService_TaskSt
 	heartbeatDone := make(chan struct{})
 	go func() {
 		defer close(heartbeatDone)
-		w.streamHeartbeatLoop(taskCtx, stream, workerID, assignment, terminated, taskCancel, sendMu)
+		w.streamHeartbeatLoop(taskCtx, stream, recvCh, workerID, assignment, terminated, taskCancel, sendMu)
 	}()
 
 	var outputURIs, outputChecksums []string
@@ -214,6 +236,7 @@ func (w *Worker) executeTask(ctx context.Context, stream pb.WorkerService_TaskSt
 func (w *Worker) streamHeartbeatLoop(
 	ctx context.Context,
 	stream pb.WorkerService_TaskStreamClient,
+	recvCh <-chan streamRecvResult,
 	workerID string,
 	a *pb.TaskAssignment,
 	terminated chan<- string,
@@ -244,15 +267,32 @@ func (w *Worker) streamHeartbeatLoop(
 				log.Printf("[worker] heartbeat send error: %v", err)
 				return
 			}
-			resp, err := stream.Recv()
-			if err != nil {
-				log.Printf("[worker] heartbeat recv error: %v", err)
-				return
-			}
-			if hb := resp.GetHeartbeatAck(); hb != nil && hb.Action == pb.HeartbeatResponse_TERMINATE {
-				notifyTermination(terminated, "manager TERMINATE")
-				taskCancel()
-				return
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case result, ok := <-recvCh:
+					if !ok {
+						return
+					}
+					if result.err != nil {
+						if result.err != io.EOF {
+							log.Printf("[worker] heartbeat recv error: %v", result.err)
+						}
+						return
+					}
+					hb := result.resp.GetHeartbeatAck()
+					if hb == nil {
+						// Ignore non-heartbeat stream frames while a task is executing.
+						continue
+					}
+					if hb.Action == pb.HeartbeatResponse_TERMINATE {
+						notifyTermination(terminated, "manager TERMINATE")
+						taskCancel()
+						return
+					}
+					break
+				}
 			}
 		}
 	}

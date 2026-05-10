@@ -1550,6 +1550,35 @@ func TestHandleAdminConfigWorkers_CombinedConfig(t *testing.T) {
 	}
 }
 
+func TestHandleAdminConfigWorkers_RejectsOutOfRangeValues(t *testing.T) {
+	h := newTestHandlers()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/config/workers", strings.NewReader(`{"maxPods":10001}`))
+	rec := httptest.NewRecorder()
+	h.HandleAdminConfigWorkers(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected %d, got %d", http.StatusBadRequest, rec.Code)
+	}
+}
+
+func TestHandleAdminConfigWorkers_RejectsInvalidResourceQuantity(t *testing.T) {
+	h := newTestHandlers()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/config/workers", strings.NewReader(`{"cpuLimit":"not-a-quantity"}`))
+	rec := httptest.NewRecorder()
+	h.HandleAdminConfigWorkers(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected %d, got %d", http.StatusBadRequest, rec.Code)
+	}
+}
+
+func TestBuildManagerInternalURL_PreservesScheme(t *testing.T) {
+	if got := buildManagerInternalURL("https://manager.example.local", "/internal/config"); got != "https://manager.example.local/internal/config" {
+		t.Fatalf("unexpected URL: %s", got)
+	}
+	if got := buildManagerInternalURL("manager.example.local:8081", "/internal/config"); got != "http://manager.example.local:8081/internal/config" {
+		t.Fatalf("unexpected URL: %s", got)
+	}
+}
+
 // ── Route parsing edge-case regression tests ────────────────
 
 func TestHandleJobsGet_EmptyPathValue_Returns400(t *testing.T) {

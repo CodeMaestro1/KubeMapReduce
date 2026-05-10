@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -168,11 +169,19 @@ func (s *Scheduler) authoritativeManagerAddr(jobID string) string {
 	if err != nil || idx == s.replicaIndex {
 		return s.managerAddr
 	}
-	// Rewrite the ordinal in the stable DNS name:
-	// "manager-0.manager-headless...." → "manager-N.manager-headless...."
-	old := fmt.Sprintf("manager-%d.", s.replicaIndex)
-	replacement := fmt.Sprintf("manager-%d.", idx)
-	return strings.Replace(s.managerAddr, old, replacement, 1)
+	host, port, err := net.SplitHostPort(strings.TrimSpace(s.managerAddr))
+	if err != nil {
+		return s.managerAddr
+	}
+	parts := strings.SplitN(host, ".", 2)
+	if len(parts) != 2 {
+		return s.managerAddr
+	}
+	if !strings.HasPrefix(parts[0], "manager-") {
+		return s.managerAddr
+	}
+	newHost := fmt.Sprintf("manager-%d.%s", idx, parts[1])
+	return net.JoinHostPort(newHost, port)
 }
 
 // for tasks that are "In-Progress" and bound to this replica index, then uses the
@@ -1115,6 +1124,25 @@ func (s *Scheduler) CancelJob(ctx context.Context, jobID string) error {
 	}
 	rows.Close()
 
+	attemptRows, err := tx.QueryContext(ctx, QuerySelectRunningAttemptIDsByJob, jobID)
+	if err != nil {
+		return err
+	}
+	attemptIDs := make([]string, 0)
+	for attemptRows.Next() {
+		var attemptID string
+		if scanErr := attemptRows.Scan(&attemptID); scanErr != nil {
+			attemptRows.Close()
+			return scanErr
+		}
+		attemptIDs = append(attemptIDs, attemptID)
+	}
+	if err := attemptRows.Err(); err != nil {
+		attemptRows.Close()
+		return err
+	}
+	attemptRows.Close()
+
 	_, err = tx.ExecContext(ctx, QueryBulkFailNonCompletedTasksByJob, jobID)
 	if err != nil {
 		return err
@@ -1136,6 +1164,10 @@ func (s *Scheduler) CancelJob(ctx context.Context, jobID string) error {
 
 	if err := tx.Commit(); err != nil {
 		return err
+	}
+
+	for _, attemptID := range attemptIDs {
+		s.heartbeats.Delete(attemptID)
 	}
 
 	s.enqueueCleanup(jobID, "Cancelled")
