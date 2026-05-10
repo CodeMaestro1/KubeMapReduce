@@ -2447,9 +2447,22 @@ Glob.prototype._processGlobStar2 = function (prefix, read, abs, remain, index, i
 }
 
 Glob.prototype._processSimple = function (prefix, index, cb) {
-  // XXX review this.  Shouldn't it be doing the mounting etc
-  // before doing stat?  kinda weird?
   var self = this
+
+  if (prefix && isAbsolute(prefix) && !this.nomount) {
+    var trail = /[\\\/]$/.test(prefix)
+    if (prefix.charAt(0) === '/') {
+      prefix = path.join(this.root, prefix)
+    } else {
+      prefix = path.resolve(this.root, prefix)
+      if (trail)
+        prefix += '/'
+    }
+  }
+
+  if (process.platform === 'win32')
+    prefix = prefix.replace(/\\/g, '/')
+
   this._stat(prefix, function (er, exists) {
     self._processSimple2(prefix, index, er, exists, cb)
   })
@@ -2464,20 +2477,6 @@ Glob.prototype._processSimple2 = function (prefix, index, er, exists, cb) {
   // If it doesn't exist, then just mark the lack of results
   if (!exists)
     return cb()
-
-  if (prefix && isAbsolute(prefix) && !this.nomount) {
-    var trail = /[\/\\]$/.test(prefix)
-    if (prefix.charAt(0) === '/') {
-      prefix = path.join(this.root, prefix)
-    } else {
-      prefix = path.resolve(this.root, prefix)
-      if (trail)
-        prefix += '/'
-    }
-  }
-
-  if (process.platform === 'win32')
-    prefix = prefix.replace(/\\/g, '/')
 
   // Mark this as a match
   this._emitMatch(index, prefix)
@@ -2935,19 +2934,8 @@ GlobSync.prototype._processGlobStar = function (prefix, read, abs, remain, index
 }
 
 GlobSync.prototype._processSimple = function (prefix, index) {
-  // XXX review this.  Shouldn't it be doing the mounting etc
-  // before doing stat?  kinda weird?
-  var exists = this._stat(prefix)
-
-  if (!this.matches[index])
-    this.matches[index] = Object.create(null)
-
-  // If it doesn't exist, then just mark the lack of results
-  if (!exists)
-    return
-
   if (prefix && isAbsolute(prefix) && !this.nomount) {
-    var trail = /[\/\\]$/.test(prefix)
+    var trail = /[\\\/]$/.test(prefix)
     if (prefix.charAt(0) === '/') {
       prefix = path.join(this.root, prefix)
     } else {
@@ -2959,6 +2947,15 @@ GlobSync.prototype._processSimple = function (prefix, index) {
 
   if (process.platform === 'win32')
     prefix = prefix.replace(/\\/g, '/')
+
+  var exists = this._stat(prefix)
+
+  if (!this.matches[index])
+    this.matches[index] = Object.create(null)
+
+  // If it doesn't exist, then just mark the lack of results
+  if (!exists)
+    return
 
   // Mark this as a match
   this.matches[index][prefix] = true
