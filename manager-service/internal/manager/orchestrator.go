@@ -307,6 +307,7 @@ func (k *KubeOrchestrator) EnsureWorkerPool(ctx context.Context, jobID string, n
 										{Key: "MINIO_ENDPOINT", Path: "endpoint"},
 										{Key: "MINIO_ACCESS_KEY", Path: "access-key"},
 										{Key: "MINIO_SECRET_KEY", Path: "secret-key"},
+										{Key: "MANAGER_WORKER_RPC_TOKEN", Path: "rpc-token"},
 									},
 									DefaultMode: func() *int32 { mode := int32(0440); return &mode }(),
 								},
@@ -322,10 +323,10 @@ func (k *KubeOrchestrator) EnsureWorkerPool(ctx context.Context, jobID string, n
 								{Name: "JOB_ID", Value: jobID},
 								{Name: "MANAGER_ADDR", Value: managerAddr},
 								{Name: "GRPC_TLS_CERT_FILE", Value: "/tls/tls.crt"},
+								{Name: "WORKER_RPC_TOKEN_FILE", Value: "/etc/worker-secrets/rpc-token"},
 								// MinIO credentials are read from /etc/worker-secrets/* files (volume
 								// mount below). Env vars are omitted to avoid credential exposure via
 								// /proc/<pid>/environ, kubectl describe, and crash dumps.
-								secretEnvVar("WORKER_RPC_TOKEN", k.workerSecretName, "MANAGER_WORKER_RPC_TOKEN"),
 							},
 							Resources: resources,
 							SecurityContext: &corev1.SecurityContext{

@@ -55,6 +55,7 @@ const (
 	endpointFile    = secretMountPath + "/endpoint"
 	accessKeyFile   = secretMountPath + "/access-key"
 	secretKeyFile   = secretMountPath + "/secret-key"
+	rpcTokenFile    = secretMountPath + "/rpc-token"
 )
 
 // readSecretFile attempts to read a secret from a file.
@@ -136,12 +137,24 @@ func Load() (*Config, error) {
 		minioSecretKey = firstNonEmptyEnv("S3_SECRET_KEY", "MINIO_SECRET_KEY")
 	}
 
+	workerRPCTokenFile := strings.TrimSpace(os.Getenv("WORKER_RPC_TOKEN_FILE"))
+	if workerRPCTokenFile == "" {
+		workerRPCTokenFile = rpcTokenFile
+	}
+	workerRPCToken, err := readSecretFile(workerRPCTokenFile)
+	if err != nil {
+		return nil, err
+	}
+	if workerRPCToken == "" {
+		workerRPCToken = strings.TrimSpace(os.Getenv("WORKER_RPC_TOKEN"))
+	}
+
 	return &Config{
 		JobID:                   jobID,
 		TaskID:                  taskID,
 		AttemptID:               attemptID,
 		ManagerAddr:             managerAddr,
-		WorkerRPCToken:          strings.TrimSpace(os.Getenv("WORKER_RPC_TOKEN")),
+		WorkerRPCToken:          workerRPCToken,
 		GRPCTLSCertFile:         strings.TrimSpace(os.Getenv("GRPC_TLS_CERT_FILE")),
 		MinioEndpoint:           minioEndpoint,
 		MinioAccessKey:          minioAccessKey,

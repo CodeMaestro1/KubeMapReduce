@@ -61,6 +61,14 @@ func TestAuthoritativeManagerAddr(t *testing.T) {
 			want:          "manager-0.manager-headless.mapreduce.svc.cluster.local:50051",
 		},
 		{
+			name:          "non-standard manager address falls back to own address",
+			replicaIndex:  0,
+			totalReplicas: 3,
+			managerAddr:   "10.0.0.10:50051",
+			jobID:         jobTo1,
+			want:          "10.0.0.10:50051",
+		},
+		{
 			name:          "bad totalReplicas — falls back to own address",
 			replicaIndex:  0,
 			totalReplicas: 0,
