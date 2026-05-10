@@ -43,6 +43,36 @@ func (m *mockGRPCClient) TaskFailed(ctx context.Context, req *pb.TaskFailedReque
 	return m.taskFailedFn(ctx, req, opts...)
 }
 
+func TestNotifyTermination_NonBlockingWithoutReceiver(t *testing.T) {
+	terminated := make(chan string) // unbuffered, no receiver
+	done := make(chan struct{})
+
+	go func() {
+		notifyTermination(terminated, "SIGTERM")
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(250 * time.Millisecond):
+		t.Fatal("notifyTermination blocked on channel send")
+	}
+}
+
+func TestNotifyTermination_DeliversWhenBuffered(t *testing.T) {
+	terminated := make(chan string, 1)
+	notifyTermination(terminated, "manager TERMINATE")
+
+	select {
+	case got := <-terminated:
+		if got != "manager TERMINATE" {
+			t.Fatalf("unexpected termination reason: %q", got)
+		}
+	default:
+		t.Fatal("expected buffered termination reason to be delivered")
+	}
+}
+
 // mockTaskStream implements pb.WorkerService_TaskStreamClient for tests.
 // It assigns a single task (from assignmentFn), collects the completion/failure,
 // then returns io.EOF so Run() exits cleanly.
