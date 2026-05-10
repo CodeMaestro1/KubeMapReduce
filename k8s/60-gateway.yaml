@@ -90,7 +90,16 @@ spec:
     - matches:
         - path:
             type: PathPrefix
-            value: /
+            value: /mapreduce-inputs/
+        - path:
+            type: PathPrefix
+            value: /mapreduce-outputs/
+        - path:
+            type: PathPrefix
+            value: /mapreduce-staging/
+        - path:
+            type: PathPrefix
+            value: /mapreduce-manifests/
       backendRefs:
         - name: minio
           port: 9000
