@@ -320,8 +320,11 @@ func main() {
 	pb.RegisterWorkerServiceServer(grpcServer, workerServer)
 	pb.RegisterShuffleServiceServer(grpcServer, shuffleServer)
 	if cfg.EnableGRPCReflection {
-		if os.Getenv("DEBUG_MODE") != "true" {
-			slog.Warn("gRPC reflection requested but DEBUG_MODE is not set; skipping")
+		debugMode := strings.EqualFold(strings.TrimSpace(os.Getenv("DEBUG_MODE")), "true")
+		if !debugMode {
+			slog.Warn("gRPC reflection requested but DEBUG_MODE is not set to true; skipping")
+		} else if !useTLS {
+			slog.Warn("gRPC reflection requested without gRPC TLS; skipping")
 		} else {
 			reflection.Register(grpcServer)
 		}
