@@ -85,6 +85,21 @@ func (s *ShuffleServer) PushShuffleData(stream pb.ShuffleService_PushShuffleData
 		if chunk.JobId != jobID || chunk.PartitionId != partitionID {
 			return status.Error(codes.InvalidArgument, "all chunks in a stream must target the same job_id and partition_id")
 		}
+		if int64(buf.Len())+int64(len(chunk.Data)) > maxShufflePartitionBytes {
+			return status.Errorf(codes.ResourceExhausted, "shuffle partition stream exceeds max size for job %s partition %d", jobID, partitionID)
+		}
+
+		s.dataMu.RLock()
+		existingPartSize := s.partSizes[jobID][partitionID]
+		existingJobSize := s.jobSizes[jobID]
+		s.dataMu.RUnlock()
+		incomingSize := int64(buf.Len()) + int64(len(chunk.Data))
+		if existingPartSize+incomingSize > maxShufflePartitionBytes {
+			return status.Errorf(codes.ResourceExhausted, "shuffle partition size exceeded for job %s partition %d", jobID, partitionID)
+		}
+		if existingJobSize+incomingSize > maxShuffleJobBytes {
+			return status.Errorf(codes.ResourceExhausted, "shuffle job size exceeded for job %s", jobID)
+		}
 		if _, err := buf.Write(chunk.Data); err != nil {
 			return status.Errorf(codes.Internal, "buffer shuffle chunk: %v", err)
 		}
