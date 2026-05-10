@@ -220,7 +220,7 @@ func (s *Scheduler) Recover(ctx context.Context) error {
 	spawnFailures := 0
 	for jobID := range uniqueJobs {
 		spawnCtx, cancel := context.WithTimeout(ctx, recoverSpawnTimeout)
-		err := s.orchestrator.EnsureWorkerPool(spawnCtx, jobID, 4, s.managerAddr)
+		err := s.orchestrator.EnsureWorkerPool(spawnCtx, jobID, 0, s.managerAddr)
 		cancel()
 		if err != nil {
 			slog.ErrorContext(ctx, "failed to ensure worker pool during recovery",
