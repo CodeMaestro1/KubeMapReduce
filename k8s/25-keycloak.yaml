@@ -77,7 +77,7 @@ spec:
             - name: KC_DB
               value: postgres
             - name: KC_DB_URL
-              value: "jdbc:postgresql://postgres.mapreduce.svc.cluster.local:5432/$(POSTGRES_DB)"
+              value: "jdbc:postgresql://postgres.mapreduce.svc.cluster.local:5432/$(POSTGRES_DB)?sslmode=require"
             - name: KC_DB_USERNAME
               value: "$(POSTGRES_USER)"
             - name: KC_DB_PASSWORD
