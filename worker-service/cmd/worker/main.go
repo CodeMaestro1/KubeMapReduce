@@ -109,7 +109,7 @@ func (w loggerWriter) Write(p []byte) (int, error) {
 	if n := len(msg); n > 0 && msg[n-1] == '\n' {
 		msg = msg[:n-1]
 	}
-	w.logger.Info(msg)
+	w.logger.Error(msg, "source", "log.bridge")
 	return len(p), nil
 }
 

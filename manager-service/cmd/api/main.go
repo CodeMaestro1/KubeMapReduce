@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"log"
 	"log/slog"
 	"net/http"
@@ -94,8 +95,14 @@ func main() {
 			Secure: cfg.MinioUseSSL,
 		})
 		if err != nil {
-			log.Printf("failed to initialize minio client: %v", err)
+			log.Fatalf("failed to initialize minio client: %v", err)
 		}
+		bucketCtx, bucketCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		if ensureErr := ensureMinIOBuckets(bucketCtx, minioClient); ensureErr != nil {
+			bucketCancel()
+			log.Fatalf("failed to ensure MinIO buckets: %v", ensureErr)
+		}
+		bucketCancel()
 	}
 
 	store := api.NewPostgresJobStore(db, cfg.TotalReplicas)
@@ -150,8 +157,38 @@ func main() {
 	log.Println("API server stopped")
 }
 
+// requiredMinIOBuckets lists all buckets that must exist for the platform to
+// operate. The slice is shared between ensureMinIOBuckets callers in both the
+// API and manager binaries.
+var requiredMinIOBuckets = []string{
+	"mapreduce-inputs",
+	"mapreduce-outputs",
+	"mapreduce-shuffle",
+	"mapreduce-manifests",
+	"mapreduce-staging",
+}
+
+// ensureMinIOBuckets validates MinIO connectivity and creates any of the five
+// required buckets that do not yet exist. The first BucketExists call acts as
+// a startup ping — if MinIO is unreachable an error is returned immediately.
+func ensureMinIOBuckets(ctx context.Context, mc *minio.Client) error {
+	for _, bucket := range requiredMinIOBuckets {
+		exists, err := mc.BucketExists(ctx, bucket)
+		if err != nil {
+			return fmt.Errorf("MinIO health check failed (bucket=%s): %w", bucket, err)
+		}
+		if !exists {
+			if makeErr := mc.MakeBucket(ctx, bucket, minio.MakeBucketOptions{}); makeErr != nil {
+				return fmt.Errorf("create bucket %s: %w", bucket, makeErr)
+			}
+			slog.Info("created MinIO bucket", "bucket", bucket)
+		}
+	}
+	return nil
+}
+
 // loggerWriter is an [io.Writer] that forwards every line written by the
-// stdlib [log] package through the supplied [*slog.Logger] at INFO level,
+// stdlib [log] package through the supplied [*slog.Logger] at ERROR level,
 // stripping the trailing newline. This bridge ensures that legacy log.Printf
 // callsites still emit structured JSON without requiring a sweeping rewrite.
 type loggerWriter struct {
@@ -163,6 +200,6 @@ func (w loggerWriter) Write(p []byte) (int, error) {
 	if msg == "" {
 		return len(p), nil
 	}
-	w.logger.Info(msg)
+	w.logger.Error(msg, "source", "log.bridge")
 	return len(p), nil
 }
