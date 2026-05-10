@@ -30,6 +30,11 @@ const DefaultMaxConcurrentPods = 10
 const (
 	cleanupReconcileWorkers   = 4
 	cleanupReconcileBatchSize = 64
+	// maxCleanupRetries is the maximum number of times finalizeJob will
+	// attempt to delete staging objects before giving up and forcing the job
+	// to its terminal state anyway.  This prevents jobs from being stuck in
+	// "Cleaning" forever when MinIO is transiently unavailable.
+	maxCleanupRetries = 10
 )
 
 var (
@@ -68,6 +73,7 @@ type Scheduler struct {
 	staging               StagingCleaner
 	cleanupMu             sync.Mutex
 	pendingCleanup        map[string]string
+	cleanupRetries        map[string]int
 	heartbeats            sync.Map
 	emitter               EventEmitter
 	builder               *eventBuilder
@@ -112,6 +118,7 @@ func NewScheduler(db *sql.DB, replicaIndex int, totalReplicas int, orchestrator 
 		leaseClockSkewSeconds: 5,
 		staging:               staging,
 		pendingCleanup:        make(map[string]string),
+		cleanupRetries:        make(map[string]int),
 		heartbeats:            sync.Map{},
 		emitter:               &NoopEventEmitter{},
 		builder:               newEventBuilder("manager-scheduler"),
@@ -1610,6 +1617,7 @@ func (s *Scheduler) enqueueCleanup(jobID, terminalState string) {
 	}
 	s.cleanupMu.Lock()
 	s.pendingCleanup[jobID] = terminalState
+	s.cleanupRetries[jobID]++
 	s.cleanupMu.Unlock()
 }
 
@@ -1638,7 +1646,19 @@ func (s *Scheduler) popPendingCleanup(limit int) map[string]string {
 func (s *Scheduler) finalizeJob(ctx context.Context, jobID, terminalState string) {
 	// Stage 1: Delete staging objects first (cleanup work independent of DB state).
 	if s.staging != nil {
-		if err := s.staging.DeleteStagingObjects(ctx, jobID); err != nil {
+		s.cleanupMu.Lock()
+		retries := s.cleanupRetries[jobID]
+		s.cleanupMu.Unlock()
+
+		if retries >= maxCleanupRetries {
+			// MinIO has been unreachable for too long; log and proceed to
+			// terminal state anyway to prevent the job from hanging forever.
+			slog.ErrorContext(ctx, "max staging-cleanup retries reached; forcing terminal state without staging delete",
+				slog.String("job_id", jobID),
+				slog.String("terminal_state", terminalState),
+				slog.Int("retries", retries),
+			)
+		} else if err := s.staging.DeleteStagingObjects(ctx, jobID); err != nil {
 			slog.ErrorContext(ctx, "failed to delete staging objects",
 				slog.String("job_id", jobID),
 				slog.String("terminal_state", terminalState),
@@ -1690,6 +1710,11 @@ func (s *Scheduler) finalizeJob(ctx context.Context, jobID, terminalState string
 		s.enqueueCleanup(jobID, terminalState)
 		return
 	}
+
+	// Success: clear the retry counter so the map does not grow unbounded.
+	s.cleanupMu.Lock()
+	delete(s.cleanupRetries, jobID)
+	s.cleanupMu.Unlock()
 }
 
 // StartCleanupReconciler retries failed Kubernetes worker cleanup requests.
