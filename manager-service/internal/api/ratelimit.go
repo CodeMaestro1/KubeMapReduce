@@ -9,6 +9,16 @@ import (
 	"kubemapreduce/manager-service/pkg/httputil"
 )
 
+const (
+	defaultPerUserLimiterIdleTTL         = 10 * time.Minute
+	defaultPerUserLimiterCleanupInterval = 1 * time.Minute
+)
+
+type userLimiterEntry struct {
+	limiter  *TokenBucketLimiter
+	lastSeen time.Time
+}
+
 // TokenBucketLimiter implements a thread-safe token bucket rate limiter.
 // It allows at most `capacity` requests per `window` time period.
 type TokenBucketLimiter struct {
@@ -57,8 +67,42 @@ func (l *TokenBucketLimiter) Allow() bool {
 // Each user gets their own token bucket with `requestsPerSecond` capacity.
 // Requests without valid JWT claims bypass the limit.
 func PerUserRateLimitMiddleware(requestsPerSecond float64) func(http.Handler) http.Handler {
-	limiters := make(map[string]*TokenBucketLimiter)
-	var mu sync.RWMutex
+	return perUserRateLimitMiddlewareWithOptions(
+		requestsPerSecond,
+		defaultPerUserLimiterIdleTTL,
+		defaultPerUserLimiterCleanupInterval,
+		time.Now,
+	)
+}
+
+func perUserRateLimitMiddlewareWithOptions(requestsPerSecond float64, idleTTL, cleanupInterval time.Duration, now func() time.Time) func(http.Handler) http.Handler {
+	if now == nil {
+		now = time.Now
+	}
+	if idleTTL <= 0 {
+		idleTTL = defaultPerUserLimiterIdleTTL
+	}
+	if cleanupInterval <= 0 {
+		cleanupInterval = defaultPerUserLimiterCleanupInterval
+	}
+
+	limiters := make(map[string]*userLimiterEntry)
+	var mu sync.Mutex
+
+	go func() {
+		ticker := time.NewTicker(cleanupInterval)
+		defer ticker.Stop()
+		for range ticker.C {
+			cutoff := now().Add(-idleTTL)
+			mu.Lock()
+			for userID, entry := range limiters {
+				if entry.lastSeen.Before(cutoff) {
+					delete(limiters, userID)
+				}
+			}
+			mu.Unlock()
+		}
+	}()
 
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -70,17 +114,20 @@ func PerUserRateLimitMiddleware(requestsPerSecond float64) func(http.Handler) ht
 				return
 			}
 
-			// Get or create per-user limiter
-			mu.RLock()
-			limiter, exists := limiters[userID]
-			mu.RUnlock()
-
+			nowTS := now()
+			mu.Lock()
+			entry, exists := limiters[userID]
 			if !exists {
-				limiter = NewTokenBucketLimiter(requestsPerSecond)
-				mu.Lock()
-				limiters[userID] = limiter
-				mu.Unlock()
+				entry = &userLimiterEntry{
+					limiter:  NewTokenBucketLimiter(requestsPerSecond),
+					lastSeen: nowTS,
+				}
+				limiters[userID] = entry
+			} else {
+				entry.lastSeen = nowTS
 			}
+			limiter := entry.limiter
+			mu.Unlock()
 
 			if !limiter.Allow() {
 				w.Header().Set("Retry-After", "1")

@@ -6,8 +6,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/golang-jwt/jwt/v5"
 	"kubemapreduce/auth-service/pkg/auth"
+
+	"github.com/golang-jwt/jwt/v5"
 )
 
 func TestTokenBucketLimiter_Allow(t *testing.T) {
@@ -216,5 +217,42 @@ func TestPerUserRateLimitMiddleware_HandlesInvalidSubjectGracefully(t *testing.T
 	}
 	if w.Code != http.StatusOK {
 		t.Errorf("expected status 200, got %d", w.Code)
+	}
+}
+
+func TestPerUserRateLimitMiddleware_EvictsIdleUserLimiters(t *testing.T) {
+	middleware := perUserRateLimitMiddlewareWithOptions(1, 50*time.Millisecond, 10*time.Millisecond, time.Now)
+
+	nextHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+	wrappedHandler := middleware(nextHandler)
+
+	claims := jwt.MapClaims{
+		"sub": "evict-user",
+		"exp": time.Now().Add(time.Hour).Unix(),
+	}
+
+	makeReq := func() int {
+		req := httptest.NewRequest("GET", "/api/v1/jobs", nil)
+		req = req.WithContext(auth.ContextWithClaims(req.Context(), claims))
+		w := httptest.NewRecorder()
+		wrappedHandler.ServeHTTP(w, req)
+		return w.Code
+	}
+
+	if got := makeReq(); got != http.StatusOK {
+		t.Fatalf("first request: expected 200, got %d", got)
+	}
+	if got := makeReq(); got != http.StatusTooManyRequests {
+		t.Fatalf("second request: expected 429, got %d", got)
+	}
+
+	// Let the limiter remain idle long enough for eviction. This duration is
+	// intentionally < 1s, so a non-evicted limiter would still be rate-limited.
+	time.Sleep(120 * time.Millisecond)
+
+	if got := makeReq(); got != http.StatusOK {
+		t.Fatalf("expected limiter entry to be evicted and recreated, got status %d", got)
 	}
 }
