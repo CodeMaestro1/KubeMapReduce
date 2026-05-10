@@ -53,7 +53,7 @@ func TestDeleteJobContract_Returns204(t *testing.T) {
 	defer mgr.Close()
 
 	store := NewMemoryJobStore(24*time.Hour, 10000, nil)
-	h := NewHandlers(nil, store, nil, mgr.Listener.Addr().String(), "")
+	h := NewHandlers(nil, store, nil, mgr.URL, "")
 	h.copier = &fakeObjectCopier{}
 
 	// Submit a job directly so a valid job_id is available.
