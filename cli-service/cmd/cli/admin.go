@@ -10,8 +10,6 @@ import (
 	"net/url"
 	"os"
 	"strings"
-
-	"golang.org/x/term"
 )
 
 var adminConfigureNodesDoAuthRequest = doAuthRequest
@@ -91,13 +89,11 @@ func cmdAdminCreateUser(args []string) {
 
 	userPw := strings.TrimSpace(*password)
 	if *promptPw {
-		fmt.Print("Enter password for new user: ")
-		raw, err := term.ReadPassword(int(os.Stdin.Fd()))
-		fmt.Println()
+		var err error
+		userPw, err = readSecretInput("Enter password for new user: ")
 		if err != nil {
 			log.Fatalf("failed to read password: %v", err)
 		}
-		userPw = strings.TrimSpace(string(raw))
 	}
 	if userPw == "" {
 		log.Fatal("password is required: use --password or --prompt-password")

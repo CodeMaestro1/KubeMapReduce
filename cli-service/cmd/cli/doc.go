@@ -9,9 +9,13 @@
 // # Design Rationale
 // The CLI is designed as a stateless client that communicates with the API
 // service via REST. It handles authentication by exchanging user credentials
-// for JWT tokens from Keycloak, which are then persisted locally. This approach
-// minimizes the amount of logic required in the CLI and ensures that all
-// security and business rules are enforced consistently by the central API.
+// for JWT tokens from Keycloak, which are then persisted locally.
+//
+// To support automated environments (CI/CD, scripts, and pipes), the CLI
+// robustly handles non-TTY terminals. Interactive prompts are suppressed and
+// redirected to stderr, while sensitive inputs like passwords can be provided
+// via stdin pipes or dedicated flags. This ensures the CLI is equally
+// effective as a human-facing tool and a machine-facing integration point.
 //
 // # Key Commands
 // [cmdLogin] - Authenticates the user and stores JWT tokens.
@@ -19,9 +23,10 @@
 // [cmdJobsStatus] - Monitors the progress of submitted jobs.
 // [cmdAdminCreateUser] - Administrative command for managing system users.
 //
-// # Thread Safety
-// The CLI is a single-threaded interactive application and is not intended for
-// concurrent use within the same process.
+// # Execution Environment
+// The CLI is a single-threaded application. It uses a synchronized shared
+// reader for stdin to prevent buffering conflicts when reading multiple
+// inputs from a pipe in non-TTY environments.
 //
 // # Error Handling
 // The CLI uses a fail-fast approach, logging fatal errors and exiting with a

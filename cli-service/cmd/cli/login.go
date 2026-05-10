@@ -5,16 +5,11 @@ import (
 	"fmt"
 	"log"
 	"net/http"
-	"os"
 	"strings"
 	"time"
 
 	"kubemapreduce/auth-service/pkg/auth"
-
-	"golang.org/x/term"
 )
-
-var readPasswordFn = term.ReadPassword
 
 // ── login ──────────────────────────────────────────────────
 
@@ -33,27 +28,32 @@ func cmdLogin(args []string) {
 func runLogin(args []string) error {
 	fs := flag.NewFlagSet("login", flag.ContinueOnError)
 	username := fs.String("username", "", "Username (prompted if empty)")
+	password := fs.String("password", "", "Password (prompted if empty)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 
 	u := strings.TrimSpace(*username)
 	if u == "" {
-		fmt.Print("Username: ")
-		fmt.Scanln(&u)
-		u = strings.TrimSpace(u)
+		var err error
+		u, err = promptForInput("Username: ")
+		if err != nil {
+			return fmt.Errorf("failed to read username: %w", err)
+		}
 	}
 	if u == "" {
 		return fmt.Errorf("username is required")
 	}
 
-	fmt.Print("Password: ")
-	rawPw, err := readPasswordFn(int(os.Stdin.Fd()))
-	fmt.Println()
-	if err != nil {
-		return fmt.Errorf("failed to read password: %w", err)
+	pw := *password
+	if pw == "" {
+		var err error
+		pw, err = readSecretInput("Password: ")
+		if err != nil {
+			return fmt.Errorf("failed to read password: %w", err)
+		}
 	}
-	pw := strings.TrimSpace(string(rawPw))
+	pw = strings.TrimSpace(pw)
 	if pw == "" {
 		return fmt.Errorf("password is required")
 	}
