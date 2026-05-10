@@ -60,6 +60,27 @@ spec:
     spec:
       securityContext:
         fsGroup: 999
+      initContainers:
+        - name: fix-cert-perms
+          image: busybox:1.37
+          securityContext:
+            runAsUser: 0
+            runAsNonRoot: false
+          command:
+            - sh
+            - -c
+            - |
+              cp /tls-src/tls.crt /tls/server.crt
+              cp /tls-src/tls.key /tls/server.key
+              chown 999:999 /tls/server.crt /tls/server.key
+              chmod 644 /tls/server.crt
+              chmod 600 /tls/server.key
+          volumeMounts:
+            - name: tls-src
+              mountPath: /tls-src
+              readOnly: true
+            - name: tls
+              mountPath: /tls
       containers:
         - name: postgres
           image: postgres:15
@@ -67,6 +88,14 @@ spec:
           securityContext:
             runAsNonRoot: true
             runAsUser: 999
+          command:
+            - postgres
+            - -c
+            - ssl=on
+            - -c
+            - ssl_cert_file=/tls/server.crt
+            - -c
+            - ssl_key_file=/tls/server.key
           ports:
             - name: postgres
               containerPort: 5432
@@ -81,6 +110,9 @@ spec:
               mountPath: /var/lib/postgresql/data
             - name: init
               mountPath: /docker-entrypoint-initdb.d
+            - name: tls
+              mountPath: /tls
+              readOnly: true
           readinessProbe:
             exec:
               command: ["pg_isready", "-U", "mapreduce", "-d", "mapreduce"]
@@ -104,6 +136,11 @@ spec:
         - name: init
           configMap:
             name: postgres-init
+        - name: tls-src
+          secret:
+            secretName: postgres-tls
+        - name: tls
+          emptyDir: {}
   volumeClaimTemplates:
     - metadata:
         name: data

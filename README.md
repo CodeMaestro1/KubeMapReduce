@@ -115,23 +115,26 @@ Workers run as `batch/v1` Jobs spawned by the Manager at runtime. A real Kuberne
 
 ### Build and push images
 
-The Manager looks for the worker image as `kubemapreduce-worker:latest` (hardcoded in `manager-service/cmd/manager/main.go`). Tag your builds accordingly.
+All images are published to a single Docker Hub repository (`konstantinospisimisis/kubemapreduce`) using service-name tags. Build from the repo root so the Go module files are in context.
 
 ```bash
-docker build -f infra/docker/Dockerfile.manager -t kubemapreduce/manager:latest .
-docker build -f infra/docker/Dockerfile.api     -t kubemapreduce/api:latest     .
-docker build -f infra/docker/Dockerfile.worker  -t kubemapreduce-worker:latest  .
-docker push kubemapreduce/manager:latest
-docker push kubemapreduce/api:latest
-docker push kubemapreduce-worker:latest
+docker build -f infra/docker/Dockerfile.api        -t konstantinospisimisis/kubemapreduce:api        .
+docker build -f infra/docker/Dockerfile.manager    -t konstantinospisimisis/kubemapreduce:manager    .
+docker build -f infra/docker/Dockerfile.worker     -t konstantinospisimisis/kubemapreduce:worker     .
+docker build -f infra/docker/Dockerfile.auth-setup -t konstantinospisimisis/kubemapreduce:auth-setup .
+
+docker push konstantinospisimisis/kubemapreduce:api
+docker push konstantinospisimisis/kubemapreduce:manager
+docker push konstantinospisimisis/kubemapreduce:worker
+docker push konstantinospisimisis/kubemapreduce:auth-setup
 ```
 
 For k3s without a registry, import images directly:
 
 ```bash
-docker save kubemapreduce/manager:latest | sudo k3s ctr images import -
-docker save kubemapreduce/api:latest     | sudo k3s ctr images import -
-docker save kubemapreduce-worker:latest  | sudo k3s ctr images import -
+docker save konstantinospisimisis/kubemapreduce:api     | sudo k3s ctr images import -
+docker save konstantinospisimisis/kubemapreduce:manager | sudo k3s ctr images import -
+docker save konstantinospisimisis/kubemapreduce:worker  | sudo k3s ctr images import -
 ```
 
 ### Install dependencies

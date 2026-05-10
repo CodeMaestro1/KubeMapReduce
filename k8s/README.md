@@ -39,13 +39,15 @@ kubectl -n mapreduce rollout status statefulset/manager
 No credentials are inlined in any workload manifest. Every service reads its
 secrets via `secretKeyRef`:
 
-| Secret             | Consumers                       |
-|--------------------|---------------------------------|
-| `postgres-creds`   | postgres, manager, ui           |
-| `minio-creds`      | minio, manager, ui              |
-| `keycloak-creds`   | keycloak                        |
-| `manager-secrets`  | manager, ui                     |
-| `mapreduce-tls`    | gateway (TLS termination)       |
+| Secret             | Consumers                                      |
+|--------------------|------------------------------------------------|
+| `postgres-creds`   | postgres, manager, api                         |
+| `minio-creds`      | minio, manager, api                            |
+| `keycloak-creds`   | keycloak, api                                  |
+| `manager-secrets`  | manager, api                                   |
+| `mapreduce-tls`    | gateway (TLS termination)                      |
+| `grpc-tls`         | manager, worker (gRPC mTLS)                    |
+| `postgres-tls`     | postgres (SSL server cert, issued by cert-manager) |
 
 Override the placeholder values before applying to anything resembling a
 production cluster:
