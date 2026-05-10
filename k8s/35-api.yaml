@@ -53,7 +53,7 @@ spec:
                   name: postgres-creds
                   key: POSTGRES_DB
             - name: DATABASE_DSN
-              value: "postgres://$(POSTGRES_USER):$(POSTGRES_PASSWORD)@postgres.mapreduce.svc.cluster.local:5432/$(POSTGRES_DB)?sslmode=prefer"
+              value: "postgres://$(POSTGRES_USER):$(POSTGRES_PASSWORD)@postgres.mapreduce.svc.cluster.local:5432/$(POSTGRES_DB)?sslmode=disable"
             - name: MINIO_ENDPOINT
               valueFrom:
                 secretKeyRef:

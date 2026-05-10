@@ -55,6 +55,8 @@ spec:
     metadata:
       labels:
         app.kubernetes.io/name: postgres
+      annotations:
+        linkerd.io/inject: enabled
     spec:
       securityContext:
         fsGroup: 999
