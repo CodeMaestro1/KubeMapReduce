@@ -31,6 +31,9 @@ func main() {
 	if err != nil {
 		log.Fatalf("config: %v", err)
 	}
+	if cfg.WorkerRPCToken != "" && cfg.GRPCTLSCertFile == "" {
+		log.Fatal("MANAGER_WORKER_RPC_TOKEN is set but GRPC_TLS_CERT_FILE is empty; refusing to send worker token over insecure transport")
+	}
 
 	// Initialize timeout configuration for per-RPC method timeouts
 	timeoutCfg := timeoutgrpc.NewDefaultTimeoutConfig()
@@ -91,7 +94,7 @@ func (r rpcToken) GetRequestMetadata(_ context.Context, _ ...string) (map[string
 	return map[string]string{"x-worker-token": r.token}, nil
 }
 
-func (r rpcToken) RequireTransportSecurity() bool { return false }
+func (r rpcToken) RequireTransportSecurity() bool { return true }
 
 // loggerWriter bridges legacy log.Print* calls to the structured slog
 // pipeline so every line emitted by the standard logger is routed through
