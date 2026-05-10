@@ -29,6 +29,7 @@ CREATE TABLE IF NOT EXISTS JOBS (
     status     VARCHAR(16) NOT NULL
         CHECK (status IN ('Pending', 'Running', 'Completed',
                           'Cancelled', 'Failed', 'Cleaning')),
+    replica_index INTEGER   NOT NULL CHECK (replica_index >= 0) DEFAULT 0,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
