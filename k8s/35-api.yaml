@@ -30,7 +30,7 @@ spec:
         fsGroup: 1000
       containers:
         - name: api
-          image: kubemapreduce/api:latest
+          image: konstantinospisimisis/kubemapreduce:api
           imagePullPolicy: Always
           ports:
             - name: http
