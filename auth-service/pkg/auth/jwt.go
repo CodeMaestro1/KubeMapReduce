@@ -29,6 +29,13 @@ type JWTValidator struct {
 	audience string
 }
 
+const (
+	defaultJWTLeeway         = 30 * time.Second
+	defaultJWKSRefreshPeriod = 5 * time.Minute
+	defaultJWKSHTTPTimeout   = 5 * time.Second
+	defaultJWKSRLWaitMax     = 2 * time.Second
+)
+
 // NewJWTValidator initializes a [JWTValidator] by fetching the JWKS from the
 // specified URL.
 //
@@ -36,7 +43,11 @@ type JWTValidator struct {
 // be reached, it returns an error, preventing the service from starting in an
 // insecure or non-functional state.
 func NewJWTValidator(jwksURL string, issuer string, audience string) (*JWTValidator, error) {
-	jwks, err := keyfunc.NewDefaultCtx(context.Background(), []string{jwksURL})
+	jwks, err := keyfunc.NewDefaultOverrideCtx(context.Background(), []string{jwksURL}, keyfunc.Override{
+		HTTPTimeout:      defaultJWKSHTTPTimeout,
+		RefreshInterval:  defaultJWKSRefreshPeriod,
+		RateLimitWaitMax: defaultJWKSRLWaitMax,
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -79,7 +90,7 @@ func (v *JWTValidator) Middleware(next http.Handler) http.Handler {
 			jwt.WithIssuer(v.issuer),
 			jwt.WithAudience(v.audience),
 			jwt.WithValidMethods([]string{"RS256"}),
-			jwt.WithLeeway(30*time.Second),
+			jwt.WithLeeway(defaultJWTLeeway),
 		)
 		if err != nil {
 			slog.Warn("JWT validation failed", "error", err)
