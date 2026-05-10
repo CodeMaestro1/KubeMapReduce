@@ -277,7 +277,7 @@ func TestHandleJobsSubmit_SchedulesJobAfterPersist(t *testing.T) {
 	defer managerSrv.Close()
 
 	h := newTestHandlers()
-	h.managerAddr = managerSrv.Listener.Addr().String()
+	h.managerAddr = managerSrv.URL
 
 	body := `{"filename":"input.jsonl","inputChecksum":"deadbeef","mapper":{"language":"python","artifact":"mapper.py","entrypoint":"map","interface":"map(key,value)->[]KeyValue"},"reducer":{"language":"python","artifact":"reducer.py","entrypoint":"reduce","interface":"reduce(key,values)->Value"},"reducers":2}`
 	req := authedReq(http.MethodPost, "/api/v1/jobs", body)
@@ -1497,7 +1497,7 @@ func TestHandleAdminConfigWorkers_WorkerReplicasOnly(t *testing.T) {
 	defer server.Close()
 
 	h := newTestHandlers()
-	h.managerAddr = server.Listener.Addr().String()
+	h.managerAddr = server.URL
 
 	body := `{"workerReplicas":4,"maxJobsPerNode":8}`
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/config/workers", strings.NewReader(body))
@@ -1516,7 +1516,7 @@ func TestHandleAdminConfigWorkers_NodeConfigOnly(t *testing.T) {
 	defer server.Close()
 
 	h := newTestHandlers()
-	h.managerAddr = server.Listener.Addr().String()
+	h.managerAddr = server.URL
 
 	body := `{"maxPods":10,"cpuLimit":"500m","memoryLimit":"1Gi"}`
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/config/workers", strings.NewReader(body))
@@ -1535,7 +1535,7 @@ func TestHandleAdminConfigWorkers_CombinedConfig(t *testing.T) {
 	defer server.Close()
 
 	h := newTestHandlers()
-	h.managerAddr = server.Listener.Addr().String()
+	h.managerAddr = server.URL
 
 	body := `{"maxPods":20,"cpuLimit":"1","memoryLimit":"2Gi","workerReplicas":3,"maxJobsPerNode":5}`
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/config/workers", strings.NewReader(body))
@@ -1570,12 +1570,17 @@ func TestHandleAdminConfigWorkers_RejectsInvalidResourceQuantity(t *testing.T) {
 	}
 }
 
-func TestBuildManagerInternalURL_PreservesScheme(t *testing.T) {
-	if got := buildManagerInternalURL("https://manager.example.local", "/internal/config"); got != "https://manager.example.local/internal/config" {
+func TestBuildManagerInternalURL_RequiresExplicitScheme(t *testing.T) {
+	got, err := buildManagerInternalURL("https://manager.example.local", "/internal/config")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != "https://manager.example.local/internal/config" {
 		t.Fatalf("unexpected URL: %s", got)
 	}
-	if got := buildManagerInternalURL("manager.example.local:8081", "/internal/config"); got != "http://manager.example.local:8081/internal/config" {
-		t.Fatalf("unexpected URL: %s", got)
+
+	if _, err := buildManagerInternalURL("manager.example.local:8081", "/internal/config"); err == nil {
+		t.Fatalf("expected error for address without scheme")
 	}
 }
 
@@ -1659,7 +1664,7 @@ func TestHandleJobsDelete_Returns204NoContent(t *testing.T) {
 	defer manager.Close()
 
 	h := newTestHandlers()
-	h.managerAddr = manager.Listener.Addr().String()
+	h.managerAddr = manager.URL
 
 	// Submit a job so there is a known job_id in the store.
 	submitBody := `{"filename":"input.json","mapper":{"language":"python","artifact":"m.py","entrypoint":"map","interface":"map(key,value)->[]KeyValue"},"reducer":{"language":"python","artifact":"r.py","entrypoint":"reduce","interface":"reduce(key,values)->Value"}}`
