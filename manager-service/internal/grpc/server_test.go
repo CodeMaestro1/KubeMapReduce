@@ -52,6 +52,67 @@ func setupMockServer(t *testing.T) (*sql.DB, sqlmock.Sqlmock, *WorkerServer) {
 	return db, mock, NewWorkerServer(scheduler, nil, 0)
 }
 
+func TestWorkerServer_PruneStaleTaskQueues(t *testing.T) {
+	now := time.Now()
+	s := &WorkerServer{
+		taskQueues:       make(map[string]*taskQueue),
+		taskQueueIdleTTL: 10 * time.Minute,
+	}
+
+	staleEmpty := make(chan *pb.TaskAssignment, 1)
+	freshEmpty := make(chan *pb.TaskAssignment, 1)
+	staleNonEmpty := make(chan *pb.TaskAssignment, 1)
+	staleNonEmpty <- &pb.TaskAssignment{TaskId: "t1"}
+
+	s.taskQueues["stale-empty"] = &taskQueue{ch: staleEmpty, lastTouched: now.Add(-11 * time.Minute)}
+	s.taskQueues["fresh-empty"] = &taskQueue{ch: freshEmpty, lastTouched: now.Add(-5 * time.Minute)}
+	s.taskQueues["stale-non-empty"] = &taskQueue{ch: staleNonEmpty, lastTouched: now.Add(-11 * time.Minute)}
+
+	s.pruneStaleTaskQueues(now)
+
+	if _, ok := s.taskQueues["stale-empty"]; ok {
+		t.Fatal("expected stale empty queue to be evicted")
+	}
+	if _, ok := s.taskQueues["fresh-empty"]; !ok {
+		t.Fatal("expected fresh empty queue to remain")
+	}
+	if _, ok := s.taskQueues["stale-non-empty"]; !ok {
+		t.Fatal("expected non-empty queue to remain")
+	}
+}
+
+func TestWorkerServer_GetOrCreateTaskQueue_ReusesAndTouches(t *testing.T) {
+	fixedNow := time.Now()
+	nowVal := fixedNow
+	s := &WorkerServer{
+		taskQueues:       make(map[string]*taskQueue),
+		taskQueueIdleTTL: 10 * time.Minute,
+		taskQueueNow: func() time.Time {
+			return nowVal
+		},
+	}
+
+	q1 := s.getOrCreateTaskQueue("job-1")
+	entry1 := s.taskQueues["job-1"]
+	if entry1 == nil {
+		t.Fatal("expected queue entry to be created")
+	}
+	if entry1.lastTouched != fixedNow {
+		t.Fatalf("expected created queue lastTouched %v, got %v", fixedNow, entry1.lastTouched)
+	}
+
+	nowVal = fixedNow.Add(2 * time.Minute)
+	q2 := s.getOrCreateTaskQueue("job-1")
+	entry2 := s.taskQueues["job-1"]
+
+	if q1 != q2 {
+		t.Fatal("expected same queue channel to be reused")
+	}
+	if entry2.lastTouched != nowVal {
+		t.Fatalf("expected reused queue lastTouched %v, got %v", nowVal, entry2.lastTouched)
+	}
+}
+
 type fakeManifestUploader struct {
 	uri     string
 	err     error

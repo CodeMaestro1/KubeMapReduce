@@ -13,6 +13,7 @@ import (
 	"path"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/minio/minio-go/v7"
 	"google.golang.org/grpc/codes"
@@ -37,6 +38,16 @@ var (
 	manifestBucketName          = "mapreduce-manifests"
 )
 
+const (
+	defaultTaskQueueIdleTTL         = 15 * time.Minute
+	defaultTaskQueueCleanupInterval = 1 * time.Minute
+)
+
+type taskQueue struct {
+	ch          chan *pb.TaskAssignment
+	lastTouched time.Time
+}
+
 // WorkerServer implements the pb.WorkerServiceServer interface.
 //
 // It acts as the primary communication bridge between the central Manager and
@@ -50,8 +61,12 @@ type WorkerServer struct {
 	manifestThresholdBytes int
 
 	// taskQueues maps jobID -> channel of TaskAssignments for pull-based workers.
-	taskQueues   map[string]chan *pb.TaskAssignment
-	taskQueuesMu sync.RWMutex
+	taskQueues           map[string]*taskQueue
+	taskQueueIdleTTL     time.Duration
+	taskQueueCleanupTick time.Duration
+	taskQueueNow         func() time.Time
+	taskQueueStopCh      chan struct{}
+	taskQueuesMu         sync.RWMutex
 }
 
 // NewWorkerServer creates a new instance of the gRPC server.
@@ -68,7 +83,15 @@ func NewWorkerServer(scheduler *manager.Scheduler, minioClient *minio.Client, ma
 	if minioClient != nil {
 		uploader = &minioManifestUploader{client: minioClient}
 	}
-	return newWorkerServerWithManifestUploader(scheduler, minioClient, uploader, manifestThresholdBytes)
+	return newWorkerServerWithManifestUploaderAndQueueGC(
+		scheduler,
+		minioClient,
+		uploader,
+		manifestThresholdBytes,
+		defaultTaskQueueIdleTTL,
+		defaultTaskQueueCleanupInterval,
+		time.Now,
+	)
 }
 
 // Register is called by a Worker immediately after startup to claim its assignment.
@@ -221,15 +244,61 @@ func (m *minioManifestUploader) UploadManifest(ctx context.Context, bucketName, 
 // newWorkerServerWithManifestUploader creates a WorkerServer with an explicit manifest uploader.
 // This is primarily used for testing with mock uploaders.
 func newWorkerServerWithManifestUploader(scheduler *manager.Scheduler, minioClient *minio.Client, uploader manifestUploader, manifestThresholdBytes int) *WorkerServer {
+	return newWorkerServerWithManifestUploaderAndQueueGC(scheduler, minioClient, uploader, manifestThresholdBytes, defaultTaskQueueIdleTTL, 0, time.Now)
+}
+
+func newWorkerServerWithManifestUploaderAndQueueGC(scheduler *manager.Scheduler, minioClient *minio.Client, uploader manifestUploader, manifestThresholdBytes int, idleTTL time.Duration, cleanupTick time.Duration, nowFn func() time.Time) *WorkerServer {
 	if manifestThresholdBytes <= 0 {
 		manifestThresholdBytes = maxTaskAssignmentSizeBytes
 	}
-	return &WorkerServer{
+	if idleTTL <= 0 {
+		idleTTL = defaultTaskQueueIdleTTL
+	}
+	if nowFn == nil {
+		nowFn = time.Now
+	}
+	s := &WorkerServer{
 		scheduler:              scheduler,
 		minioClient:            minioClient,
 		uploader:               uploader,
 		manifestThresholdBytes: manifestThresholdBytes,
-		taskQueues:             make(map[string]chan *pb.TaskAssignment),
+		taskQueues:             make(map[string]*taskQueue),
+		taskQueueIdleTTL:       idleTTL,
+		taskQueueCleanupTick:   cleanupTick,
+		taskQueueNow:           nowFn,
+		taskQueueStopCh:        make(chan struct{}),
+	}
+	if cleanupTick > 0 {
+		go s.runTaskQueueJanitor()
+	}
+	return s
+}
+
+func (s *WorkerServer) runTaskQueueJanitor() {
+	ticker := time.NewTicker(s.taskQueueCleanupTick)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ticker.C:
+			s.pruneStaleTaskQueues(s.taskQueueNow())
+		case <-s.taskQueueStopCh:
+			return
+		}
+	}
+}
+
+func (s *WorkerServer) pruneStaleTaskQueues(now time.Time) {
+	if s.taskQueueIdleTTL <= 0 {
+		return
+	}
+	cutoff := now.Add(-s.taskQueueIdleTTL)
+
+	s.taskQueuesMu.Lock()
+	defer s.taskQueuesMu.Unlock()
+	for jobID, q := range s.taskQueues {
+		if len(q.ch) == 0 && q.lastTouched.Before(cutoff) {
+			delete(s.taskQueues, jobID)
+		}
 	}
 }
 
@@ -461,12 +530,21 @@ func (s *WorkerServer) TaskStream(stream pb.WorkerService_TaskStreamServer) erro
 func (s *WorkerServer) getOrCreateTaskQueue(jobID string) chan *pb.TaskAssignment {
 	s.taskQueuesMu.Lock()
 	defer s.taskQueuesMu.Unlock()
+	now := s.taskQueueNow()
+	cutoff := now.Add(-s.taskQueueIdleTTL)
+	for id, q := range s.taskQueues {
+		if len(q.ch) == 0 && q.lastTouched.Before(cutoff) {
+			delete(s.taskQueues, id)
+		}
+	}
+
 	if q, ok := s.taskQueues[jobID]; ok {
-		return q
+		q.lastTouched = now
+		return q.ch
 	}
 	// Buffer size 100 to allow some decoupling between scheduler and workers
 	q := make(chan *pb.TaskAssignment, 100)
-	s.taskQueues[jobID] = q
+	s.taskQueues[jobID] = &taskQueue{ch: q, lastTouched: now}
 	return q
 }
 
