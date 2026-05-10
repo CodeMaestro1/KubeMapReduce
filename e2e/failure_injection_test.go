@@ -20,8 +20,6 @@ func apiURL() string {
 	return url
 }
 
-
-
 func submitSleepJob(t *testing.T) string {
 	cmd := exec.Command("../bin/cli", "jobs", "submit",
 		"--mapper", "../testdata/job3-sleep/mapper.py",

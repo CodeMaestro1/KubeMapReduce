@@ -1303,10 +1303,10 @@ func (s *Scheduler) FailStaleTasks(ctx context.Context) (int, error) {
 	defer rows.Close()
 
 	type staleRec struct {
-		taskID       string
-		attemptID    string
-		jobID        string
-		attemptCount int
+		taskID        string
+		attemptID     string
+		jobID         string
+		attemptCount  int
 		lastRenewedAt time.Time
 		leaseTTL      int
 	}

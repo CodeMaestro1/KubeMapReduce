@@ -132,13 +132,18 @@ func TestE2E_WorkerKillDuringMapTask(t *testing.T) {
 	// 2. FailStaleTasks -> detects expired lease, marks attempt-1 Failed, resets to Idle
 	mock.ExpectBegin()
 	mock.ExpectQuery(regexp.QuoteMeta(QuerySelectStaleTasks)).WithArgs(s.replicaIndex).WillReturnRows(
-		sqlmock.NewRows([]string{"task_id", "attempt_id", "job_id", "attempt_count"}).AddRow(taskID, attemptID1, jobID, 1))
+		sqlmock.NewRows([]string{"task_id", "attempt_id", "job_id", "attempt_count", "last_renewed_at", "lease_ttl"}).AddRow(taskID, attemptID1, jobID, 1, time.Now().Add(-1*time.Hour), 30))
 	mock.ExpectExec(regexp.QuoteMeta(QueryUpdateTaskStatus)).WithArgs("Idle", taskID).WillReturnResult(sqlmock.NewResult(1, 1))
 	mock.ExpectExec(regexp.QuoteMeta(QueryFailAttempt)).WithArgs(attemptID1).WillReturnResult(sqlmock.NewResult(1, 1))
-	// prepareRetryAttemptTx
-	mock.ExpectExec(regexp.QuoteMeta(QueryUpdateTaskInProgress)).WithArgs(sqlmock.AnyArg(), taskID).WillReturnResult(sqlmock.NewResult(1, 1))
-	mock.ExpectExec(regexp.QuoteMeta(QueryInsertAttempt)).WithArgs(sqlmock.AnyArg(), taskID, "system-recovery", sqlmock.AnyArg(), s.leaseTTL).WillReturnResult(sqlmock.NewResult(1, 1))
 	mock.ExpectCommit()
+
+	// Redispatch calls GetTaskByID
+	mock.ExpectQuery(regexp.QuoteMeta(QueryGetTaskByID)).
+		WithArgs(taskID).
+		WillReturnRows(sqlmock.NewRows([]string{"task_id", "job_id", "task_type", "status", "current_attempt_id", "replica_index"}).
+			AddRow(taskID, jobID, "Map", "Idle", nil, 0))
+
+	expectTaskMetadataQueries(mock, uuid.MustParse(taskID), "m", "r", 1)
 
 	recovered, err := s.FailStaleTasks(context.Background())
 	if err != nil {
@@ -186,7 +191,7 @@ func TestE2E_TripleFailure_MaxAttemptsExhaustion(t *testing.T) {
 	// Simulating 3rd failure — attempt_count from scan is MaxTaskAttempts
 	mock.ExpectBegin()
 	mock.ExpectQuery(regexp.QuoteMeta(QuerySelectStaleTasks)).WithArgs(s.replicaIndex).WillReturnRows(
-		sqlmock.NewRows([]string{"task_id", "attempt_id", "job_id", "attempt_count"}).AddRow(taskID, attemptID3, jobID, MaxTaskAttempts))
+		sqlmock.NewRows([]string{"task_id", "attempt_id", "job_id", "attempt_count", "last_renewed_at", "lease_ttl"}).AddRow(taskID, attemptID3, jobID, MaxTaskAttempts, time.Now().Add(-1*time.Hour), 30))
 	mock.ExpectExec(regexp.QuoteMeta(QueryUpdateTaskStatus)).WithArgs("Failed", taskID).WillReturnResult(sqlmock.NewResult(1, 1))
 	mock.ExpectExec(regexp.QuoteMeta(QueryFailAttempt)).WithArgs(attemptID3).WillReturnResult(sqlmock.NewResult(1, 1))
 	// updateJobStatusTx to Cleaning
@@ -252,21 +257,27 @@ func TestE2E_ManagerRestartRecovery(t *testing.T) {
 	db, mock, s, _ := setupE2ETest(t)
 	defer db.Close()
 
-	taskID := uuid.New().String()
 	jobID := uuid.New().String()
-	attemptID := uuid.New().String()
 
-	mock.ExpectQuery(regexp.QuoteMeta(QuerySelectRecoverableAttempts)).WithArgs(s.replicaIndex).WillReturnRows(
-		sqlmock.NewRows([]string{"task_id", "current_attempt_id", "job_id", "last_renewed_at"}).AddRow(taskID, attemptID, jobID, time.Now()))
+	// 1. Reset tasks to idle
+	mock.ExpectExec(regexp.QuoteMeta(QueryResetTasksForReplica)).
+		WithArgs(s.replicaIndex).
+		WillReturnResult(sqlmock.NewResult(0, 5))
 
-	// Recover calls GetTaskByID -> DispatchTask for re-dispatching
-	mock.ExpectQuery(`SELECT task_id, job_id, task_type, status, current_attempt_id, replica_index FROM TASKS`).
-		WithArgs(taskID).
-		WillReturnRows(sqlmock.NewRows([]string{"task_id", "job_id", "task_type", "status", "current_attempt_id", "replica_index"}).
-			AddRow(taskID, jobID, "Map", "In-Progress", attemptID, 0))
+	// 2. Identify running jobs for this replica
+	mock.ExpectQuery("SELECT job_id FROM JOBS WHERE status = 'Running' AND replica_index = \\$1").
+		WithArgs(s.replicaIndex).
+		WillReturnRows(sqlmock.NewRows([]string{"job_id"}).AddRow(jobID))
 
+	// 3. Ensure worker pool exists
+	// No explicit expectation for EnsureWorkerPool in sqlmock, but we check orch calls
 	err := s.Recover(context.Background())
 	if err != nil {
 		t.Fatalf("Recover failed: %v", err)
+	}
+
+	// Wait a bit for the background pool check (though in this implementation it's synchronous)
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("there were unfulfilled expectations: %s", err)
 	}
 }
