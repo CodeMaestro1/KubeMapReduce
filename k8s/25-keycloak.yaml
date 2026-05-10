@@ -1,10 +1,8 @@
 # Keycloak — OAuth2/OIDC provider used by the UI service for user JWTs and by
 # the CLI for the password grant flow.
 #
-# Deployed as a single Deployment (stateless from K8s' point of view; realm
-# state lives in the Keycloak DB which, in this minimal manifest, is the
-# embedded H2 store via `start-dev`). For production, point Keycloak at the
-# postgres StatefulSet by adding KC_DB=postgres + KC_DB_URL env vars.
+# Deployed as a single Deployment backed by PostgreSQL for persistent realm
+# state. The container runs in production mode (`start`) instead of `start-dev`.
 ---
 apiVersion: v1
 kind: Service
@@ -14,14 +12,12 @@ metadata:
   labels:
     app.kubernetes.io/name: keycloak
 spec:
-  type: NodePort
   selector:
     app.kubernetes.io/name: keycloak
   ports:
     - name: http
       port: 8080
       targetPort: 8080
-      nodePort: 30080
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -48,7 +44,7 @@ spec:
         - name: keycloak
           image: quay.io/keycloak/keycloak:23.0.6
           imagePullPolicy: IfNotPresent
-          args: ["start-dev"]
+          args: ["start", "--http-enabled=true"]
           ports:
             - name: http
               containerPort: 8080
@@ -63,21 +59,42 @@ spec:
                 secretKeyRef:
                   name: keycloak-creds
                   key: KEYCLOAK_ADMIN_PASSWORD
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-creds
+                  key: POSTGRES_USER
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-creds
+                  key: POSTGRES_PASSWORD
+            - name: POSTGRES_DB
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-creds
+                  key: POSTGRES_DB
+            - name: KC_DB
+              value: postgres
+            - name: KC_DB_URL
+              value: "jdbc:postgresql://postgres.mapreduce.svc.cluster.local:5432/$(POSTGRES_DB)"
+            - name: KC_DB_USERNAME
+              value: "$(POSTGRES_USER)"
+            - name: KC_DB_PASSWORD
+              value: "$(POSTGRES_PASSWORD)"
             - name: KC_PROXY
               value: edge
             - name: KC_HOSTNAME_STRICT
-              value: "false"
+              value: "true"
             # Force consistent issuer URL regardless of how Keycloak is accessed.
             # CLI must set KEYCLOAK_BASE_URL to this value (or use port-forward
             # with API_URL pointing here). For production replace with the real
             # external hostname.
-            # Set to http://<node-ip>:30080 for minikube/k3s, or the real
-            # external hostname for production. Must match KEYCLOAK_ISSUER
-            # in manager-config ConfigMap and KEYCLOAK_BASE_URL used by CLI.
+            # Must match KEYCLOAK_ISSUER in manager-config ConfigMap.
             - name: KC_HOSTNAME_URL
-              value: "http://localhost:30080"
+              value: "https://auth.mapreduce.local"
             - name: KC_HOSTNAME_ADMIN_URL
-              value: "http://localhost:30080"
+              value: "https://auth.mapreduce.local"
           readinessProbe:
             httpGet:
               path: /realms/master
