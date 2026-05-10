@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"testing"
+	"time"
 )
 
 func TestLoad_Defaults(t *testing.T) {
@@ -68,6 +69,15 @@ func TestLoad_Defaults(t *testing.T) {
 	if cfg.AllowInsecureWorkerRPC {
 		t.Errorf("expected insecure worker RPC mode disabled by default")
 	}
+	if cfg.DBMaxOpenConns != 25 {
+		t.Errorf("DBMaxOpenConns = %d, want %d", cfg.DBMaxOpenConns, 25)
+	}
+	if cfg.DBMaxIdleConns != 10 {
+		t.Errorf("DBMaxIdleConns = %d, want %d", cfg.DBMaxIdleConns, 10)
+	}
+	if cfg.DBConnMaxLifetime != 5*time.Minute {
+		t.Errorf("DBConnMaxLifetime = %s, want %s", cfg.DBConnMaxLifetime, 5*time.Minute)
+	}
 
 	expectedJWKS := "http://localhost:8080/realms/mapreduce/protocol/openid-connect/certs"
 	if cfg.JWKSURL != expectedJWKS {
@@ -100,6 +110,9 @@ func TestLoad_CustomEnvVars(t *testing.T) {
 	t.Setenv("GRPC_TLS_KEY_FILE", "/certs/tls.key")
 	t.Setenv("ENABLE_GRPC_REFLECTION", "true")
 	t.Setenv("ALLOW_INSECURE_WORKER_RPC", "true")
+	t.Setenv("DB_MAX_OPEN_CONNS", "40")
+	t.Setenv("DB_MAX_IDLE_CONNS", "20")
+	t.Setenv("DB_CONN_MAX_LIFETIME_SEC", "120")
 
 	cfg, err := Load()
 	if err != nil {
@@ -162,6 +175,15 @@ func TestLoad_CustomEnvVars(t *testing.T) {
 	}
 	if !cfg.AllowInsecureWorkerRPC {
 		t.Errorf("expected AllowInsecureWorkerRPC=true")
+	}
+	if cfg.DBMaxOpenConns != 40 {
+		t.Errorf("DBMaxOpenConns = %d, want %d", cfg.DBMaxOpenConns, 40)
+	}
+	if cfg.DBMaxIdleConns != 20 {
+		t.Errorf("DBMaxIdleConns = %d, want %d", cfg.DBMaxIdleConns, 20)
+	}
+	if cfg.DBConnMaxLifetime != 120*time.Second {
+		t.Errorf("DBConnMaxLifetime = %s, want %s", cfg.DBConnMaxLifetime, 120*time.Second)
 	}
 }
 

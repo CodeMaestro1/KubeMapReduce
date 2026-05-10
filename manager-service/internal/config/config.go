@@ -28,7 +28,10 @@ type Config struct {
 	GRPCAddr   string
 
 	// Persistence layer connection string.
-	DatabaseDSN string
+	DatabaseDSN       string
+	DBMaxOpenConns    int
+	DBMaxIdleConns    int
+	DBConnMaxLifetime time.Duration
 
 	// Distributed scheduling parameters.
 	// TotalReplicas matches the K8s StatefulSet replica count for hashing logic.
@@ -157,6 +160,18 @@ func Load() (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
+	dbMaxOpenConns, err := getEnvInt("DB_MAX_OPEN_CONNS", 25)
+	if err != nil {
+		return nil, err
+	}
+	dbMaxIdleConns, err := getEnvInt("DB_MAX_IDLE_CONNS", 10)
+	if err != nil {
+		return nil, err
+	}
+	dbConnMaxLifetimeSec, err := getEnvInt("DB_CONN_MAX_LIFETIME_SEC", 300)
+	if err != nil {
+		return nil, err
+	}
 	heartbeatEventSampleN, err := getEnvInt("HEARTBEAT_EVENT_SAMPLE_N", 1)
 	if err != nil {
 		return nil, err
@@ -172,6 +187,9 @@ func Load() (*Config, error) {
 		AdminUsername:                   adminUsername,
 		AdminPassword:                   adminPassword,
 		DatabaseDSN:                     getEnv("DATABASE_DSN", "postgres://user:pass@localhost:5432/mapreduce?sslmode=disable"),
+		DBMaxOpenConns:                  dbMaxOpenConns,
+		DBMaxIdleConns:                  dbMaxIdleConns,
+		DBConnMaxLifetime:               time.Duration(dbConnMaxLifetimeSec) * time.Second,
 		GRPCAddr:                        getEnv("GRPC_ADDR", getEnv("GRPC_PORT", ":50051")),
 		TotalReplicas:                   totalReplicas,
 		HeartbeatInterval:               hbInterval,
