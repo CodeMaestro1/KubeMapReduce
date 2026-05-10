@@ -4,7 +4,7 @@ A distributed MapReduce platform built on Kubernetes. Workers run as K8s Jobs sp
 
 ## Prerequisites
 
-- Go 1.26+
+- Go 1.26+ (tested with Go toolchain 1.26.3)
 - Docker + Docker Compose
 - `kubectl` (for Kubernetes deployment)
 - **Kubernetes 1.21+** (for Linkerd service mesh)
@@ -426,6 +426,24 @@ Comprehensive guides for deploying, configuring, and troubleshooting KubeMapRedu
 - **Lint code:** `make lint` (requires golangci-lint)
 - **Clean build artifacts:** `make clean`
 
+### CI/PR Quality Gate
+
+Before opening or updating a PR, run the same checks used by CI:
+
+```bash
+go fmt ./...
+go vet ./...
+go mod tidy
+go test -v -race -coverprofile=coverage.out ./...
+govulncheck ./...
+```
+
+Install `govulncheck` if needed:
+
+```bash
+go install golang.org/x/vuln/cmd/govulncheck@latest
+```
+
 ## Configuration
 
 **Manager / API server** (defaults shown):
@@ -443,6 +461,7 @@ Comprehensive guides for deploying, configuring, and troubleshooting KubeMapRedu
 | `MINIO_ENDPOINT` | — | e.g. `minio:9000` |
 | `MINIO_ACCESS_KEY` | — | |
 | `MINIO_SECRET_KEY` | — | |
+| `MANAGER_ADDR` | `manager-0.manager-hs.default.svc.cluster.local:8081` | API service manager endpoint. Use an explicit scheme (for example, `http://manager.mapreduce.svc.cluster.local:8081`) so internal proxy calls are built correctly. |
 | `MANAGER_INTERNAL_API_KEY` | — | Internal API auth token |
 | `MANAGER_WORKER_RPC_TOKEN` | — | Shared secret for worker→manager gRPC |
 | `GRPC_TLS_CERT_FILE` | — | Path to TLS cert; if set, `GRPC_TLS_KEY_FILE` also required |
