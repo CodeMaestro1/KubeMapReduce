@@ -101,6 +101,7 @@ spec:
         linkerd.io/inject: enabled
     spec:
       serviceAccountName: manager
+      automountServiceAccountToken: true
       securityContext:
         runAsNonRoot: true
         runAsUser: 65532
