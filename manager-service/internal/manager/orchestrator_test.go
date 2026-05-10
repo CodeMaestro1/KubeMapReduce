@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	appsv1 "k8s.io/api/apps/v1"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -553,6 +554,46 @@ func TestEnsureWorkerPool_LocalityAffinity(t *testing.T) {
 			t.Errorf("expected label selector for minio, got %v", term.LabelSelector.MatchLabels)
 		}
 	})
+}
+
+func TestEnsureWorkerPool_PreservesExistingReplicasWhenUnspecified(t *testing.T) {
+	client := fake.NewSimpleClientset()
+	orchestrator := NewKubeOrchestrator(client, "mapreduce", "worker:latest", "worker-secrets")
+
+	jobID := "preserve-replicas-job"
+	sanitized := sanitizeForDNSLabel(jobID)
+	name := "worker-pool-" + sanitized
+
+	initialReplicas := int32(7)
+	_, err := client.AppsV1().Deployments("mapreduce").Create(context.Background(), &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "mapreduce"},
+		Spec: appsv1.DeploymentSpec{
+			Replicas: &initialReplicas,
+			Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"app": "kubemapreduce-worker", "job_id": sanitized}},
+			Template: corev1.PodTemplateSpec{
+				ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{"app": "kubemapreduce-worker", "job_id": sanitized}},
+				Spec:       corev1.PodSpec{Containers: []corev1.Container{{Name: "worker", Image: "worker:latest"}}},
+			},
+		},
+	}, metav1.CreateOptions{})
+	if err != nil {
+		t.Fatalf("failed to create initial deployment: %v", err)
+	}
+
+	if err := orchestrator.EnsureWorkerPool(context.Background(), jobID, 0, "manager:8081"); err != nil {
+		t.Fatalf("EnsureWorkerPool failed: %v", err)
+	}
+
+	updated, err := client.AppsV1().Deployments("mapreduce").Get(context.Background(), name, metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("failed to get updated deployment: %v", err)
+	}
+	if updated.Spec.Replicas == nil {
+		t.Fatal("expected replicas to be set")
+	}
+	if *updated.Spec.Replicas != initialReplicas {
+		t.Fatalf("expected replicas to remain %d, got %d", initialReplicas, *updated.Spec.Replicas)
+	}
 }
 
 type mockLocalityProvider struct {

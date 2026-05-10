@@ -234,6 +234,9 @@ func (k *KubeOrchestrator) EnsureWorkerPool(ctx context.Context, jobID string, n
 	sanitizedJobID := sanitizeForDNSLabel(jobID)
 	deploymentName := fmt.Sprintf("worker-pool-%s", sanitizedJobID)
 	replicas := int32(numWorkers)
+	if replicas <= 0 {
+		replicas = 1
+	}
 	labels := map[string]string{
 		"app":    "kubemapreduce-worker",
 		"job_id": sanitizedJobID,
@@ -395,6 +398,9 @@ func (k *KubeOrchestrator) EnsureWorkerPool(ctx context.Context, jobID string, n
 		existing, getErr := k.clientset.AppsV1().Deployments(k.namespace).Get(ctx, deploymentName, metav1.GetOptions{})
 		if getErr != nil {
 			return getErr
+		}
+		if numWorkers <= 0 && existing.Spec.Replicas != nil {
+			deployment.Spec.Replicas = existing.Spec.Replicas
 		}
 		existing.Spec = deployment.Spec
 		_, err = k.clientset.AppsV1().Deployments(k.namespace).Update(ctx, existing, metav1.UpdateOptions{})
