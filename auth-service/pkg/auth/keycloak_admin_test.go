@@ -278,3 +278,52 @@ func TestGetAdminAccessToken_RefreshesExpiredCachedToken(t *testing.T) {
 		t.Fatalf("expected two token endpoint calls after forced expiry, got %d", got)
 	}
 }
+
+func TestGetAdminAccessToken_RejectsNegativeExpiresIn(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/realms/master/protocol/openid-connect/token" {
+			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.Path)
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"access_token":"token-1","expires_in":-1}`))
+	}))
+	defer server.Close()
+
+	client := NewKeycloakAdminClient(server.URL, "mapreduce", "admin", "admin")
+	client.httpClient = server.Client()
+
+	_, err := client.getAdminAccessToken(context.Background())
+	if err == nil {
+		t.Fatal("expected error for negative expires_in, got nil")
+	}
+	if !strings.Contains(err.Error(), "invalid token expires_in value") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestGetAdminAccessToken_ClampsLongExpiresIn(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/realms/master/protocol/openid-connect/token" {
+			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.Path)
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"access_token":"token-1","expires_in":999999}`))
+	}))
+	defer server.Close()
+
+	client := NewKeycloakAdminClient(server.URL, "mapreduce", "admin", "admin")
+	client.httpClient = server.Client()
+
+	_, err := client.getAdminAccessToken(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	client.tokenMu.Lock()
+	remaining := time.Until(client.cachedAdminTokenTill)
+	client.tokenMu.Unlock()
+
+	if remaining > maxAdminTokenTTL+time.Second {
+		t.Fatalf("expected ttl to be clamped to <= %v, got %v", maxAdminTokenTTL, remaining)
+	}
+}

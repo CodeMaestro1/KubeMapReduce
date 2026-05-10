@@ -18,6 +18,7 @@ const (
 	defaultAdminHTTPTimeout = 10 * time.Second
 	adminTokenRefreshSkew   = 30 * time.Second
 	defaultTokenTTL         = 60 * time.Second
+	maxAdminTokenTTL        = 12 * time.Hour
 )
 
 // KeycloakAdminClient provides high-level administrative operations on a
@@ -247,9 +248,13 @@ func (c *KeycloakAdminClient) getAdminAccessToken(ctx context.Context) (string, 
 		return "", fmt.Errorf("no admin access token in response")
 	}
 
-	ttl := defaultTokenTTL
-	if tokenResponse.ExpiresIn > 0 {
-		ttl = time.Duration(tokenResponse.ExpiresIn) * time.Second
+	ttl, ttlErr := validateAdminTokenTTL(tokenResponse.ExpiresIn)
+	if ttlErr != nil {
+		c.tokenMu.Lock()
+		c.tokenRefreshInFlight = false
+		c.tokenCond.Broadcast()
+		c.tokenMu.Unlock()
+		return "", ttlErr
 	}
 
 	c.tokenMu.Lock()
@@ -260,6 +265,22 @@ func (c *KeycloakAdminClient) getAdminAccessToken(ctx context.Context) (string, 
 	c.tokenMu.Unlock()
 
 	return tokenResponse.AccessToken, nil
+}
+
+func validateAdminTokenTTL(expiresIn int) (time.Duration, error) {
+	if expiresIn < 0 {
+		return 0, fmt.Errorf("invalid token expires_in value: %d", expiresIn)
+	}
+	if expiresIn == 0 {
+		return defaultTokenTTL, nil
+	}
+
+	ttl := time.Duration(expiresIn) * time.Second
+	if ttl > maxAdminTokenTTL {
+		return maxAdminTokenTTL, nil
+	}
+
+	return ttl, nil
 }
 
 // setUserPassword updates a user's password in Keycloak.
