@@ -45,6 +45,12 @@ On Windows (PowerShell), use `Get-Content` to pipe the file:
 Get-Content migrations\0001_initial_schema.sql | docker exec -i mapreduce-postgres psql -U mapreduce -d mapreduce
 ```
 
+| Service    | URL / Port                          |
+|------------|-------------------------------------|
+| Keycloak   | http://localhost:8080               |
+| API        | http://localhost:8081               |
+| PostgreSQL | localhost:5432 (user/db: mapreduce) |
+| MinIO S3   | localhost:9000                      |
 | MinIO UI   | http://localhost:9001               |
 
 ## Full Local Deployment (Kubernetes/Minikube)
