@@ -3873,7 +3873,9 @@ function match (f, partial) {
 // Partial means, if you run out of file before you run
 // out of pattern, then that's fine, as long as all
 // the parts match.
-Minimatch.prototype.matchOne = function (file, pattern, partial) {
+Minimatch.prototype.matchOne = function (file, pattern, partial, fi, pi) {
+  fi = fi || 0
+  pi = pi || 0
   var options = this.options
 
   this.debug('matchOne',
@@ -3881,9 +3883,7 @@ Minimatch.prototype.matchOne = function (file, pattern, partial) {
 
   this.debug('matchOne', file.length, pattern.length)
 
-  for (var fi = 0,
-      pi = 0,
-      fl = file.length,
+  for (var fl = file.length,
       pl = pattern.length
       ; (fi < fl) && (pi < pl)
       ; fi++, pi++) {
@@ -3946,7 +3946,7 @@ Minimatch.prototype.matchOne = function (file, pattern, partial) {
         this.debug('\nglobstar while', file, fr, pattern, pr, swallowee)
 
         // XXX remove this slice.  Just pass the start index.
-        if (this.matchOne(file.slice(fr), pattern.slice(pr), partial)) {
+        if (this.matchOne(file, pattern, partial, fr, pr)) {
           this.debug('globstar found match!', fr, fl, swallowee)
           // found a match.
           return true
