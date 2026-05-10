@@ -4279,9 +4279,14 @@ exports.dirname = function(path) {
 
 exports.basename = function(path, ext) {
   var f = splitPath(path)[2];
-  // TODO: make this comparison case-insensitive on windows?
-  if (ext && f.substr(-1 * ext.length) === ext) {
-    f = f.substr(0, f.length - ext.length);
+  if (ext) {
+    var extPath = f.substr(-1 * ext.length);
+    var matches = process.platform === 'win32'
+      ? extPath.toLowerCase() === ext.toLowerCase()
+      : extPath === ext;
+    if (matches) {
+      f = f.substr(0, f.length - ext.length);
+    }
   }
   return f;
 };
