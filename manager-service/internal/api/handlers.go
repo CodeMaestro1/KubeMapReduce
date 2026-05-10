@@ -498,12 +498,15 @@ func parseOutputURI(uri string) (bucket, key string, err error) {
 	return rest[:idx], rest[idx+1:], nil
 }
 
-func buildManagerInternalURL(managerAddr string, path string) string {
+func buildManagerInternalURL(managerAddr string, path string) (string, error) {
 	base := strings.TrimSpace(managerAddr)
-	if strings.HasPrefix(base, "http://") || strings.HasPrefix(base, "https://") {
-		return strings.TrimRight(base, "/") + path
+	if base == "" {
+		return "", errors.New("manager internal address is not configured")
 	}
-	return "http://" + base + path
+	if strings.HasPrefix(base, "http://") || strings.HasPrefix(base, "https://") {
+		return strings.TrimRight(base, "/") + path, nil
+	}
+	return "", errors.New("manager internal address must include http:// or https:// scheme")
 }
 
 // HandleAdminConfigWorkers is the unified POST /api/v1/admin/config/workers handler.
@@ -580,7 +583,11 @@ func (h *Handlers) HandleAdminConfigWorkers(w http.ResponseWriter, r *http.Reque
 		httputil.WriteErrorJSON(w, http.StatusInternalServerError, "failed to serialize config update")
 		return
 	}
-	managerURL := buildManagerInternalURL(h.managerAddr, "/internal/config")
+	managerURL, err := buildManagerInternalURL(h.managerAddr, "/internal/config")
+	if err != nil {
+		httputil.WriteErrorJSON(w, http.StatusInternalServerError, "manager internal endpoint misconfigured")
+		return
+	}
 	proxyReq, err := http.NewRequestWithContext(r.Context(), http.MethodPut, managerURL, bytes.NewReader(payload))
 	if err != nil {
 		httputil.WriteErrorJSON(w, http.StatusInternalServerError, "failed to build proxy request")
@@ -622,7 +629,10 @@ func (h *Handlers) postSchedule(ctx context.Context, req manager.ScheduleJobRequ
 	if err != nil {
 		return fmt.Errorf("marshal schedule request: %w", err)
 	}
-	url := buildManagerInternalURL(h.managerAddr, "/internal/schedule")
+	url, err := buildManagerInternalURL(h.managerAddr, "/internal/schedule")
+	if err != nil {
+		return fmt.Errorf("resolve manager url: %w", err)
+	}
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
 		return fmt.Errorf("build schedule request: %w", err)
@@ -1128,7 +1138,11 @@ func (h *Handlers) HandleJobsDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	managerURL := buildManagerInternalURL(h.managerAddr, fmt.Sprintf("/internal/jobs/%s", jobID))
+	managerURL, err := buildManagerInternalURL(h.managerAddr, fmt.Sprintf("/internal/jobs/%s", jobID))
+	if err != nil {
+		httputil.WriteErrorJSON(w, http.StatusInternalServerError, "manager internal endpoint misconfigured")
+		return
+	}
 	proxyReq, err := http.NewRequestWithContext(r.Context(), http.MethodDelete, managerURL, nil)
 	if err != nil {
 		httputil.WriteErrorJSON(w, http.StatusInternalServerError, "failed to build cancellation request")
