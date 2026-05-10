@@ -250,14 +250,18 @@ func (w *Worker) streamHeartbeatLoop(
 				return
 			}
 			if hb := resp.GetHeartbeatAck(); hb != nil && hb.Action == pb.HeartbeatResponse_TERMINATE {
-				select {
-				case terminated <- "manager TERMINATE":
-				default:
-				}
+				notifyTermination(terminated, "manager TERMINATE")
 				taskCancel()
 				return
 			}
 		}
+	}
+}
+
+func notifyTermination(terminated chan<- string, reason string) {
+	select {
+	case terminated <- reason:
+	default:
 	}
 }
 
@@ -273,7 +277,7 @@ func (w *Worker) heartbeatLoop(ctx context.Context, a *pb.TaskAssignment, taskCa
 		case <-ctx.Done():
 			// Parent context cancelled: SIGTERM or caller shutdown.
 			reporter.start(w, a, "SIGTERM")
-			terminated <- "SIGTERM"
+			notifyTermination(terminated, "SIGTERM")
 			taskCancel()
 			return
 		case <-ticker.C:
@@ -291,7 +295,7 @@ func (w *Worker) heartbeatLoop(ctx context.Context, a *pb.TaskAssignment, taskCa
 			if resp.Action == pb.HeartbeatResponse_TERMINATE {
 				log.Printf("[worker] manager sent TERMINATE")
 				reporter.start(w, a, "manager TERMINATE")
-				terminated <- "manager TERMINATE"
+				notifyTermination(terminated, "manager TERMINATE")
 				taskCancel()
 				return
 			}
