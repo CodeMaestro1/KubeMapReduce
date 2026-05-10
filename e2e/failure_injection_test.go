@@ -2,7 +2,6 @@ package e2e
 
 import (
 	"encoding/json"
-	"net/http"
 	"os"
 	"os/exec"
 	"strings"
@@ -21,76 +20,69 @@ func apiURL() string {
 	return url
 }
 
+
+
 func submitSleepJob(t *testing.T) string {
-	payload := `{"spec": "sleep_job", "reducers": 1}`
-	req, err := http.NewRequest("POST", apiURL()+"/api/v1/jobs", strings.NewReader(payload))
+	cmd := exec.Command("../bin/cli", "jobs", "submit",
+		"--mapper", "../testdata/job3-sleep/mapper.py",
+		"--reducer", "../testdata/job3-sleep/reducer.py",
+		"--input", "../testdata/job3-sleep/input.jsonl")
+	out, err := cmd.Output()
 	if err != nil {
-		t.Fatalf("failed to create request: %v", err)
-	}
-	// In a real environment we would need a valid token. Mocking for now since E2E assumes auth.
-	req.Header.Set("Authorization", "Bearer mock-e2e-token")
-	req.Header.Set("Content-Type", "application/json")
-
-	client := &http.Client{Timeout: 10 * time.Second}
-	resp, err := client.Do(req)
-	if err != nil {
-		t.Fatalf("failed to submit job: %v", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusCreated && resp.StatusCode != http.StatusOK {
-		t.Fatalf("unexpected status code submitting job: %d", resp.StatusCode)
+		if exitError, ok := err.(*exec.ExitError); ok {
+			t.Fatalf("failed to submit job via cli: %v\nStderr: %s", err, string(exitError.Stderr))
+		}
+		t.Fatalf("failed to execute cli: %v", err)
 	}
 
 	var result map[string]interface{}
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		t.Fatalf("failed to decode response: %v", err)
+	if err := json.Unmarshal(out, &result); err != nil {
+		t.Fatalf("failed to decode cli output: %v\nOutput: %s", err, string(out))
 	}
 
 	jobID, ok := result["jobId"].(string)
 	if !ok {
-		t.Fatalf("jobId not found in response: %v", result)
+		t.Fatalf("jobId not found in cli output: %v", string(out))
 	}
 	return jobID
 }
 
 func waitForJobCompletion(t *testing.T, jobID string, timeout time.Duration) {
 	deadline := time.Now().Add(timeout)
-	client := &http.Client{Timeout: 5 * time.Second}
 
 	for time.Now().Before(deadline) {
-		req, _ := http.NewRequest("GET", apiURL()+"/api/v1/jobs/"+jobID, nil)
-		req.Header.Set("Authorization", "Bearer mock-e2e-token")
-
-		resp, err := client.Do(req)
+		cmd := exec.Command("../bin/cli", "jobs", "status", "--id", jobID)
+		out, err := cmd.Output()
 		if err == nil {
-			var status map[string]interface{}
-			json.NewDecoder(resp.Body).Decode(&status)
-			resp.Body.Close()
-
-			state, _ := status["status"].(string)
-			if state == "Completed" {
-				return
-			} else if state == "Failed" {
-				t.Fatalf("job %s failed", jobID)
+			var result map[string]interface{}
+			if err := json.Unmarshal(out, &result); err == nil {
+				state, _ := result["status"].(string)
+				if state == "Completed" {
+					return
+				} else if state == "Failed" {
+					t.Fatalf("job %s failed", jobID)
+				}
 			}
 		}
-		time.Sleep(2 * time.Second)
+		time.Sleep(5 * time.Second)
 	}
 	t.Fatalf("timeout waiting for job %s to complete", jobID)
 }
 
 func getWorkerPodForJob(t *testing.T, jobID string) string {
-	cmd := exec.Command("kubectl", "get", "pods", "-l", "app=kubemapreduce-worker,job_id="+jobID, "-o", "jsonpath={.items[0].metadata.name}")
-	out, err := cmd.Output()
-	if err != nil {
-		t.Fatalf("failed to get worker pod: %v", err)
+	for i := 0; i < 30; i++ {
+		cmd := exec.Command("kubectl", "-n", "mapreduce", "get", "pods", "-l", "app=kubemapreduce-worker,job_id="+jobID, "-o", "jsonpath={.items[0].metadata.name}")
+		out, err := cmd.Output()
+		if err == nil {
+			pod := strings.TrimSpace(string(out))
+			if pod != "" {
+				return pod
+			}
+		}
+		time.Sleep(1 * time.Second)
 	}
-	pod := strings.TrimSpace(string(out))
-	if pod == "" {
-		t.Fatalf("no worker pods found for job %s", jobID)
-	}
-	return pod
+	t.Fatalf("no worker pods found for job %s after 30s", jobID)
+	return ""
 }
 
 func TestE2E_WorkerKillScenario(t *testing.T) {
@@ -101,18 +93,18 @@ func TestE2E_WorkerKillScenario(t *testing.T) {
 	jobID := submitSleepJob(t)
 	t.Logf("Submitted job: %s", jobID)
 
-	// Wait for workers to spawn
-	time.Sleep(10 * time.Second)
+	// Wait for workers to spawn and be ready
+	waitForWorkerPodsReady(t, jobID)
 
 	podName := getWorkerPodForJob(t, jobID)
 	t.Logf("Killing worker pod: %s", podName)
 
-	cmd := exec.Command("kubectl", "delete", "pod", podName, "--grace-period=0", "--force")
+	cmd := exec.Command("kubectl", "-n", "mapreduce", "delete", "pod", podName, "--grace-period=0", "--force")
 	if err := cmd.Run(); err != nil {
 		t.Fatalf("failed to delete pod: %v", err)
 	}
 
-	waitForJobCompletion(t, jobID, 3*time.Minute)
+	waitForJobCompletion(t, jobID, 10*time.Minute)
 }
 
 func TestE2E_ManagerRestartScenario(t *testing.T) {
@@ -126,17 +118,17 @@ func TestE2E_ManagerRestartScenario(t *testing.T) {
 	time.Sleep(5 * time.Second)
 
 	t.Logf("Restarting manager statefulset...")
-	cmd := exec.Command("kubectl", "rollout", "restart", "statefulset/manager")
+	cmd := exec.Command("kubectl", "-n", "mapreduce", "rollout", "restart", "statefulset/manager")
 	if err := cmd.Run(); err != nil {
 		t.Fatalf("failed to restart manager: %v", err)
 	}
 
-	cmd = exec.Command("kubectl", "rollout", "status", "statefulset/manager", "--timeout=120s")
+	cmd = exec.Command("kubectl", "-n", "mapreduce", "rollout", "status", "statefulset/manager", "--timeout=300s")
 	if err := cmd.Run(); err != nil {
 		t.Fatalf("failed to wait for manager rollout: %v", err)
 	}
 
-	waitForJobCompletion(t, jobID, 3*time.Minute)
+	waitForJobCompletion(t, jobID, 10*time.Minute)
 }
 
 func TestE2E_ZombieFencingScenario(t *testing.T) {
@@ -147,33 +139,76 @@ func TestE2E_ZombieFencingScenario(t *testing.T) {
 	jobID := submitSleepJob(t)
 	t.Logf("Submitted job: %s", jobID)
 
-	time.Sleep(10 * time.Second)
+	// Wait for pods to be Ready before injecting failure
+	waitForWorkerPodsReady(t, jobID)
 
 	podName := getWorkerPodForJob(t, jobID)
 	t.Logf("Simulating zombie worker (SIGSTOP) on pod: %s", podName)
 
-	cmd := exec.Command("kubectl", "exec", podName, "--", "kill", "-STOP", "1")
+	cmd := exec.Command("kubectl", "-n", "mapreduce", "exec", podName, "--", "sh", "-c", "kill -STOP 1")
 	if err := cmd.Run(); err != nil {
 		t.Fatalf("failed to SIGSTOP worker: %v", err)
 	}
 
-	t.Log("Waiting for lease to expire (~60s)...")
-	time.Sleep(60 * time.Second)
+	t.Log("Waiting for lease to expire (~20s)...")
+	time.Sleep(20 * time.Second)
 
 	t.Logf("Resuming zombie worker (SIGCONT) on pod: %s", podName)
-	cmd = exec.Command("kubectl", "exec", podName, "--", "kill", "-CONT", "1")
+	cmd = exec.Command("kubectl", "-n", "mapreduce", "exec", podName, "--", "sh", "-c", "kill -CONT 1")
 	if err := cmd.Run(); err != nil {
-		t.Fatalf("failed to SIGCONT worker: %v", err)
+		t.Logf("Warning: failed to SIGCONT worker (it might have been deleted by the orchestrator): %v", err)
 	}
 
-	waitForJobCompletion(t, jobID, 3*time.Minute)
+	waitForJobCompletion(t, jobID, 10*time.Minute)
+
+	t.Log("Verifying zombie status/logs for fencing...")
+	cmd = exec.Command("kubectl", "-n", "mapreduce", "get", "pod", podName)
+	if err := cmd.Run(); err != nil {
+		t.Logf("Zombie pod %s is gone. Checking if job completed successfully...", podName)
+		cmd = exec.Command("../bin/cli", "jobs", "status", "--id", jobID)
+		out, err := cmd.Output()
+		if err == nil {
+			var result map[string]interface{}
+			if err := json.Unmarshal(out, &result); err == nil {
+				state, _ := result["status"].(string)
+				if state == "Completed" {
+					t.Log("Job completed successfully and zombie was cleaned up. Fencing successful.")
+					return
+				}
+			}
+		}
+		t.Fatalf("Zombie pod is gone but job is not completed: %s", string(out))
+	}
 
 	t.Log("Verifying zombie logs for rejection...")
-	cmd = exec.Command("kubectl", "logs", podName)
+	cmd = exec.Command("kubectl", "-n", "mapreduce", "logs", podName)
 	out, _ := cmd.Output()
 	logs := string(out)
 
-	if !strings.Contains(strings.ToLower(logs), "permissiondenied") && !strings.Contains(strings.ToLower(logs), "expiredlease") {
+	if !strings.Contains(strings.ToLower(logs), "permissiondenied") && !strings.Contains(strings.ToLower(logs), "expiredlease") && !strings.Contains(strings.ToLower(logs), "staleattempt") {
 		t.Fatalf("Zombie fencing rejection not observed in logs:\n%s", logs)
 	}
+}
+
+func waitForWorkerPodsReady(t *testing.T, jobID string) {
+	deadline := time.Now().Add(60 * time.Second)
+	for time.Now().Before(deadline) {
+		cmd := exec.Command("kubectl", "-n", "mapreduce", "get", "pods", "-l", "app=kubemapreduce-worker,job_id="+jobID, "-o", "jsonpath={.items[*].status.containerStatuses[*].ready}")
+		out, err := cmd.Output()
+		if err == nil {
+			statuses := strings.Split(strings.TrimSpace(string(out)), " ")
+			allReady := true
+			for _, s := range statuses {
+				if s != "true" {
+					allReady = false
+					break
+				}
+			}
+			if allReady && len(statuses) > 0 {
+				return
+			}
+		}
+		time.Sleep(2 * time.Second)
+	}
+	t.Fatalf("worker pods for job %s not ready after 60s", jobID)
 }

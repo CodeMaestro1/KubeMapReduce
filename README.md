@@ -45,13 +45,17 @@ On Windows (PowerShell), use `Get-Content` to pipe the file:
 Get-Content migrations\0001_initial_schema.sql | docker exec -i mapreduce-postgres psql -U mapreduce -d mapreduce
 ```
 
-| Service    | URL / Port                          |
-|------------|-------------------------------------|
-| Keycloak   | http://localhost:8080               |
-| API        | http://localhost:8081               |
-| PostgreSQL | localhost:5432 (user/db: mapreduce) |
-| MinIO S3   | localhost:9000                      |
 | MinIO UI   | http://localhost:9001               |
+
+## Full Local Deployment (Kubernetes/Minikube)
+
+For a complete end-to-end environment that runs real worker pods as Kubernetes Jobs, supports fault tolerance testing, and executes the full E2E failure injection suite, see the **[Minikube Local Development Guide](docs/MINIKUBE_LOCAL_DEV.md)**.
+
+This setup is recommended for testing:
+- **Fault Tolerance**: Worker pod kills and manager restarts.
+- **Zombie Fencing**: Network partition simulation (SIGSTOP/SIGCONT).
+- **Data Locality**: Scheduling workers near MinIO data nodes.
+- **E2E Tests**: The `go test ./e2e/...` suite requires this environment.
 
 ## Quick Start (local smoke test)
 

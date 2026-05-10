@@ -90,6 +90,7 @@ func main() {
 
 	var minioClient *minio.Client
 	if cfg.MinioEndpoint != "" && cfg.MinioAccessKey != "" && cfg.MinioSecretKey != "" {
+		log.Printf("MinIO: endpoint=%s access_key=%s use_ssl=%v", cfg.MinioEndpoint, cfg.MinioAccessKey, cfg.MinioUseSSL)
 		minioClient, err = minio.New(cfg.MinioEndpoint, &minio.Options{
 			Creds:  credentials.NewStaticV4(cfg.MinioAccessKey, cfg.MinioSecretKey, ""),
 			Secure: cfg.MinioUseSSL,

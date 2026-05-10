@@ -15,7 +15,7 @@ package manager
 const QueryGetMaxConcurrentPods = `SELECT max_concurrent_pods FROM SYSTEM_CONFIG WHERE config_id = 1`
 
 // QueryGetSystemConfig retrieves the entire cluster configuration.
-const QueryGetSystemConfig = `SELECT max_concurrent_pods, cpu_limit, memory_limit, worker_replicas, max_jobs_per_node, locality_key FROM SYSTEM_CONFIG WHERE config_id = 1`
+const QueryGetSystemConfig = `SELECT max_concurrent_pods, cpu_limit, memory_limit, worker_replicas, max_jobs_per_node, locality_key, locality_label_selector FROM SYSTEM_CONFIG WHERE config_id = 1`
 
 // QueryGetLocalityKey reads the preferred topology key for data locality scheduling.
 const QueryGetLocalityKey = `SELECT locality_key FROM SYSTEM_CONFIG WHERE config_id = 1`
@@ -231,23 +231,20 @@ const QuerySelectStaleTasks = `
 		t.task_id,
 		a.attempt_id,
 		t.job_id,
-		(SELECT COUNT(*) FROM TASK_ATTEMPTS WHERE task_id = t.task_id) as attempt_count
+		(SELECT COUNT(*) FROM TASK_ATTEMPTS WHERE task_id = t.task_id) as attempt_count,
+		a.last_renewed_at,
+		a.lease_ttl
 	FROM TASKS t
 	JOIN TASK_ATTEMPTS a ON t.current_attempt_id = a.attempt_id
 	JOIN JOBS j ON t.job_id = j.job_id
 	WHERE t.status = 'In-Progress' AND a.status = 'Running' AND j.replica_index = $1
 	FOR UPDATE OF t SKIP LOCKED`
 
-// QuerySelectRecoverableAttempts returns active attempts that belong to this manager replica.
-// Recovery uses these rows to re-spawn workers and warm the in-memory heartbeat map so the
-// reaper does not immediately evict tasks that were live before the Manager restarted.
-const QuerySelectRecoverableAttempts = `
-	SELECT t.task_id, t.current_attempt_id, t.job_id, a.last_renewed_at
-	FROM TASKS t
-	JOIN JOBS j ON t.job_id = j.job_id
-	JOIN TASK_ATTEMPTS a ON t.current_attempt_id = a.attempt_id
-	WHERE t.status = 'In-Progress' AND j.replica_index = $1
-	  AND t.current_attempt_id IS NOT NULL`
+// QueryResetTasksForReplica transitions all In-Progress tasks for a replica back to Idle.
+// Used during Manager recovery to allow workers to pick up tasks after a crash.
+const QueryResetTasksForReplica = `
+	UPDATE TASKS SET status = 'Idle', current_attempt_id = NULL
+	WHERE status = 'In-Progress' AND job_id IN (SELECT job_id FROM JOBS WHERE replica_index = $1)`
 
 // ---------------------------------------------------------------------------
 // Read-only output queries

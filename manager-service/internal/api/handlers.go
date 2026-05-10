@@ -165,6 +165,7 @@ func (h *Handlers) HandleReadyz(w http.ResponseWriter, r *http.Request) {
 // URIs. Returns 202 Accepted, reflecting that the job has been queued for
 // scheduling but hasn't necessarily started execution.
 func (h *Handlers) HandleJobsSubmit(w http.ResponseWriter, r *http.Request) {
+	slog.InfoContext(r.Context(), "HandleJobsSubmit called")
 	if r.Method != http.MethodPost {
 		httputil.WriteErrorJSON(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
@@ -229,6 +230,10 @@ func (h *Handlers) HandleJobsSubmit(w http.ResponseWriter, r *http.Request) {
 		MTasks:        schedReq.MTasks,
 	}
 	if err := h.store.CreateJob(r.Context(), rec); err != nil {
+		slog.ErrorContext(r.Context(), "failed to persist job",
+			slog.String("job_id", jobID),
+			slog.Any("err", err),
+		)
 		httputil.WriteErrorJSON(w, http.StatusInternalServerError, "failed to persist job")
 		return
 	}
