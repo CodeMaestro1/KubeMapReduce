@@ -112,17 +112,26 @@ kubectl apply -f k8s/35-api.yaml
 kubectl apply -f k8s/50-worker-rbac.yaml
 ```
 
+If you prefer direct host access via Minikube IP + NodePorts (instead of
+`kubectl port-forward`), run the helper script:
+
+```bash
+bash scripts/fix-cluster.sh
+```
+
+This patches Keycloak and API services to NodePort (`30080`, `30081`), keeps
+MinIO NodePorts (`30900`, `30901`), and applies service-selector fixes needed
+for some local kustomize flows. For full host/DNS setup, see
+`docs/MINIKUBE_EXTERNAL_ACCESS.md`.
+
 ## Step 5: Run Database Migrations
 
 The ConfigMap placeholder in `10-postgres.yaml` only runs `SELECT 1`. The real
-schema must be applied manually on first deploy:
+schema should be applied using the migration script:
 
 ```bash
-# Apply all migrations in order
-for f in migrations/*.sql; do
-  echo "Applying $f..."
-  kubectl -n mapreduce exec -i postgres-0 -- psql -U mapreduce -d mapreduce < "$f"
-done
+# Apply all migrations in order (idempotent for reruns)
+bash scripts/run-migrations.sh
 ```
 
 Verify:
