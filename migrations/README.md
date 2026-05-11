@@ -28,6 +28,20 @@ Manager service.
 
 ## Applying
 
+Preferred for Kubernetes deployments (runs all migrations in order):
+
+```bash
+bash scripts/run-migrations.sh
+```
+
+Optional environment overrides:
+
+```bash
+NAMESPACE=mapreduce POD=postgres-0 bash scripts/run-migrations.sh
+```
+
+Direct `psql` (single-file/manual workflow):
+
 ```bash
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f migrations/0001_initial_schema.sql
 ```
