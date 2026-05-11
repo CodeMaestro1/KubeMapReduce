@@ -122,7 +122,11 @@ func main() {
 			totalReplicas = discoveredReplicas
 			replicaIndex = resolveReplicaIndex(hostname, totalReplicas)
 		}
-		orchestrator = manager.NewKubeOrchestrator(clientset, namespace, "kubemapreduce/worker:latest", cfg.WorkerSecretName).
+		workerImage := strings.TrimSpace(os.Getenv("WORKER_IMAGE"))
+		if workerImage == "" {
+			workerImage = "kubemapreduce/worker:latest"
+		}
+		orchestrator = manager.NewKubeOrchestrator(clientset, namespace, workerImage, cfg.WorkerSecretName).
 			WithResourceProvider(manager.NewDBResourceConfigProvider(db))
 	}
 

@@ -1,0 +1,27 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: auth-setup
+  namespace: mapreduce
+spec:
+  template:
+    spec:
+      containers:
+        - name: auth-setup
+          image: europe-north1-docker.pkg.dev/gen-lang-client-0101686183/mapreduce/auth-setup:latest
+          env:
+            - name: KEYCLOAK_BASE_URL
+              value: "http://keycloak.mapreduce.svc.cluster.local:8080"
+            - name: KEYCLOAK_ADMIN_USERNAME
+              value: "admin"
+            - name: KEYCLOAK_ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: keycloak-creds
+                  key: KEYCLOAK_ADMIN_PASSWORD
+          args:
+            - "--username=platform-admin"
+            - "--password=admin"
+            - "--role=ADMIN"
+      restartPolicy: OnFailure
+  backoffLimit: 10

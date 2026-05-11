@@ -11,11 +11,35 @@ resources:
   - 10-postgres.yaml
   - 20-minio.yaml
   - 25-keycloak.yaml
+  - 26-auth-setup.yaml
   - 30-manager.yaml
   - 35-api.yaml
   - 50-worker-rbac.yaml
   - 55-tls.yaml
+  - 59-gateway-class.yaml
   - 60-gateway.yaml
 
 commonAnnotations:
   app.kubernetes.io/part-of: kubemapreduce
+
+images:
+  - name: kubemapreduce/manager
+    newName: europe-north1-docker.pkg.dev/gen-lang-client-0101686183/mapreduce/manager
+    newTag: latest
+  - name: kubemapreduce/api
+    newName: europe-north1-docker.pkg.dev/gen-lang-client-0101686183/mapreduce/api
+    newTag: latest
+  - name: kubemapreduce/worker
+    newName: europe-north1-docker.pkg.dev/gen-lang-client-0101686183/mapreduce/worker
+    newTag: latest
+  - name: kubemapreduce/auth-setup
+    newName: europe-north1-docker.pkg.dev/gen-lang-client-0101686183/mapreduce/auth-setup
+    newTag: latest
+
+configMapGenerator:
+  - name: postgres-init
+    files:
+      - migrations/0001_initial_schema.sql
+      - migrations/0002_add_locality_config.sql
+    options:
+      disableNameSuffixHash: true

@@ -28,7 +28,7 @@ metadata:
 rules:
   # Worker pool Deployment lifecycle (EnsureWorkerPool / CancelJob).
   - apiGroups: ["apps"]
-    resources: ["deployments"]
+    resources: ["deployments", "statefulsets"]
     verbs: ["create", "get", "list", "watch", "update", "delete"]
   # Worker Job lifecycle (SpawnWorker / reaper).
   - apiGroups: ["batch"]
@@ -65,6 +65,29 @@ roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: Role
   name: manager-worker-controller
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: manager-node-viewer
+rules:
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: manager-node-viewer
+subjects:
+  - kind: ServiceAccount
+    name: manager
+    namespace: mapreduce
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: manager-node-viewer
+---
 ---
 # Dedicated, deliberately-unprivileged ServiceAccount for Worker Jobs.
 # The Manager applies this SA to every Worker Job manifest it creates so the

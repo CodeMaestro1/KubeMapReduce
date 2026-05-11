@@ -1,25 +1,27 @@
-# Benchmarks
+# KubeMapReduce Benchmarks
 
-Two benchmark suites validating the MapReduce pipeline: **WordCount** and **Distributed Grep**.
+This directory contains the benchmarks used to validate the performance and resilience of the KubeMapReduce system.
 
-## Prerequisites
+## Dataset Preparation
 
-- Python 3 (no third-party packages required)
-- 6 Project Gutenberg HTML files in `corpus/` (already present in this repo)
+To generate the datasets used in these benchmarks, run the following commands:
 
-## Step 1 — Build the corpus
-
-Strips HTML from the Gutenberg books and produces a JSONL dataset:
-
+### 1. Build the base corpus (16MB)
+Requires the Gutenberg HTML files in `corpus/`.
 ```bash
 python benchmarks/build_corpus.py
 ```
-
 Output: `benchmarks/data/corpus.jsonl` (~77,000 lines, one per text line from each book).
 
 Each record: `{"key": "pg1342:000042", "value": "It is a truth universally acknowledged"}`
 
 The `benchmarks/data/` directory is gitignored. Re-run this command after cloning.
+
+### 2. Build the Big Data corpus (128MB)
+Requires `benchmarks/data/corpus.jsonl` to exist.
+```bash
+python -c "with open('benchmarks/data/corpus.jsonl', 'r') as f: content = f.read(); open('benchmarks/data/corpus_128mb.jsonl', 'w').write(content * 8)"
+```
 
 ---
 
@@ -39,22 +41,6 @@ Runs the full pipeline locally (no cluster needed) and checks correctness:
 
 ```bash
 python benchmarks/wordcount/validate.py
-```
-
-Expected output:
-```
-Running WordCount pipeline locally against .../corpus.jsonl ...
-  12345 unique words found
-  Top 10 words: the=18432, and=14201, of=12800, ...
-PASS
-```
-
-### Compare against cluster output
-
-After running the job on a live cluster and downloading the output:
-
-```bash
-python benchmarks/wordcount/validate.py --compare /path/to/cluster-output.jsonl
 ```
 
 ---
@@ -96,7 +82,21 @@ python benchmarks/grep/validate.py --compare /path/to/cluster-output.jsonl --pat
 
 ---
 
-## Running on a live cluster
+## Running Benchmarks on a Live Cluster (GKE)
+
+### Prerequisites
+Ensure you have logged in via the CLI and set the `API_URL` environment variable.
+```bash
+export API_URL="http://<YOUR_API_IP>"
+```
+
+### Distributed GKE Benchmark Suite
+To run the automated performance and scalability benchmarks:
+```bash
+python benchmarks/distributed_benchmark.py
+```
+
+### Manual Job Submission
 
 1. **Build corpus** (Step 1 above)
 
@@ -116,6 +116,12 @@ python benchmarks/grep/validate.py --compare /path/to/cluster-output.jsonl --pat
    cat ./results/*.json > cluster-output.jsonl
    python benchmarks/wordcount/validate.py --compare cluster-output.jsonl
    ```
+
+---
+
+## Results & Visualizations
+Final results and visualizations are located in `benchmarks/results/`.
+Detailed analysis can be found in `docs/PRESENTATION_TESTS.md` and `docs/EXTENDED_BENCHMARKS.md`.
 
 ---
 

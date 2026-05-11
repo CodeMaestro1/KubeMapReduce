@@ -1,509 +1,209 @@
-# KubeMapReduce Deployment Guide
+# KubeMapReduce on Google Cloud Platform (GKE)
 
-Complete guide for deploying KubeMapReduce to Kubernetes with optional Linkerd service mesh for production-grade security and observability.
-
-## Table of Contents
-
-1. [Prerequisites](#prerequisites)
-2. [Local Development](#local-development-docker-compose)
-3. [Kubernetes Deployment](#kubernetes-deployment)
-4. [Service Mesh Setup](#service-mesh-setup-linkerd-optional)
-5. [Verification](#verification)
-6. [Troubleshooting](#troubleshooting)
-
----
+This tutorial provides a comprehensive, step-by-step guide to deploying and benchmarking the KubeMapReduce system on a production-grade Google Kubernetes Engine (GKE) cluster.
 
 ## Prerequisites
 
-### Required Tools
+Before starting, ensure you have the following installed on your local machine:
+- [Google Cloud CLI](https://cloud.google.com/sdk/docs/install) (`gcloud`)
+- [kubectl](https://kubernetes.io/docs/tasks/tools/)
+- [Docker](https://docs.docker.com/get-docker/)
+- [Go 1.26+](https://go.dev/doc/install)
+- [Python 3.12+](https://www.python.org/downloads/) (for running benchmarks)
 
-- **Go 1.26+** — for building services
-- **Docker + Docker Compose** — for local development
-- **kubectl 1.21+** — for Kubernetes management
-- **Helm 3+** (optional) — for package management
-- **Git** — for source control
+---
 
-### Kubernetes Cluster
+## Phase 1: GCP Infrastructure Setup
 
-Choose one:
-
-- **k3s on Ubuntu/Debian** — lightweight, minimal ops
-  ```bash
-  curl -sfL https://get.k3s.io | sh -
-  ```
-- **kind** — local testing on any OS
-  ```bash
-  go install sigs.k8s.io/kind@latest
-  kind create cluster --name kubemapreduce
-  ```
-- **minikube** — VirtualBox + Kubernetes
-  ```bash
-  minikube start --cpus=4 --memory=8192
-  ```
-- **Managed K8s** — GKE, EKS, AKS (recommended for production)
-
-### Optional: Linkerd Service Mesh
-
-For automatic mTLS, per-RPC timeouts, and traffic observability (recommended for production):
+### 1. Authenticate and Configure GCP
+First, log in to your Google Cloud account and set your project and preferred region.
 
 ```bash
-curl -fsL https://linkerd.io/install-edge | sh
-linkerd version
+gcloud auth login
+gcloud config set project YOUR_PROJECT_ID # Example: gen-lang-client-0105646163
+gcloud config set compute/region europe-north1
 ```
 
-Verify Kubernetes API supports CRDs (required for traffic policies):
+### 2. Create the GKE Cluster
+We will create a GKE cluster using `t2d-standard-2` Spot VMs to balance performance and cost. These instances offer dedicated vCPUs which are ideal for data-processing workloads.
 
 ```bash
-kubectl api-resources | grep -i gateway
-# Should show: httproutes, backendpolicies, etc.
+gcloud container clusters create kubemapreduce-gcp \
+    --region=europe-north1 \
+    --machine-type=t2d-standard-2 \
+    --num-nodes=1 \
+    --enable-autoscaling \
+    --min-nodes=1 \
+    --max-nodes=5 \
+    --spot \
+    --gateway-api=standard \
+    --enable-ip-alias
+```
+
+*Note: Spot instances are preemptible. Our fault-tolerant architecture (Active Reaper) is specifically designed to handle node preemptions by automatically re-assigning lost tasks to new workers.*
+
+### 3. Connect `kubectl` to your Cluster
+Install the GKE auth plugin and configure your local `kubeconfig`:
+
+```bash
+# Install the auth plugin using gcloud
+gcloud components install gke-gcloud-auth-plugin
+
+# Get cluster credentials
+gcloud container clusters get-credentials kubemapreduce-gcp --region europe-north1
 ```
 
 ---
 
-## Local Development (Docker Compose)
+## Phase 2: Build and Push Images
 
-### Setup
+KubeMapReduce requires three Docker images: `api`, `manager`, and `worker`. We will host them on Google Artifact Registry.
 
-1. **Clone repository and copy env file:**
+### 1. Create an Artifact Registry Repository
+```bash
+gcloud artifacts repositories create mapreduce \
+    --repository-format=docker \
+    --location=europe-north1 \
+    --description="KubeMapReduce images"
+```
 
-   ```bash
-   cd infra/docker
-   cp .env.example .env
-   ```
+Configure Docker to authenticate with Artifact Registry:
+```bash
+gcloud auth configure-docker europe-north1-docker.pkg.dev
+```
 
-   The `.env` contains local dev defaults:
-   - Keycloak ADMIN_PASSWORD: `admin`
-   - PostgreSQL credentials
-   - MinIO S3 credentials
-   - Manager internal tokens
-
-2. **Start services:**
-
-   ```bash
-   docker compose up -d
-   ```
-
-   Wait for all containers to be healthy:
-
-   ```bash
-   docker compose ps
-   docker logs mapreduce-postgres  # Check for migrations
-   ```
-
-3. **Initialize database (first start only):**
-
-   Linux/macOS:
-   ```bash
-   docker exec -i mapreduce-postgres psql -U mapreduce -d mapreduce < ../../migrations/0001_initial_schema.sql
-   ```
-
-   Windows PowerShell:
-   ```powershell
-   Get-Content ../../migrations/0001_initial_schema.sql | docker exec -i mapreduce-postgres psql -U mapreduce -d mapreduce
-   ```
-
-4. **Create admin user:**
-
-   ```bash
-   go run ../../auth-service/cmd/setup \
-     --admin-password admin \
-     --username platform-admin \
-     --email platform-admin@example.com \
-     --prompt-password \
-     --role ADMIN
-   ```
-
-5. **Verify stack:**
-
-   ```bash
-   go run ../../cli-service/cmd/cli login --username platform-admin
-   go run ../../cli-service/cmd/cli health
-   go run ../../cli-service/cmd/cli jobs list
-   ```
-
-   Expected output: `[]` (empty job list confirms all services wired correctly)
-
-### Shutting Down
+### 2. Build and Push
+Replace `YOUR_PROJECT_ID` with your actual GCP Project ID.
 
 ```bash
-# Stop without removing volumes (data persists)
-docker compose stop
+export IMAGE_BASE="europe-north1-docker.pkg.dev/YOUR_PROJECT_ID/mapreduce"
 
-# Stop and remove everything (clean slate)
-docker compose down -v
+# Build images
+docker build -f infra/docker/Dockerfile.api -t $IMAGE_BASE/api:latest .
+docker build -f infra/docker/Dockerfile.manager -t $IMAGE_BASE/manager:latest .
+docker build -f infra/docker/Dockerfile.worker -t $IMAGE_BASE/worker:latest .
+
+# Push images
+docker push $IMAGE_BASE/api:latest
+docker push $IMAGE_BASE/manager:latest
+docker push $IMAGE_BASE/worker:latest
+```
+
+### 3. Update Kubernetes Manifests
+In `k8s/30-manager.yaml`, update the `manager` image and inject the `WORKER_IMAGE` environment variable:
+```yaml
+        - name: manager
+          image: europe-north1-docker.pkg.dev/YOUR_PROJECT_ID/mapreduce/manager:latest
+          env:
+            - name: WORKER_IMAGE
+              value: "europe-north1-docker.pkg.dev/YOUR_PROJECT_ID/mapreduce/worker:latest"
+```
+
+In `k8s/35-api.yaml`, update the `api` image:
+```yaml
+        - name: api
+          image: europe-north1-docker.pkg.dev/YOUR_PROJECT_ID/mapreduce/api:latest
 ```
 
 ---
 
-## Kubernetes Deployment
+## Phase 3: Deploy KubeMapReduce
 
-### 1. Prepare Kubernetes Cluster
-
-```bash
-# Verify cluster is running
-kubectl cluster-info
-kubectl get nodes
-
-# Verify DNS works
-kubectl run -it --rm busybox --image=busybox --restart=Never -- wget -O- https://kubernetes.default.svc.cluster.local
-```
-
-### 2. Build and Push Images
-
-Tag images consistently with your registry:
+### 1. Apply Namespace and Base Services
+We use Kustomize to apply our manifests.
 
 ```bash
-# Replace 'myregistry' with your Docker Hub username or private registry
-REGISTRY=myregistry
-
-docker build -f infra/docker/Dockerfile.manager -t $REGISTRY/manager:latest .
-docker build -f infra/docker/Dockerfile.worker  -t $REGISTRY/worker:latest  .
-docker build -f infra/docker/Dockerfile.ui      -t $REGISTRY/ui:latest      .
-
-docker push $REGISTRY/manager:latest
-docker push $REGISTRY/worker:latest
-docker push $REGISTRY/ui:latest
-```
-
-For local k3s (no registry needed):
-
-```bash
-docker save myregistry/manager:latest | sudo k3s ctr images import -
-docker save myregistry/worker:latest  | sudo k3s ctr images import -
-docker save myregistry/ui:latest      | sudo k3s ctr images import -
-```
-
-### 3. Create Namespace and Secrets
-
-```bash
-# Create namespace
 kubectl apply -f k8s/00-namespace.yaml
-
-# Create PostgreSQL credentials
-kubectl -n mapreduce create secret generic postgres-creds \
-  --from-literal=POSTGRES_USER=mapreduce \
-  --from-literal=POSTGRES_PASSWORD="$(openssl rand -hex 16)" \
-  --from-literal=POSTGRES_DB=mapreduce
-
-# Create MinIO credentials
-kubectl -n mapreduce create secret generic minio-creds \
-  --from-literal=MINIO_ROOT_USER=mapreduce \
-  --from-literal=MINIO_ROOT_PASSWORD="$(openssl rand -hex 32)" \
-  --from-literal=S3_ACCESS_KEY=mapreduce \
-  --from-literal=S3_SECRET_KEY="$(openssl rand -hex 32)" \
-  --from-literal=S3_ENDPOINT=minio.mapreduce.svc.cluster.local:9000 \
-  --from-literal=MINIO_BUCKET=mapreduce
-
-# Create Manager internal API token
-kubectl -n mapreduce create secret generic manager-secrets \
-  --from-literal=MANAGER_INTERNAL_API_KEY="$(openssl rand -hex 16)" \
-  --from-literal=MANAGER_WORKER_RPC_TOKEN="$(openssl rand -hex 16)"
-
-# Create gRPC TLS certificate (self-signed for non-production; use proper CA in production)
-openssl req -x509 -newkey rsa:2048 -nodes -days 365 \
-  -keyout tls.key -out tls.crt \
-  -subj "/CN=manager" \
-  -addext "subjectAltName=DNS:*.manager-headless.mapreduce.svc.cluster.local,DNS:*.manager.mapreduce.svc.cluster.local"
-
-kubectl -n mapreduce create secret tls grpc-tls --cert=tls.crt --key=tls.key
-```
-
-### 4. Load Database Migrations
-
-```bash
-kubectl -n mapreduce create configmap postgres-init \
-  --from-file=migrations/ \
-  --dry-run=client -o yaml | kubectl apply -f -
-```
-
-### 5. Deploy Services
-
-Update image names in `k8s/30-manager.yaml`, `k8s/40-ui.yaml` if using a registry:
-
-```bash
-sed -i 's/kubemapreduce\/manager:latest/myregistry\/manager:latest/g' k8s/30-manager.yaml
-sed -i 's/kubemapreduce-worker:latest/myregistry\/worker:latest/g' k8s/*.yaml
-```
-
-Deploy all manifests:
-
-```bash
 kubectl apply -k k8s/
 ```
 
-### 6. Wait for Rollout
+### 2. Expose Services via LoadBalancer
+For external access (CLI interactions, uploading data, authentication), we deploy LoadBalancer services for API, Keycloak, and MinIO.
 
 ```bash
-# Wait for each component to be ready
-kubectl -n mapreduce rollout status statefulset/postgres --timeout=5m
-kubectl -n mapreduce rollout status statefulset/minio --timeout=5m
-kubectl -n mapreduce rollout status deployment/keycloak --timeout=5m
-kubectl -n mapreduce rollout status statefulset/manager --timeout=5m
-kubectl -n mapreduce rollout status deployment/ui --timeout=5m
+# Create external services (make sure you created api-lb.yaml, keycloak-lb.yaml, minio-lb.yaml)
+kubectl apply -f k8s/api-lb.yaml
+kubectl apply -f k8s/keycloak-lb.yaml
+kubectl apply -f k8s/minio-lb.yaml
 ```
 
-### 7. Expose API Endpoint
-
-Get the external IP/hostname of the API service:
-
+Wait a few minutes for GCP to provision external IPs:
 ```bash
-# If using LoadBalancer
-kubectl -n mapreduce get svc api -o wide
-API_URL=$(kubectl -n mapreduce get svc api -o jsonpath='{.status.loadBalancer.ingress[0].ip}'):8081
-
-# If using port-forward (local testing)
-kubectl -n mapreduce port-forward svc/api 8081:8081 &
-API_URL=http://localhost:8081
+kubectl get svc -n mapreduce | grep LoadBalancer
 ```
 
-### 8. Submit a Job
+### 3. Configure External Endpoints
+Once you have the external IPs, update your configurations.
+Replace `<KEYCLOAK_IP>`, `<MINIO_IP>`, and `<API_IP>` with the actual IPs assigned by GCP.
 
+Update `k8s/30-manager.yaml` and `k8s/35-api.yaml` to include these external IPs so pre-signed URLs point to the correct external address, and JWT tokens are validated against the correct issuer.
+
+```yaml
+# In both k8s/30-manager.yaml and k8s/35-api.yaml
+            - name: MINIO_ENDPOINT
+              value: "<MINIO_IP>:9000"
+            - name: KEYCLOAK_ISSUER
+              value: "http://<KEYCLOAK_IP>/realms/mapreduce"
+```
+Re-apply the manifests and restart the deployments:
 ```bash
-export API_URL=http://<cluster-api-endpoint>:8081
-
-go run ./cli-service/cmd/cli login --username platform-admin
-go run ./cli-service/cmd/cli jobs list
-
-# Submit a MapReduce job
-go run ./cli-service/cmd/cli jobs submit \
-  --mapper   path/to/mapper.py \
-  --reducer  path/to/reducer.py \
-  --input    path/to/input.jsonl \
-  --reducers 2
+kubectl replace --force -f k8s/30-manager.yaml
+kubectl replace --force -f k8s/35-api.yaml
 ```
 
----
-
-## Service Mesh Setup (Linkerd, Optional)
-
-For production deployments, deploy Linkerd 2.15+ for automatic mTLS encryption, per-RPC method timeouts, and observability.
-
-### 1. Install Linkerd Control Plane
+### 4. Setup Keycloak Realm
+Run the automated auth setup script against your external Keycloak IP:
 
 ```bash
-# Install Linkerd control plane (3 replicas)
-linkerd install | kubectl apply -f -
-
-# Wait for control plane to be ready
-linkerd check
-
-# Verify data plane is injecting sidecars
-kubectl -n linkerd get deployment
-```
-
-### 2. Enable Automatic Sidecar Injection
-
-Annotate the mapreduce namespace for automatic injection:
-
-```bash
-kubectl annotate namespace mapreduce linkerd.io/inject=enabled --overwrite
-
-# Re-roll pods to inject sidecar proxies
-kubectl -n mapreduce rollout restart statefulset/postgres
-kubectl -n mapreduce rollout restart statefulset/minio
-kubectl -n mapreduce rollout restart deployment/keycloak
-kubectl -n mapreduce rollout restart statefulset/manager
-kubectl -n mapreduce rollout restart deployment/ui
-```
-
-### 3. Deploy Traffic Policies
-
-Apply per-method timeout and retry policies:
-
-```bash
-kubectl apply -f k8s/01-linkerd-namespace.yaml
-kubectl apply -f k8s/02-linkerd-crds.yaml          # PolicyAPI CRDs (if not already installed)
-kubectl apply -f k8s/04-manager-linkerd-policy.yaml
-kubectl apply -f k8s/05-linkerd-storage-policies.yaml
-```
-
-### 4. Verify Service Mesh is Active
-
-```bash
-# Check pod sidecar injection
-kubectl -n mapreduce get pods -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.spec.containers[*].name}{"\n"}{end}'
-
-# Should show: <pod-name>    <container1> <container2> ... linkerd-proxy
-
-# Check traffic policy status
-kubectl get policies -n mapreduce
-kubectl describe policy manager-worker-policy -n mapreduce
-
-# View Linkerd dashboard
-linkerd dashboard
+export KEYCLOAK_BASE_URL="http://<KEYCLOAK_IP>"
+go run auth-service/cmd/setup/main.go --url $KEYCLOAK_BASE_URL --admin-password admin
 ```
 
 ---
 
-## Verification
+## Phase 4: Run Benchmarks and Verify Fault Tolerance
 
-### Basic Health Checks
-
+### 1. Compile the CLI and Login
+Compile the Go CLI binary locally:
 ```bash
-# Check all services are running
-kubectl -n mapreduce get pods
-
-# Check logs for errors
-kubectl -n mapreduce logs -l app=manager --tail=50
-kubectl -n mapreduce logs -l app=ui --tail=50
-
-# Check services are discoverable
-kubectl -n mapreduce get svc
+go build -o bin/cli cli-service/cmd/cli/main.go
 ```
 
-### gRPC Timeout Enforcement
-
-If Linkerd is deployed, verify per-RPC timeouts are enforced:
-
+Authenticate your CLI session against Keycloak.
 ```bash
-# Check Manager receives timeout policies
-kubectl get httproute -n mapreduce
+export KEYCLOAK_BASE_URL="http://<KEYCLOAK_IP>"
+export API_URL="http://<API_IP>"
 
-# Check policy statistics
-linkerd routes -n mapreduce pod/manager-0
+./bin/cli login --username platform-admin --password admin
+```
+*You will see: `Login successful!`*
 
-# Monitor timeout events
-kubectl -n mapreduce logs -f -l app=manager | grep -i timeout
+### 2. Run the Benchmark Script
+The `distributed_benchmark.py` script automatically runs the MapReduce WordCount algorithm on the Project Gutenberg corpus, scaling across multiple reducer counts (R=1, 2, 4, 8) to test horizontal scalability.
+
+First, ensure your Python environment has the `requests` and `matplotlib` libraries installed:
+```bash
+pip install requests matplotlib
 ```
 
-### Presigned URL Operations
-
-Test file upload/download with presigned URLs:
-
+Then, run the benchmark:
 ```bash
-go run ./cli-service/cmd/cli uploads presigned-url
-
-# Should return:
-# {
-#   "upload_url": "https://minio.../...",
-#   "url_expiry": "2026-05-05T12:00:00Z"
-# }
+export API_URL="http://<API_IP>"
+python benchmarks/distributed_benchmark.py
 ```
 
-### Job Execution
-
-Submit and monitor a test job:
-
-```bash
-go run ./cli-service/cmd/cli jobs submit \
-  --mapper   mapper.py \
-  --reducer  reducer.py \
-  --input    input.jsonl \
-  --reducers 2
-
-# Monitor job
-JOB_ID=<returned-job-id>
-go run ./cli-service/cmd/cli jobs status --id $JOB_ID
-
-# Download results when complete
-go run ./cli-service/cmd/cli jobs download --id $JOB_ID --output results.jsonl
-```
-
----
-
-## Troubleshooting
-
-### Pod Stuck in CrashLoopBackOff
-
-```bash
-# Check pod logs
-kubectl -n mapreduce logs <pod-name>
-
-# Check events
-kubectl -n mapreduce describe pod <pod-name>
-
-# Check resource limits
-kubectl -n mapreduce top pods
-```
-
-### Service Discovery Issues
-
-```bash
-# From within a pod, test DNS resolution
-kubectl -n mapreduce exec -it <pod-name> -- nslookup manager.mapreduce.svc.cluster.local
-
-# Check CoreDNS logs
-kubectl -n kube-system logs -l k8s-app=kube-dns
-```
-
-### MinIO Connection Errors
-
-```bash
-# Verify MinIO is running
-kubectl -n mapreduce port-forward svc/minio 9000:9000 &
-curl http://localhost:9000/minio/health/live
-
-# Check credentials in secret
-kubectl -n mapreduce get secret minio-creds -o yaml
-```
-
-### Linkerd Dashboard Not Accessible
-
-```bash
-# Start port-forward
-linkerd dashboard
-
-# Or manually:
-kubectl -n linkerd port-forward svc/web 8084:8084 &
-# Then open http://localhost:8084
-```
-
-### gRPC Timeout Issues
-
-If workers are timing out during Heartbeat:
-
-1. Check network latency to Manager:
+### 3. Verify Fault Tolerance
+To prove that KubeMapReduce recovers from node failures or pod evictions:
+1. While a job is running (e.g., during the R=4 benchmark), open a second terminal.
+2. Find an active worker pod:
    ```bash
-   kubectl -n mapreduce exec -it <worker-pod> -- ping manager-0.manager-headless
+   kubectl get pods -n mapreduce | grep worker
    ```
-
-2. Increase Heartbeat timeout in `pkg/grpc/timeout_interceptor.go` (default: 2s)
-
-3. Check Linkerd traffic policies are applied:
+3. forcefully delete it:
    ```bash
-   kubectl get policies -n mapreduce -o yaml | grep Heartbeat
+   kubectl delete pod <worker-pod-name> -n mapreduce
    ```
+4. Observe the manager logs. The Manager's Active Reaper will detect the missed heartbeats, transition the task to `Failed`, and re-assign it to a new worker. The job will still finish successfully, albeit with a slight delay.
 
-### Certificate Rotation Issues (Linkerd)
-
-If pods fail after certificate rotation:
-
-```bash
-# Linkerd handles this automatically (24h default TTL)
-# But if manual rotation needed:
-
-# Re-issue cert
-linkerd sp validate
-
-# Force pod restart to pick up new cert
-kubectl -n mapreduce rollout restart statefulset/manager
-```
-
----
-
-## Production Checklist
-
-- [ ] Use managed Kubernetes (GKE/EKS/AKS) or production-grade k3s cluster
-- [ ] Deploy Linkerd for automatic mTLS (24h cert rotation)
-- [ ] Use proper CA-signed TLS certificates (not self-signed)
-- [ ] Enable RBAC on Kubernetes cluster
-- [ ] Set resource limits/requests on all pods
-- [ ] Configure HPA (Horizontal Pod Autoscaler) for Manager (3 replicas minimum)
-- [ ] Set up persistent storage (PVC) for PostgreSQL and MinIO
-- [ ] Configure backup strategy for PostgreSQL
-- [ ] Monitor logs with ELK/Datadog/CloudWatch
-- [ ] Monitor metrics with Prometheus + Grafana (Linkerd provides built-in dashboards)
-- [ ] Set up alerting for pod failures, resource exhaustion, timeout events
-- [ ] Test disaster recovery (pod failures, node failures, AZ failures)
-- [ ] Run load tests to verify timeout values are appropriate
-- [ ] Document runbooks for common failures
-- [ ] Implement budget-aware workload prioritization (if needed)
-
----
-
-## References
-
-- [Linkerd Setup Guide](./LINKERD_SETUP.md) — Step-by-step Linkerd deployment
-- [Timeout Configuration Guide](./TIMEOUT_CONFIGURATION.md) — Tuning timeouts for workloads
-- [Architecture Documentation](./ARCHITECTURE.md) — System design and component interactions
-- [API Reference](./API.md) — REST and gRPC API specifications
+### 4. Analyze Results
+Once the benchmark script finishes, it prints out the completion time for each replica configuration. You can use these results for your performance analysis charts to demonstrate the system's distributed throughput capabilities.

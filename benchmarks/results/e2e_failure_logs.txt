@@ -1,0 +1,35 @@
+=== RUN   TestChaos_NetworkPartition_Keycloak
+    chaos_test.go:22: Submitted baseline job: b10e8aaa-f0ec-4227-83c8-966ad3216484
+    chaos_test.go:24: Applying Keycloak network partition chaos...
+    chaos_test.go:27: failed to apply chaos manifest: exit status 1
+--- FAIL: TestChaos_NetworkPartition_Keycloak (4.12s)
+=== RUN   TestChaos_ManagerLatency
+    chaos_test.go:71: Submitted job: 4c9e66e5-4d40-4953-a625-289040ba06d3
+    chaos_test.go:73: Applying Manager network delay chaos...
+    chaos_test.go:76: failed to apply chaos manifest: exit status 1
+--- FAIL: TestChaos_ManagerLatency (6.78s)
+=== RUN   TestE2E_WorkerKillScenario
+    failure_injection_test.go:92: Submitted job: 8c40c063-8e67-4c6e-9cb2-627104edafb8
+    failure_injection_test.go:98: Killing worker pod: worker-pool-8c40c063-8e67-4c6e-9cb2-627104edafb8-77fd54f7c4b49q
+--- PASS: TestE2E_WorkerKillScenario (37.62s)
+=== RUN   TestE2E_ManagerRestartScenario
+    failure_injection_test.go:114: Submitted job: 31bd0232-a2a6-4ed2-8a27-6bc7b96b46dd
+    failure_injection_test.go:118: Restarting manager statefulset...
+--- PASS: TestE2E_ManagerRestartScenario (58.54s)
+=== RUN   TestE2E_ZombieFencingScenario
+    failure_injection_test.go:138: Submitted job: 155d7bc8-9b64-4760-a5d9-9b9c79c17943
+    failure_injection_test.go:144: Simulating zombie worker (SIGSTOP) on pod: worker-pool-155d7bc8-9b64-4760-a5d9-9b9c79c17943-59f7bf75d578t9
+    failure_injection_test.go:151: Waiting for lease to expire (~20s)...
+    failure_injection_test.go:154: Resuming zombie worker (SIGCONT) on pod: worker-pool-155d7bc8-9b64-4760-a5d9-9b9c79c17943-59f7bf75d578t9
+    failure_injection_test.go:162: Verifying zombie status/logs for fencing...
+    failure_injection_test.go:181: Verifying zombie logs for rejection...
+    failure_injection_test.go:187: Zombie fencing rejection not observed in logs:
+        {"time":"2026-05-11T01:27:08.312977158Z","level":"WARN","msg":"unusually large RPC timeout configured","service":"worker","method":"/mapreduce.WorkerService/TaskStream","timeout":14400000000000,"component":"grpc"}
+        {"time":"2026-05-11T01:27:08.41245671Z","level":"ERROR","msg":"[worker] failed to open task stream, retrying in 2s: rpc error: code = Unavailable desc = name resolver error: produced zero addresses","service":"worker","source":"log.bridge"}
+        {"time":"2026-05-11T01:27:10.4138737Z","level":"ERROR","msg":"[worker] failed to open task stream, retrying in 2s: rpc error: code = Unavailable desc = name resolver error: produced zero addresses","service":"worker","source":"log.bridge"}
+        {"time":"2026-05-11T01:27:12.415345014Z","level":"ERROR","msg":"[worker] failed to open task stream, retrying in 2s: rpc error: code = Unavailable desc = name resolver error: produced zero addresses","service":"worker","source":"log.bridge"}
+        {"time":"2026-05-11T01:27:14.416365447Z","level":"ERROR","msg":"[worker] pool started id=worker-155d7bc8-9b64-4760-a5d9-9b9c79c17943-e75d2c44 job=155d7bc8-9b64-4760-a5d9-9b9c79c17943","service":"worker","source":"log.bridge"}
+--- FAIL: TestE2E_ZombieFencingScenario (100.68s)
+FAIL
+FAIL	kubemapreduce/e2e	207.766s
+FAIL

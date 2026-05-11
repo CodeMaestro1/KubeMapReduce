@@ -23,7 +23,7 @@ data:
   # Issuer must match KC_HOSTNAME_URL in 25-keycloak.yaml and the URL
   # the CLI uses to reach Keycloak. Override this per environment.
   # Production: https://auth.mapreduce.local/realms/mapreduce
-  KEYCLOAK_ISSUER: "https://auth.mapreduce.local/realms/mapreduce"
+  KEYCLOAK_ISSUER: "http://34.88.202.54/realms/mapreduce"
   STATEFULSET_REPLICAS: "3"
   HEARTBEAT_INTERVAL_SEC: "2"
   MAX_MISSED_HEARTBEATS: "5"
@@ -111,8 +111,8 @@ spec:
           type: RuntimeDefault
       containers:
         - name: manager
-          image: kubemapreduce/manager:latest
-          imagePullPolicy: IfNotPresent
+          image: europe-north1-docker.pkg.dev/gen-lang-client-0101686183/mapreduce/manager:latest
+          imagePullPolicy: Always
           ports:
             - name: http
               containerPort: 8081
@@ -122,6 +122,8 @@ spec:
             - configMapRef:
                 name: manager-config
           env:
+            - name: WORKER_IMAGE
+              value: "europe-north1-docker.pkg.dev/gen-lang-client-0101686183/mapreduce/worker:latest"
             - name: POD_NAME
               valueFrom:
                 fieldRef:
@@ -152,10 +154,7 @@ spec:
             - name: DATABASE_DSN
               value: "postgres://$(POSTGRES_USER):$(POSTGRES_PASSWORD)@postgres.mapreduce.svc.cluster.local:5432/$(POSTGRES_DB)?sslmode=require"
             - name: MINIO_ENDPOINT
-              valueFrom:
-                secretKeyRef:
-                  name: minio-creds
-                  key: S3_ENDPOINT
+              value: "34.88.90.202:9000"
             - name: MINIO_ACCESS_KEY
               valueFrom:
                 secretKeyRef:

@@ -6,21 +6,6 @@
 # the postgres-init ConfigMap, which the official image runs from
 # /docker-entrypoint-initdb.d on first boot.
 ---
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: postgres-init
-  namespace: mapreduce
-data:
-  # Mirror of migrations/0001_initial_schema.sql. Keep this in sync when
-  # schema changes — or replace this ConfigMap with a Job that runs the
-  # migration tool against an external Postgres.
-  0001_initial_schema.sql: |
-    -- Placeholder: bake the contents of migrations/0001_initial_schema.sql
-    -- into this ConfigMap at deploy time. Recommended workflow:
-    --   kubectl -n mapreduce create configmap postgres-init \
-    --     --from-file=migrations/ --dry-run=client -o yaml | kubectl apply -f -
-    SELECT 1;
 ---
 apiVersion: v1
 kind: Service

@@ -1,0 +1,19 @@
+=== RUN   TestE2E_WorkerKillScenario
+    failure_injection_test.go:92: Submitted job: ed2b9267-39e9-4804-a134-673deeee5752
+    failure_injection_test.go:98: Killing worker pod: worker-pool-ed2b9267-39e9-4804-a134-673deeee5752-7c78b5d95cx7r5
+--- PASS: TestE2E_WorkerKillScenario (92.13s)
+=== RUN   TestE2E_ManagerRestartScenario
+    failure_injection_test.go:114: Submitted job: 1e778e2b-8d08-46e8-a5ee-13c8f0a53980
+    failure_injection_test.go:118: Restarting manager statefulset...
+--- PASS: TestE2E_ManagerRestartScenario (99.96s)
+=== RUN   TestE2E_ZombieFencingScenario
+    failure_injection_test.go:138: Submitted job: 4d6bba87-07b1-439b-974c-1b2c1fbd2f25
+    failure_injection_test.go:144: Simulating zombie worker (SIGSTOP) on pod: worker-pool-4d6bba87-07b1-439b-974c-1b2c1fbd2f25-6bc6578697hldl
+    failure_injection_test.go:151: Waiting for lease to expire (~20s)...
+    failure_injection_test.go:154: Resuming zombie worker (SIGCONT) on pod: worker-pool-4d6bba87-07b1-439b-974c-1b2c1fbd2f25-6bc6578697hldl
+    failure_injection_test.go:162: Verifying zombie status/logs for fencing...
+    failure_injection_test.go:165: Zombie pod worker-pool-4d6bba87-07b1-439b-974c-1b2c1fbd2f25-6bc6578697hldl is gone. Checking if job completed successfully...
+    failure_injection_test.go:173: Job completed successfully and zombie was cleaned up. Fencing successful.
+--- PASS: TestE2E_ZombieFencingScenario (40.00s)
+PASS
+ok  	kubemapreduce/e2e	232.094s
