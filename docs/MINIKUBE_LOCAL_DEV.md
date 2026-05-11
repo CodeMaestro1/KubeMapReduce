@@ -162,12 +162,15 @@ kubectl -n mapreduce port-forward svc/keycloak 8080:8080 &
 # Get the generated Keycloak admin password
 KC_ADMIN_PW=$(kubectl -n mapreduce get secret keycloak-creds -o jsonpath='{.data.KEYCLOAK_ADMIN_PASSWORD}' | base64 -d)
 
+# Choose password for the initial platform-admin user (used later for CLI login)
+PLATFORM_ADMIN_PASSWORD=admin
+
 # Bootstrap the realm (idempotent - safe to run multiple times)
 go run ./auth-service/cmd/setup \
   --admin-password "$KC_ADMIN_PW" \
   --username platform-admin \
   --email platform-admin@example.com \
-  --password admin \
+  --password "$PLATFORM_ADMIN_PASSWORD" \
   --role ADMIN
 
 # Patch manager-config (consumed by API) to accept localhost token issuer
@@ -175,9 +178,9 @@ kubectl -n mapreduce patch configmap manager-config -p '{"data":{"KEYCLOAK_ISSUE
 kubectl -n mapreduce rollout restart deploy/api
 ```
 
-> If user already exists from a previous setup, the bootstrap step still succeeds
-> (roles/client/mappers are idempotent). Use `--prompt-password` instead of
-> `--password` in a real terminal to avoid leaking the password to shell history.
+> `KC_ADMIN_PW` is the Keycloak **master admin** password, not the `platform-admin`
+> user password. The CLI login password is whatever you set in
+> `PLATFORM_ADMIN_PASSWORD` (or what you typed with `--prompt-password`).
 
 ## Step 7: Access Services & Login
 
@@ -201,7 +204,7 @@ Login and verify:
 go run ./cli-service/cmd/cli login --username platform-admin
 
 # OR Automated Login (Non-TTY)
-go run ./cli-service/cmd/cli login --username platform-admin --password admin
+go run ./cli-service/cmd/cli login --username platform-admin --password "$PLATFORM_ADMIN_PASSWORD"
 
 # Verify identity and health
 go run ./cli-service/cmd/cli whoami
