@@ -173,8 +173,10 @@ go run ./auth-service/cmd/setup \
   --password "$PLATFORM_ADMIN_PASSWORD" \
   --role ADMIN
 
-# Patch manager-config (consumed by API) to accept localhost token issuer
-kubectl -n mapreduce patch configmap manager-config -p '{"data":{"KEYCLOAK_ISSUER":"http://localhost:8080/realms/mapreduce"}}'
+# Set manager-config issuer to the issuer advertised by Keycloak
+# (may be https://auth.mapreduce.local even when accessed through localhost port-forward).
+KEYCLOAK_ISSUER="$(curl -fsS http://localhost:8080/realms/mapreduce/.well-known/openid-configuration | jq -r '.issuer')"
+kubectl -n mapreduce patch configmap manager-config -p "{\"data\":{\"KEYCLOAK_ISSUER\":\"$KEYCLOAK_ISSUER\"}}"
 kubectl -n mapreduce rollout restart deploy/api
 ```
 
@@ -184,7 +186,9 @@ kubectl -n mapreduce rollout restart deploy/api
 
 ## Step 7: Access Services & Login
 
-Use `kubectl port-forward` to expose services locally:
+Use `kubectl port-forward` to expose services locally.
+If you are using NodePort mode (`scripts/fix-cluster.sh`), skip this section and use
+`http://$(minikube ip):30080` (Keycloak) and `http://$(minikube ip):30081` (API) instead.
 
 ```bash
 # Terminal 1: Keycloak (already forwarded if you kept it)
