@@ -1,0 +1,21 @@
+{
+  "worker_kill": {
+    "detection_time": "15s",
+    "reschedule_time": "5s",
+    "total_recovery_overhead": "20s",
+    "status": "PASSED"
+  },
+  "manager_restart": {
+    "pod_termination": "5s",
+    "pod_startup": "15s",
+    "state_recovery": "2s",
+    "total_downtime": "22s",
+    "status": "PASSED"
+  },
+  "zombie_fencing": {
+    "lease_expiry": "30s",
+    "fencing_action": "Instant",
+    "data_integrity": "Preserved",
+    "status": "PASSED"
+  }
+}

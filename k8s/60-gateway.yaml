@@ -18,7 +18,7 @@ metadata:
   name: mapreduce
   namespace: mapreduce
 spec:
-  gatewayClassName: mapreduce
+  gatewayClassName: gke-l7-regional-external-managed
   listeners:
     - name: http
       protocol: HTTP

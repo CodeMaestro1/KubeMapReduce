@@ -1,0 +1,15 @@
+{
+  "combiner": {
+    "no_combiner": 69.09,
+    "with_combiner": 46.5
+  },
+  "consistency": {
+    "runs": [
+      42.03
+    ],
+    "avg": 42.03,
+    "stddev": 0
+  },
+  "big_data": null,
+  "bash_mapper": null
+}
