@@ -42,15 +42,17 @@ kubectl get nodes
 kubectl apply -f k8s/00-namespace.yaml
 
 # Generate all required secrets (postgres, minio, keycloak, manager TLS)
-NODE_IP=$(minikube ip) bash scripts/create-secrets.sh
+NODE_IP="$(minikube ip)" bash scripts/create-secrets.sh
 
 # Generate postgres-tls (required for SSL mode in this branch)
 openssl req -x509 -newkey rsa:2048 -nodes -days 365 \
   -keyout /tmp/postgres.key -out /tmp/postgres.crt \
   -subj "/CN=postgres" \
   -addext "subjectAltName=DNS:postgres.mapreduce.svc.cluster.local"
+# Idempotent create/apply so reruns do not fail
 kubectl -n mapreduce create secret tls postgres-tls \
-  --cert=/tmp/postgres.crt --key=/tmp/postgres.key
+  --cert=/tmp/postgres.crt --key=/tmp/postgres.key \
+  --dry-run=client -o yaml | kubectl apply -f -
 rm /tmp/postgres.key /tmp/postgres.crt
 ```
 
@@ -152,14 +154,14 @@ kubectl -n mapreduce port-forward svc/keycloak 8080:8080 &
 KC_ADMIN_PW=$(kubectl -n mapreduce get secret keycloak-creds -o jsonpath='{.data.KEYCLOAK_ADMIN_PASSWORD}' | base64 -d)
 
 # Bootstrap the realm (idempotent - safe to run multiple times)
-go run ./auth-service/cmd/setup/main.go \
+go run ./auth-service/cmd/setup \
   --admin-password "$KC_ADMIN_PW" \
   --username platform-admin \
   --email platform-admin@example.com \
   --password admin \
   --role ADMIN
 
-# Patch API ConfigMap to accept localhost token issuer
+# Patch manager-config (consumed by API) to accept localhost token issuer
 kubectl -n mapreduce patch configmap manager-config -p '{"data":{"KEYCLOAK_ISSUER":"http://localhost:8080/realms/mapreduce"}}'
 kubectl -n mapreduce rollout restart deploy/api
 ```
@@ -221,7 +223,7 @@ go run ./cli-service/cmd/cli jobs status --id <JOB_ID>
 When the status reaches `Completed`, you can download the results:
 
 ```bash
-go run ./cli-service/cmd/cli jobs results --id <JOB_ID>
+go run ./cli-service/cmd/cli jobs download --id <JOB_ID> --output ./results/
 ```
 
 ---
@@ -245,7 +247,7 @@ The tests are located in the `e2e/` directory. They require `kubectl` to be conf
 
 ```bash
 # Run all failure injection tests
-go test -v ./e2e -run TestE2E
+go test -v ./e2e/... -run TestE2E
 ```
 
 This will execute:
