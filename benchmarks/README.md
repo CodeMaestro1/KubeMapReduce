@@ -29,7 +29,9 @@ Counts word frequencies across the entire corpus.
 
 **Mapper** (`wordcount/mapper.py`): tokenises each line into lowercase words, emits `{"key": word, "value": "1"}` per word.
 
-**Reducer** (`wordcount/reducer.py`): sums counts per word, emits `{"key": word, "value": "<count>"}`.
+**Combiner** (`wordcount/combiner.py`): local pre-aggregation of mapper output (`1`s) into per-word partial counts.
+
+**Reducer** (`wordcount/reducer.py`): sums partial counts per word, emits `{"key": word, "value": "<count>"}`.
 
 ### Local validation
 
@@ -98,41 +100,32 @@ python benchmarks/grep/validate.py --compare /path/to/cluster-output.jsonl --pat
 
 1. **Build corpus** (Step 1 above)
 
-2. **Upload corpus to MinIO**:
+2. **Submit WordCount job (with combiner)**:
    ```bash
-   # Via the CLI (replace values as needed)
-   kubemr files upload benchmarks/data/corpus.jsonl
-   ```
-
-3. **Upload mapper and reducer**:
-   ```bash
-   kubemr files upload benchmarks/wordcount/mapper.py
-   kubemr files upload benchmarks/wordcount/reducer.py
-   ```
-
-4. **Submit the job**:
-   ```bash
-   kubemr jobs submit \
-     --input corpus.jsonl \
-     --mapper s3://mapreduce-inputs/mapper.py \
-     --reducer s3://mapreduce-inputs/reducer.py \
+   go run ./cli-service/cmd/cli jobs submit \
+     --mapper benchmarks/wordcount/mapper.py \
+     --combiner benchmarks/wordcount/combiner.py \
+     --reducer benchmarks/wordcount/reducer.py \
+     --input benchmarks/data/corpus.jsonl \
      --reducers 4
    ```
 
-5. **Download output and validate**:
+3. **Download output and validate**:
    ```bash
-   kubemr files download <output-uri> -o cluster-output.jsonl
+   go run ./cli-service/cmd/cli jobs download --id <job-id> --output ./results/
+   cat ./results/*.json > cluster-output.jsonl
    python benchmarks/wordcount/validate.py --compare cluster-output.jsonl
    ```
 
 ---
 
-## Mapper/Reducer Protocol
+## Mapper/Combiner/Reducer Protocol
 
-Mappers and reducers communicate via JSONL on stdin/stdout:
+Mappers, combiners, and reducers communicate via JSONL on stdin/stdout:
 
 - **Input to mapper**: `{"key": "<source_key>", "value": "<text>"}`
 - **Mapper output**: `{"key": "<emit_key>", "value": "<emit_value>"}`
+- **Combiner input/output** (optional): same schema as mapper/reducer records, keyed by `key`
 - **Input to reducer**: same JSONL format, **sorted lexicographically by key** (guaranteed by the framework)
 - **Reducer output**: `{"key": "<result_key>", "value": "<result_value>"}`
 

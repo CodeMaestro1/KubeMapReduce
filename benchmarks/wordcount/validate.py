@@ -1,7 +1,7 @@
 """
 WordCount validation script.
 
-Default mode: runs the pipeline locally against benchmarks/data/corpus.jsonl
+Default mode: runs the pipeline locally (mapper -> combiner -> reducer) against benchmarks/data/corpus.jsonl
 and checks that output is sane (top words are common English words, unique word
 count is above a minimum threshold).
 
@@ -21,6 +21,7 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 BENCHMARKS_DIR = os.path.dirname(SCRIPT_DIR)
 CORPUS = os.path.join(BENCHMARKS_DIR, "data", "corpus.jsonl")
 MAPPER = os.path.join(SCRIPT_DIR, "mapper.py")
+COMBINER = os.path.join(SCRIPT_DIR, "combiner.py")
 REDUCER = os.path.join(SCRIPT_DIR, "reducer.py")
 
 EXPECTED_TOP_WORDS = {"the", "and", "of", "to", "a", "in", "that", "is", "it", "was"}
@@ -29,7 +30,7 @@ MIN_TOP_WORD_OVERLAP = 3
 
 
 def run_pipeline(corpus_path):
-    """Run mapper -> sort -> reducer locally. Returns list of output records."""
+    """Run mapper -> sort -> combiner -> reducer locally."""
     with open(corpus_path, encoding="utf-8") as f:
         mapper_result = subprocess.run(
             [sys.executable, MAPPER],
@@ -50,9 +51,28 @@ def run_pipeline(corpus_path):
     raw_records.sort(key=lambda r: r["key"])
     sorted_input = "\n".join(json.dumps(r) for r in raw_records) + "\n"
 
+    combiner_result = subprocess.run(
+        [sys.executable, COMBINER],
+        input=sorted_input,
+        capture_output=True,
+        text=True,
+    )
+    if combiner_result.returncode != 0:
+        print(f"FAIL: combiner exited {combiner_result.returncode}")
+        print(combiner_result.stderr[:500])
+        sys.exit(1)
+
+    combined_records = [
+        json.loads(l)
+        for l in combiner_result.stdout.splitlines()
+        if l.strip()
+    ]
+    combined_records.sort(key=lambda r: r["key"])
+    reducer_input = "\n".join(json.dumps(r) for r in combined_records) + "\n"
+
     reducer_result = subprocess.run(
         [sys.executable, REDUCER],
-        input=sorted_input,
+        input=reducer_input,
         capture_output=True,
         text=True,
     )
