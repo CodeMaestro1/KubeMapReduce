@@ -1,7 +1,7 @@
 # Kubernetes Gateway API — external routing.
 #
 # Three HTTPRoutes expose the platform under three host names:
-#   - api.mapreduce.local      -> UI Service     (REST API for users / CLI)
+#   - api.mapreduce.local      -> API Service    (REST API for users / CLI)
 #   - storage.mapreduce.local  -> MinIO          (pre-signed PUT/GET URLs)
 #   - auth.mapreduce.local     -> Keycloak       (OIDC issuer / JWKS)
 #
