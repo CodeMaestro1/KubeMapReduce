@@ -132,6 +132,7 @@ func parseUserUUID(userID string) (uuid.UUID, error) {
 // share a consistent view of job statuses.
 type PostgresJobStore struct {
 	db            *sql.DB
+	roDB          *sql.DB // optional read-replica pool; nil means use db for reads
 	totalReplicas int
 }
 
@@ -140,11 +141,42 @@ type PostgresJobStore struct {
 // replica_index persisted on JOBS so the manager's authoritative routing
 // (scheduler.go) and the API's job insert agree on which replica owns the job.
 // Must be > 0; values <= 0 are clamped to 1.
+//
+// All reads and writes share the same pool. Use NewPostgresJobStoreWithReadReplica
+// when a separate read-only pool is available.
 func NewPostgresJobStore(db *sql.DB, totalReplicas int) *PostgresJobStore {
 	if totalReplicas <= 0 {
 		totalReplicas = 1
 	}
 	return &PostgresJobStore{db: db, totalReplicas: totalReplicas}
+}
+
+// NewPostgresJobStoreWithReadReplica returns a PostgreSQL-backed JobStore that
+// routes read-only queries (GetJob, ListJobs, GetJobOutputs, …) through roDB
+// while directing all write operations (CreateJob) to the primary db pool.
+//
+// This separates the read and write paths as described in design doc §6.9,
+// enabling the API service to use a read replica without changing the write
+// code path.
+//
+// If roDB is nil the store falls back to using db for all operations,
+// making this constructor safe to call even when a read replica is not
+// available (e.g. during tests or single-node deployments).
+func NewPostgresJobStoreWithReadReplica(db, roDB *sql.DB, totalReplicas int) *PostgresJobStore {
+	if totalReplicas <= 0 {
+		totalReplicas = 1
+	}
+	return &PostgresJobStore{db: db, roDB: roDB, totalReplicas: totalReplicas}
+}
+
+// readDB returns the read-only pool if one was configured, falling back to
+// the primary pool. All SELECT-only methods should use this helper so that
+// a read replica is transparently exploited when available.
+func (s *PostgresJobStore) readDB() *sql.DB {
+	if s.roDB != nil {
+		return s.roDB
+	}
+	return s.db
 }
 
 // Ping verifies that the underlying database connection is healthy.
@@ -213,7 +245,7 @@ func (s *PostgresJobStore) GetJob(ctx context.Context, userID, jobID string) (*J
 
 	var rec JobRecord
 	var dbID uuid.UUID
-	err = s.db.QueryRowContext(ctx, queryGetAPIJob, jobUUID, userUUID).Scan(
+	err = s.readDB().QueryRowContext(ctx, queryGetAPIJob, jobUUID, userUUID).Scan(
 		&dbID, &rec.Status, &rec.Filename, &rec.Reducers, &rec.CreatedAt,
 	)
 	if err == sql.ErrNoRows {
@@ -237,7 +269,7 @@ func (s *PostgresJobStore) GetAnyJob(ctx context.Context, jobID string) (*JobRec
 
 	var rec JobRecord
 	var dbID uuid.UUID
-	err = s.db.QueryRowContext(ctx, queryGetAPIJobAny, jobUUID).Scan(
+	err = s.readDB().QueryRowContext(ctx, queryGetAPIJobAny, jobUUID).Scan(
 		&dbID, &rec.Status, &rec.Filename, &rec.Reducers, &rec.CreatedAt,
 	)
 	if err == sql.ErrNoRows {
@@ -256,7 +288,7 @@ func (s *PostgresJobStore) ListJobs(ctx context.Context, userID string, limit, o
 	if err != nil {
 		return nil, err
 	}
-	rows, err := s.db.QueryContext(ctx, queryListAPIJobs, userUUID, limit, offset)
+	rows, err := s.readDB().QueryContext(ctx, queryListAPIJobs, userUUID, limit, offset)
 	if err != nil {
 		return nil, err
 	}
@@ -279,7 +311,7 @@ func (s *PostgresJobStore) ListJobs(ctx context.Context, userID string, limit, o
 // regardless of ownership. It is intended for ADMIN callers only; the route
 // layer is responsible for enforcing the role check before invocation.
 func (s *PostgresJobStore) ListAllJobs(ctx context.Context, limit, offset int) ([]JobRecord, error) {
-	rows, err := s.db.QueryContext(ctx, queryListAPIJobsAll, limit, offset)
+	rows, err := s.readDB().QueryContext(ctx, queryListAPIJobsAll, limit, offset)
 	if err != nil {
 		return nil, err
 	}
@@ -304,7 +336,7 @@ func (s *PostgresJobStore) GetJobOutputs(ctx context.Context, jobID string) ([]s
 	if err != nil {
 		return nil, ErrInvalidJobID
 	}
-	rows, err := s.db.QueryContext(ctx, QueryGetJobOutputURIs, jobUUID)
+	rows, err := s.readDB().QueryContext(ctx, QueryGetJobOutputURIs, jobUUID)
 	if err != nil {
 		return nil, err
 	}
