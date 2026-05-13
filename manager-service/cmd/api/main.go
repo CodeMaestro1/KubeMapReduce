@@ -23,6 +23,7 @@ import (
 
 	"github.com/minio/minio-go/v7"
 	"github.com/minio/minio-go/v7/pkg/credentials"
+	"github.com/minio/minio-go/v7/pkg/lifecycle"
 )
 
 // main bootstraps the UI Service API server.
@@ -172,6 +173,8 @@ var requiredMinIOBuckets = []string{
 // ensureMinIOBuckets validates MinIO connectivity and creates any of the five
 // required buckets that do not yet exist. The first BucketExists call acts as
 // a startup ping — if MinIO is unreachable an error is returned immediately.
+// After all buckets are confirmed, it applies the 24-hour expiry lifecycle
+// policy on the temp/ prefix of mapreduce-inputs (see ensureTempLifecyclePolicy).
 func ensureMinIOBuckets(ctx context.Context, mc *minio.Client) error {
 	for _, bucket := range requiredMinIOBuckets {
 		exists, err := mc.BucketExists(ctx, bucket)
@@ -185,6 +188,40 @@ func ensureMinIOBuckets(ctx context.Context, mc *minio.Client) error {
 			slog.Info("created MinIO bucket", "bucket", bucket)
 		}
 	}
+	return ensureTempLifecyclePolicy(ctx, mc)
+}
+
+// ensureTempLifecyclePolicy configures a MinIO ILM rule that automatically
+// expires every object whose key starts with "temp/" after 1 day.
+//
+// This is the server-side implementation of the Orphaned Upload Mitigation
+// requirement: when the CLI uploads a file via a presigned PUT but the job
+// submission never completes (network drop, Ctrl-C, crash), the object
+// stays in temp/<userID>/<filename> indefinitely.  Setting this rule
+// ensures MinIO garbage-collects those orphans within 24 hours without
+// any application-side cleanup.
+//
+// Calling SetBucketLifecycle is idempotent — it replaces the existing
+// configuration atomically, so re-running the service after a restart is safe.
+func ensureTempLifecyclePolicy(ctx context.Context, mc *minio.Client) error {
+	const inputsBucket = "mapreduce-inputs"
+	cfg := lifecycle.NewConfiguration()
+	cfg.Rules = []lifecycle.Rule{
+		{
+			ID:     "expire-temp",
+			Status: "Enabled",
+			RuleFilter: lifecycle.Filter{
+				Prefix: "temp/",
+			},
+			Expiration: lifecycle.Expiration{
+				Days: 1,
+			},
+		},
+	}
+	if err := mc.SetBucketLifecycle(ctx, inputsBucket, cfg); err != nil {
+		return fmt.Errorf("set lifecycle policy on %s: %w", inputsBucket, err)
+	}
+	slog.Info("applied 24h expiry lifecycle policy", "bucket", inputsBucket, "prefix", "temp/")
 	return nil
 }
 
