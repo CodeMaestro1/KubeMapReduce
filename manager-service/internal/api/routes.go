@@ -67,6 +67,12 @@ func RegisterRoutes(mux *http.ServeMux, h *Handlers, validator *auth.JWTValidato
 		http.HandlerFunc(h.HandleAdminConfigWorkers),
 	)))
 
+	mux.Handle("GET /api/v1/admin/config/workers", rateLimiter(auth.RequireRole(
+		"ADMIN",
+		validator,
+		http.HandlerFunc(h.HandleAdminGetWorkerConfig),
+	)))
+
 	mux.Handle("/api/v1/admin/users", rateLimiter(auth.RequireRole(
 		"ADMIN",
 		validator,
