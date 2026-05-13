@@ -76,7 +76,6 @@ func expectQuantity(t *testing.T, list corev1.ResourceList, name corev1.Resource
 // described in issue #91 directly: the failure mode there was an empty
 // container.Resources field producing unbounded pods.
 func TestKubeOrchestrator_SpawnWorker_DefaultResourceLimits(t *testing.T) {
-	t.Skip("SpawnWorker is deprecated in favor of EnsureWorkerPool")
 	client := fake.NewSimpleClientset()
 	orch := NewKubeOrchestrator(client, "default", "worker:latest", "test-secrets")
 
@@ -94,7 +93,6 @@ func TestKubeOrchestrator_SpawnWorker_DefaultResourceLimits(t *testing.T) {
 // fall back to DefaultWorker* values so a brief DDS outage cannot regress to
 // the unbounded-pod state described in issue #91.
 func TestKubeOrchestrator_SpawnWorker_ProviderErrorFallsBackToDefaults(t *testing.T) {
-	t.Skip("SpawnWorker is deprecated in favor of EnsureWorkerPool")
 	client := fake.NewSimpleClientset()
 	provider := &stubResourceProvider{err: errors.New("simulated DDS outage")}
 	orch := NewKubeOrchestrator(client, "default", "worker:latest", "test-secrets").
@@ -114,7 +112,6 @@ func TestKubeOrchestrator_SpawnWorker_ProviderErrorFallsBackToDefaults(t *testin
 // satisfies the "Admin configure-nodes changes reflected in next spawned
 // workers" acceptance criterion in issue #91.
 func TestKubeOrchestrator_SpawnWorker_ProviderResourceLimits(t *testing.T) {
-	t.Skip("SpawnWorker is deprecated in favor of EnsureWorkerPool")
 	client := fake.NewSimpleClientset()
 	provider := &stubResourceProvider{cpu: "750m", mem: "1Gi"}
 	orch := NewKubeOrchestrator(client, "default", "worker:latest", "test-secrets").
@@ -134,7 +131,6 @@ func TestKubeOrchestrator_SpawnWorker_ProviderResourceLimits(t *testing.T) {
 // orchestrator logs and substitutes the package defaults instead of
 // returning an error or, worse, omitting the Resources field entirely.
 func TestKubeOrchestrator_SpawnWorker_InvalidQuantityFallsBackToDefaults(t *testing.T) {
-	t.Skip("SpawnWorker is deprecated in favor of EnsureWorkerPool")
 	client := fake.NewSimpleClientset()
 	provider := &stubResourceProvider{cpu: "not-a-quantity", mem: "also-bogus"}
 	orch := NewKubeOrchestrator(client, "default", "worker:latest", "test-secrets").

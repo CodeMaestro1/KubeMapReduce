@@ -2,6 +2,8 @@ package grpc
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"io"
 	"sync"
 
@@ -121,7 +123,9 @@ func (s *ShuffleServer) GetShuffleData(req *pb.ShuffleDataRequest, stream pb.Shu
 		return nil
 	}
 
-	for idx, blob := range partitionData {
+	for _, blob := range partitionData {
+		segSum := sha256.Sum256(blob)
+		segChecksum := hex.EncodeToString(segSum[:])
 		for i := 0; i < len(blob); i += shuffleChunkSize {
 			end := i + shuffleChunkSize
 			if end > len(blob) {
@@ -135,15 +139,17 @@ func (s *ShuffleServer) GetShuffleData(req *pb.ShuffleDataRequest, stream pb.Shu
 				return err
 			}
 		}
-		if idx < len(partitionData)-1 {
-			// Segment delimiter so consumers can preserve individual map-output boundaries.
-			if err := stream.Send(&pb.ShuffleDataChunk{
-				JobId:       req.JobId,
-				PartitionId: req.PartitionId,
-				Data:        nil,
-			}); err != nil {
-				return err
-			}
+		// Segment delimiter so consumers can preserve individual map-output boundaries.
+		// Emit for every segment (including the final one) so reducers can verify
+		// checksum without relying on EOF semantics.
+		if err := stream.Send(&pb.ShuffleDataChunk{
+			JobId:           req.JobId,
+			PartitionId:     req.PartitionId,
+			Data:            nil,
+			SegmentChecksum: segChecksum,
+			SegmentEnd:      true,
+		}); err != nil {
+			return err
 		}
 	}
 	return nil

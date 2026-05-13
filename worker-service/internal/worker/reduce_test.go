@@ -10,6 +10,8 @@ import (
 	"testing"
 
 	"github.com/minio/minio-go/v7"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/metadata"
 
 	pb "kubemapreduce/proto"
 )
@@ -36,6 +38,39 @@ type failingPutStorage struct{ *mockStorage }
 func (f *failingPutStorage) PutObject(_ context.Context, _, _ string, _ io.Reader, _ int64, _ minio.PutObjectOptions) (minio.UploadInfo, error) {
 	return minio.UploadInfo{}, fmt.Errorf("storage unavailable")
 }
+
+type fakeShuffleClient struct {
+	chunks []*pb.ShuffleDataChunk
+}
+
+func (f *fakeShuffleClient) PushShuffleData(_ context.Context, _ ...grpc.CallOption) (grpc.ClientStreamingClient[pb.ShuffleDataChunk, pb.Ack], error) {
+	return nil, fmt.Errorf("not implemented")
+}
+
+func (f *fakeShuffleClient) GetShuffleData(_ context.Context, _ *pb.ShuffleDataRequest, _ ...grpc.CallOption) (grpc.ServerStreamingClient[pb.ShuffleDataChunk], error) {
+	return &fakeGetShuffleDataStream{chunks: f.chunks}, nil
+}
+
+type fakeGetShuffleDataStream struct {
+	chunks []*pb.ShuffleDataChunk
+	idx    int
+}
+
+func (f *fakeGetShuffleDataStream) Recv() (*pb.ShuffleDataChunk, error) {
+	if f.idx >= len(f.chunks) {
+		return nil, io.EOF
+	}
+	ch := f.chunks[f.idx]
+	f.idx++
+	return ch, nil
+}
+
+func (f *fakeGetShuffleDataStream) Header() (metadata.MD, error) { return metadata.MD{}, nil }
+func (f *fakeGetShuffleDataStream) Trailer() metadata.MD         { return metadata.MD{} }
+func (f *fakeGetShuffleDataStream) CloseSend() error             { return nil }
+func (f *fakeGetShuffleDataStream) Context() context.Context     { return context.Background() }
+func (f *fakeGetShuffleDataStream) SendMsg(any) error            { return nil }
+func (f *fakeGetShuffleDataStream) RecvMsg(any) error            { return nil }
 
 // ── splitChecksumURI ──────────────────────────────────────────────────────────
 
@@ -182,6 +217,64 @@ func TestWorker_ReduceNoChecksumStillSucceeds(t *testing.T) {
 	_, _, err := w.runReduce(context.Background(), assignment)
 	if err != nil {
 		t.Fatalf("runReduce: %v", err)
+	}
+}
+
+func TestDownloadShuffleInputsFromService_ValidatesSegmentChecksum(t *testing.T) {
+	data := []byte(`{"key":"apple","value":"1"}` + "\n")
+	sum := sha256.Sum256(data)
+	checksum := hex.EncodeToString(sum[:])
+
+	w := newTestWorker(t, &mockGRPCClient{}, newMockStorage())
+	w.shuffleClient = &fakeShuffleClient{
+		chunks: []*pb.ShuffleDataChunk{
+			{JobId: "job-1", PartitionId: 0, Data: data},
+			{JobId: "job-1", PartitionId: 0, Data: nil, SegmentChecksum: checksum, SegmentEnd: true},
+		},
+	}
+
+	a := reduceAssignment([]string{"shuffle://job-1/0#sha256=" + checksum})
+	readers, closers, err := w.downloadShuffleInputsFromService(context.Background(), a, t.TempDir())
+	if err != nil {
+		t.Fatalf("downloadShuffleInputsFromService: %v", err)
+	}
+	defer func() {
+		for _, c := range closers {
+			_ = c.Close()
+		}
+	}()
+	if len(readers) != 1 {
+		t.Fatalf("expected 1 reader, got %d", len(readers))
+	}
+	got, err := io.ReadAll(readers[0])
+	if err != nil {
+		t.Fatalf("read segment: %v", err)
+	}
+	if string(got) != string(data) {
+		t.Fatalf("unexpected segment data: %q", string(got))
+	}
+}
+
+func TestDownloadShuffleInputsFromService_RejectsChecksumMismatch(t *testing.T) {
+	data := []byte(`{"key":"apple","value":"1"}` + "\n")
+	sum := sha256.Sum256(data)
+	checksum := hex.EncodeToString(sum[:])
+
+	w := newTestWorker(t, &mockGRPCClient{}, newMockStorage())
+	w.shuffleClient = &fakeShuffleClient{
+		chunks: []*pb.ShuffleDataChunk{
+			{JobId: "job-1", PartitionId: 0, Data: data},
+			{JobId: "job-1", PartitionId: 0, Data: nil, SegmentChecksum: checksum, SegmentEnd: true},
+		},
+	}
+
+	a := reduceAssignment([]string{"shuffle://job-1/0#sha256=deadbeef"})
+	_, _, err := w.downloadShuffleInputsFromService(context.Background(), a, t.TempDir())
+	if err == nil {
+		t.Fatal("expected checksum mismatch error, got nil")
+	}
+	if !strings.Contains(err.Error(), "checksum") {
+		t.Fatalf("expected checksum error, got: %v", err)
 	}
 }
 

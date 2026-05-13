@@ -137,13 +137,30 @@ func TestE2E_WorkerKillDuringMapTask(t *testing.T) {
 	mock.ExpectExec(regexp.QuoteMeta(QueryFailAttempt)).WithArgs(attemptID1).WillReturnResult(sqlmock.NewResult(1, 1))
 	mock.ExpectCommit()
 
-	// Redispatch calls GetTaskByID
-	mock.ExpectQuery(regexp.QuoteMeta(QueryGetTaskByID)).
-		WithArgs(taskID).
-		WillReturnRows(sqlmock.NewRows([]string{"task_id", "job_id", "task_type", "status", "current_attempt_id", "replica_index"}).
-			AddRow(taskID, jobID, "Map", "Idle", nil, 0))
+	// Reaper now re-schedules via GetNextTask + SpawnWorker.
+	mock.ExpectBegin()
+	mock.ExpectQuery(regexp.QuoteMeta(QueryCountFailedTasks)).WithArgs(jobID).WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
+	expectReplicaCheck(mock, jobID, 0)
+	mock.ExpectQuery(regexp.QuoteMeta(QuerySelectIdleTask)).WithArgs(jobID, s.replicaIndex, "Map").WillReturnRows(
+		sqlmock.NewRows([]string{"task_id", "job_id", "task_type", "replica_index"}).AddRow(taskID, jobID, "Map", 0))
+	mock.ExpectQuery(regexp.QuoteMeta(QueryGetJobConfigByTask)).WithArgs(taskID).WillReturnRows(
+		sqlmock.NewRows([]string{"mapper_uri", "reducer_uri", "combiner_uri", "r_tasks", "input_checksum"}).AddRow("m", "r", "c", 1, "sum"))
+	mock.ExpectQuery(regexp.QuoteMeta(QueryGetTaskInputs)).WithArgs(taskID).WillReturnRows(
+		sqlmock.NewRows([]string{"input_uri", "byte_start", "byte_end", "split_checksum"}).AddRow("u", 0, 100, "s"))
+	mock.ExpectExec(regexp.QuoteMeta(QueryAcquireSchedulingLock)).WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectQuery(regexp.QuoteMeta(QueryGetMaxConcurrentPods)).WillReturnRows(sqlmock.NewRows([]string{"max_concurrent_pods"}).AddRow(10))
+	mock.ExpectQuery(regexp.QuoteMeta(QueryCountRunningAttempts)).WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
+	mock.ExpectExec(regexp.QuoteMeta(QueryUpdateTaskInProgress)).WithArgs(sqlmock.AnyArg(), taskID).WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectExec(regexp.QuoteMeta(QueryInsertAttempt)).WithArgs(sqlmock.AnyArg(), taskID, "system-scheduler", sqlmock.AnyArg(), s.leaseTTL).WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectExec(regexp.QuoteMeta(QueryUpdateJobStatus)).WithArgs(jobID, "Running").WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectCommit()
 
-	expectTaskMetadataQueries(mock, uuid.MustParse(taskID), "m", "r", 1)
+	mock.ExpectBegin()
+	mock.ExpectQuery(regexp.QuoteMeta(QueryCountFailedTasks)).WithArgs(jobID).WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
+	expectReplicaCheck(mock, jobID, 0)
+	mock.ExpectQuery(regexp.QuoteMeta(QuerySelectIdleTask)).WithArgs(jobID, s.replicaIndex, "Map").WillReturnError(sql.ErrNoRows)
+	mock.ExpectQuery(regexp.QuoteMeta(QueryCountPendingTasksByType)).WithArgs(jobID, "Map").WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(1))
+	mock.ExpectRollback()
 
 	recovered, err := s.FailStaleTasks(context.Background())
 	if err != nil {
@@ -269,14 +286,24 @@ func TestE2E_ManagerRestartRecovery(t *testing.T) {
 		WithArgs(s.replicaIndex).
 		WillReturnRows(sqlmock.NewRows([]string{"job_id"}).AddRow(jobID))
 
-	// 3. Ensure worker pool exists
-	// No explicit expectation for EnsureWorkerPool in sqlmock, but we check orch calls
+	mock.ExpectBegin()
+	mock.ExpectQuery(regexp.QuoteMeta(QueryCountFailedTasks)).
+		WithArgs(jobID).
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
+	expectReplicaCheck(mock, jobID, s.replicaIndex)
+	mock.ExpectQuery(regexp.QuoteMeta(QuerySelectIdleTask)).
+		WithArgs(jobID, s.replicaIndex, "Map").
+		WillReturnError(sql.ErrNoRows)
+	mock.ExpectQuery(regexp.QuoteMeta(QueryCountPendingTasksByType)).
+		WithArgs(jobID, "Map").
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(1))
+	mock.ExpectRollback()
+
 	err := s.Recover(context.Background())
 	if err != nil {
 		t.Fatalf("Recover failed: %v", err)
 	}
 
-	// Wait a bit for the background pool check (though in this implementation it's synchronous)
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Errorf("there were unfulfilled expectations: %s", err)
 	}

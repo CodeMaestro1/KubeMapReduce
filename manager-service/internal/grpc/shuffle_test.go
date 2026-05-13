@@ -2,6 +2,8 @@ package grpc
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"io"
 	"testing"
 
@@ -43,6 +45,21 @@ func (f *fakePushShuffleStream) SetTrailer(md metadata.MD)       {}
 func (f *fakePushShuffleStream) Context() context.Context        { return context.Background() }
 func (f *fakePushShuffleStream) SendMsg(m interface{}) error     { return nil }
 func (f *fakePushShuffleStream) RecvMsg(m interface{}) error     { return nil }
+
+type fakeGetShuffleStream struct {
+	sent []*pb.ShuffleDataChunk
+}
+
+func (f *fakeGetShuffleStream) Send(c *pb.ShuffleDataChunk) error {
+	f.sent = append(f.sent, c)
+	return nil
+}
+func (f *fakeGetShuffleStream) SetHeader(md metadata.MD) error  { return nil }
+func (f *fakeGetShuffleStream) SendHeader(md metadata.MD) error { return nil }
+func (f *fakeGetShuffleStream) SetTrailer(md metadata.MD)       {}
+func (f *fakeGetShuffleStream) Context() context.Context        { return context.Background() }
+func (f *fakeGetShuffleStream) SendMsg(m interface{}) error     { return nil }
+func (f *fakeGetShuffleStream) RecvMsg(m interface{}) error     { return nil }
 
 func TestPushShuffleData_RejectsOversizedPartitionStream(t *testing.T) {
 	s := NewShuffleServer()
@@ -99,5 +116,46 @@ func TestPushShuffleData_StoresPayloadOnEOF(t *testing.T) {
 	}
 	if string(got[0]) != "hello world" {
 		t.Fatalf("unexpected payload: %q", string(got[0]))
+	}
+}
+
+func TestGetShuffleData_EmitsSegmentChecksumDelimiters(t *testing.T) {
+	s := NewShuffleServer()
+	s.data["job-3"] = map[int32][][]byte{
+		1: {
+			[]byte("abc"),
+			[]byte("xyz"),
+		},
+	}
+
+	stream := &fakeGetShuffleStream{}
+	if err := s.GetShuffleData(&pb.ShuffleDataRequest{JobId: "job-3", PartitionId: 1}, stream); err != nil {
+		t.Fatalf("GetShuffleData failed: %v", err)
+	}
+
+	// Two data segments and two explicit end-of-segment delimiter chunks.
+	if len(stream.sent) != 4 {
+		t.Fatalf("expected 4 chunks, got %d", len(stream.sent))
+	}
+	if string(stream.sent[0].Data) != "abc" {
+		t.Fatalf("unexpected first payload: %q", string(stream.sent[0].Data))
+	}
+	if len(stream.sent[1].Data) != 0 || !stream.sent[1].SegmentEnd {
+		t.Fatalf("expected first delimiter chunk with segment_end=true, got %+v", stream.sent[1])
+	}
+	if string(stream.sent[2].Data) != "xyz" {
+		t.Fatalf("unexpected second payload: %q", string(stream.sent[2].Data))
+	}
+	if len(stream.sent[3].Data) != 0 || !stream.sent[3].SegmentEnd {
+		t.Fatalf("expected final delimiter chunk with segment_end=true, got %+v", stream.sent[3])
+	}
+
+	sumA := sha256.Sum256([]byte("abc"))
+	sumB := sha256.Sum256([]byte("xyz"))
+	if stream.sent[1].SegmentChecksum != hex.EncodeToString(sumA[:]) {
+		t.Fatalf("unexpected first segment checksum: %s", stream.sent[1].SegmentChecksum)
+	}
+	if stream.sent[3].SegmentChecksum != hex.EncodeToString(sumB[:]) {
+		t.Fatalf("unexpected second segment checksum: %s", stream.sent[3].SegmentChecksum)
 	}
 }

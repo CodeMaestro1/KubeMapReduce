@@ -9,7 +9,7 @@ import (
 	"strings"
 	"sync"
 
-	appsv1 "k8s.io/api/apps/v1"
+	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -24,8 +24,11 @@ import (
 // future-proofing against platform migrations.
 type WorkerOrchestrator interface {
 	// EnsureWorkerPool ensures that a pool of workers is running for a specific job.
-	// It uses a K8s Deployment or similar to maintain the desired number of replicas.
+	// It uses a K8s Job to maintain the desired number of running worker pods.
 	EnsureWorkerPool(ctx context.Context, jobID string, numWorkers int, managerAddr string) error
+
+	// SpawnWorker creates an isolated worker Job for a specific task attempt.
+	SpawnWorker(ctx context.Context, taskID string, jobID string, attemptID string, managerAddr string) error
 
 	// CancelJob terminates all active worker processes associated with a specific job.
 	//
@@ -229,10 +232,13 @@ func parseLabelSelector(selector string) map[string]string {
 // scheduled with unbounded resource usage. This closes the regression
 // described in issue #91.
 // EnsureWorkerPool ensures that a pool of workers is running for a specific job.
-// It uses a K8s Deployment to maintain the desired number of replicas.
+//
+// The worker pool is represented as a Kubernetes Job (not Deployment) so pod-level
+// restart policy is explicit (`Never`) and native retries are disabled
+// (`backoffLimit=0`). This keeps retry authority in Manager logic.
 func (k *KubeOrchestrator) EnsureWorkerPool(ctx context.Context, jobID string, numWorkers int, managerAddr string) error {
 	sanitizedJobID := sanitizeForDNSLabel(jobID)
-	deploymentName := fmt.Sprintf("worker-pool-%s", sanitizedJobID)
+	jobName := fmt.Sprintf("worker-pool-%s", sanitizedJobID)
 	replicas := int32(numWorkers)
 	if replicas <= 0 {
 		replicas = 1
@@ -244,20 +250,20 @@ func (k *KubeOrchestrator) EnsureWorkerPool(ctx context.Context, jobID string, n
 
 	falseVal := false
 	trueVal := true
+	zeroBackoff := int32(0)
 
 	resources := k.resolveContainerResources(ctx)
 
-	deployment := &appsv1.Deployment{
+	job := &batchv1.Job{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      deploymentName,
+			Name:      jobName,
 			Namespace: k.namespace,
 			Labels:    labels,
 		},
-		Spec: appsv1.DeploymentSpec{
-			Replicas: &replicas,
-			Selector: &metav1.LabelSelector{
-				MatchLabels: labels,
-			},
+		Spec: batchv1.JobSpec{
+			Parallelism:  &replicas,
+			Completions:  &replicas,
+			BackoffLimit: &zeroBackoff,
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{
 					Labels: labels,
@@ -266,7 +272,7 @@ func (k *KubeOrchestrator) EnsureWorkerPool(ctx context.Context, jobID string, n
 					},
 				},
 				Spec: corev1.PodSpec{
-					RestartPolicy:                corev1.RestartPolicyAlways,
+					RestartPolicy:                corev1.RestartPolicyNever,
 					ServiceAccountName:           "worker",
 					AutomountServiceAccountToken: &falseVal,
 					SecurityContext: &corev1.PodSecurityContext{
@@ -374,7 +380,7 @@ func (k *KubeOrchestrator) EnsureWorkerPool(ctx context.Context, jobID string, n
 		})
 		// Parse the label selector string into matchLabels map
 		labelSelector := parseLabelSelector(localityLabelSelector)
-		deployment.Spec.Template.Spec.Affinity = &corev1.Affinity{
+		job.Spec.Template.Spec.Affinity = &corev1.Affinity{
 			PodAffinity: &corev1.PodAffinity{
 				PreferredDuringSchedulingIgnoredDuringExecution: []corev1.WeightedPodAffinityTerm{
 					{
@@ -391,31 +397,49 @@ func (k *KubeOrchestrator) EnsureWorkerPool(ctx context.Context, jobID string, n
 		}
 	}
 
-	_, err := k.clientset.AppsV1().Deployments(k.namespace).Create(ctx, deployment, metav1.CreateOptions{})
+	_, err := k.clientset.BatchV1().Jobs(k.namespace).Create(ctx, job, metav1.CreateOptions{})
 	if err == nil {
 		return nil
 	}
 	if apierrors.IsAlreadyExists(err) {
-		existing, getErr := k.clientset.AppsV1().Deployments(k.namespace).Get(ctx, deploymentName, metav1.GetOptions{})
+		existing, getErr := k.clientset.BatchV1().Jobs(k.namespace).Get(ctx, jobName, metav1.GetOptions{})
 		if getErr != nil {
 			return getErr
 		}
-		if numWorkers <= 0 && existing.Spec.Replicas != nil {
-			deployment.Spec.Replicas = existing.Spec.Replicas
+		if numWorkers <= 0 && existing.Spec.Parallelism != nil {
+			job.Spec.Parallelism = existing.Spec.Parallelism
+			job.Spec.Completions = existing.Spec.Completions
 		}
-		existing.Spec = deployment.Spec
-		_, err = k.clientset.AppsV1().Deployments(k.namespace).Update(ctx, existing, metav1.UpdateOptions{})
+		existing.Spec.Parallelism = job.Spec.Parallelism
+		existing.Spec.Completions = job.Spec.Completions
+		existing.Spec.BackoffLimit = job.Spec.BackoffLimit
+		_, err = k.clientset.BatchV1().Jobs(k.namespace).Update(ctx, existing, metav1.UpdateOptions{})
 		return err
 	}
 	return err
 }
 
-// CancelJob deletes the worker pool Deployment for a job.
+// CancelJob deletes all worker Jobs for a job (attempt-based and legacy pool-based).
 func (k *KubeOrchestrator) CancelJob(ctx context.Context, jobID string) error {
 	sanitizedJobID := sanitizeForDNSLabel(jobID)
-	deploymentName := fmt.Sprintf("worker-pool-%s", sanitizedJobID)
 	policy := metav1.DeletePropagationBackground
-	err := k.clientset.AppsV1().Deployments(k.namespace).Delete(ctx, deploymentName, metav1.DeleteOptions{
+	jobs, err := k.clientset.BatchV1().Jobs(k.namespace).List(ctx, metav1.ListOptions{
+		LabelSelector: "job_id=" + sanitizedJobID,
+	})
+	if err != nil {
+		return err
+	}
+	for _, job := range jobs.Items {
+		if err := k.clientset.BatchV1().Jobs(k.namespace).Delete(ctx, job.Name, metav1.DeleteOptions{
+			PropagationPolicy: &policy,
+		}); err != nil && !apierrors.IsNotFound(err) {
+			return err
+		}
+	}
+
+	// Backward compatibility for older pool-style naming in case labels are missing.
+	legacyPoolName := fmt.Sprintf("worker-pool-%s", sanitizedJobID)
+	err = k.clientset.BatchV1().Jobs(k.namespace).Delete(ctx, legacyPoolName, metav1.DeleteOptions{
 		PropagationPolicy: &policy,
 	})
 	if err != nil && !apierrors.IsNotFound(err) {
@@ -425,11 +449,183 @@ func (k *KubeOrchestrator) CancelJob(ctx context.Context, jobID string) error {
 }
 
 func (k *KubeOrchestrator) SpawnWorker(ctx context.Context, taskID string, jobID string, attemptID string, managerAddr string) error {
-	return nil // Deprecated: use EnsureWorkerPool
+	sanitizedTaskID := sanitizeForDNSLabel(taskID)
+	sanitizedJobID := sanitizeForDNSLabel(jobID)
+	sanitizedAttemptID := sanitizeForDNSLabel(attemptID)
+	jobName := buildWorkerJobName(sanitizedTaskID, attemptID)
+
+	falseVal := false
+	trueVal := true
+	zeroBackoff := int32(0)
+	resources := k.resolveContainerResources(ctx)
+
+	labels := map[string]string{
+		"app":        "kubemapreduce-worker",
+		"job_id":     sanitizedJobID,
+		"task_id":    sanitizedTaskID,
+		"attempt_id": sanitizedAttemptID,
+	}
+
+	job := &batchv1.Job{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      jobName,
+			Namespace: k.namespace,
+			Labels:    labels,
+		},
+		Spec: batchv1.JobSpec{
+			BackoffLimit: &zeroBackoff,
+			Template: corev1.PodTemplateSpec{
+				ObjectMeta: metav1.ObjectMeta{
+					Labels: labels,
+					Annotations: map[string]string{
+						"linkerd.io/inject": "enabled",
+					},
+				},
+				Spec: corev1.PodSpec{
+					RestartPolicy:                corev1.RestartPolicyNever,
+					ServiceAccountName:           "worker",
+					AutomountServiceAccountToken: &falseVal,
+					SecurityContext: &corev1.PodSecurityContext{
+						RunAsNonRoot: &trueVal,
+						RunAsUser:    func() *int64 { uid := WorkerUID; return &uid }(),
+						RunAsGroup:   func() *int64 { gid := WorkerGID; return &gid }(),
+						FSGroup:      func() *int64 { gid := WorkerGID; return &gid }(),
+						SeccompProfile: &corev1.SeccompProfile{
+							Type: corev1.SeccompProfileTypeRuntimeDefault,
+						},
+					},
+					Volumes: []corev1.Volume{
+						{
+							Name: "tmp",
+							VolumeSource: corev1.VolumeSource{
+								EmptyDir: &corev1.EmptyDirVolumeSource{
+									SizeLimit: func() *resource.Quantity {
+										q := resource.MustParse(DefaultWorkerEphemeralStorageLimit)
+										return &q
+									}(),
+								},
+							},
+						},
+						{
+							Name: "grpc-tls",
+							VolumeSource: corev1.VolumeSource{
+								Secret: &corev1.SecretVolumeSource{
+									SecretName: "grpc-tls",
+								},
+							},
+						},
+						{
+							Name: "worker-secrets",
+							VolumeSource: corev1.VolumeSource{
+								Secret: &corev1.SecretVolumeSource{
+									SecretName: k.workerSecretName,
+									Items: []corev1.KeyToPath{
+										{Key: "MINIO_ENDPOINT", Path: "endpoint"},
+										{Key: "MINIO_ACCESS_KEY", Path: "access-key"},
+										{Key: "MINIO_SECRET_KEY", Path: "secret-key"},
+										{Key: "MANAGER_WORKER_RPC_TOKEN", Path: "rpc-token"},
+									},
+									DefaultMode: func() *int32 { mode := int32(0440); return &mode }(),
+								},
+							},
+						},
+					},
+					Containers: []corev1.Container{
+						{
+							Name:            "worker",
+							Image:           k.workerImage,
+							ImagePullPolicy: corev1.PullIfNotPresent,
+							Env: []corev1.EnvVar{
+								{Name: "TASK_ID", Value: taskID},
+								{Name: "JOB_ID", Value: jobID},
+								{Name: "ATTEMPT_ID", Value: attemptID},
+								{Name: "MANAGER_ADDR", Value: managerAddr},
+								{Name: "GRPC_TLS_CERT_FILE", Value: "/tls/tls.crt"},
+								{Name: "WORKER_RPC_TOKEN_FILE", Value: "/etc/worker-secrets/rpc-token"},
+							},
+							Resources: resources,
+							SecurityContext: &corev1.SecurityContext{
+								AllowPrivilegeEscalation: &falseVal,
+								ReadOnlyRootFilesystem:   &trueVal,
+								RunAsNonRoot:             &trueVal,
+								Capabilities: &corev1.Capabilities{
+									Drop: []corev1.Capability{"ALL"},
+								},
+								SeccompProfile: &corev1.SeccompProfile{
+									Type: corev1.SeccompProfileTypeRuntimeDefault,
+								},
+							},
+							VolumeMounts: []corev1.VolumeMount{
+								{
+									Name:      "tmp",
+									MountPath: "/tmp",
+								},
+								{
+									Name:      "grpc-tls",
+									MountPath: "/tls",
+									ReadOnly:  true,
+								},
+								{
+									Name:      "worker-secrets",
+									MountPath: "/etc/worker-secrets",
+									ReadOnly:  true,
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	localityKey := k.resolveLocalityKey(ctx)
+	localityLabelSelector := k.resolveLocalityLabelSelector(ctx)
+	if localityKey != "" && localityLabelSelector != "" {
+		k.localityValidationOnce.Do(func() {
+			k.validateLocalityConfig(ctx, localityKey, localityLabelSelector)
+		})
+		labelSelector := parseLabelSelector(localityLabelSelector)
+		job.Spec.Template.Spec.Affinity = &corev1.Affinity{
+			PodAffinity: &corev1.PodAffinity{
+				PreferredDuringSchedulingIgnoredDuringExecution: []corev1.WeightedPodAffinityTerm{
+					{
+						Weight: 100,
+						PodAffinityTerm: corev1.PodAffinityTerm{
+							LabelSelector: &metav1.LabelSelector{
+								MatchLabels: labelSelector,
+							},
+							TopologyKey: localityKey,
+						},
+					},
+				},
+			},
+		}
+	}
+
+	_, err := k.clientset.BatchV1().Jobs(k.namespace).Create(ctx, job, metav1.CreateOptions{})
+	if apierrors.IsAlreadyExists(err) {
+		return nil
+	}
+	return err
 }
 
 func (k *KubeOrchestrator) DeleteWorkerJob(ctx context.Context, taskID string) error {
-	return nil // Deprecated: pool-based workers are managed via Deployment replicas
+	sanitizedTaskID := sanitizeForDNSLabel(taskID)
+	policy := metav1.DeletePropagationBackground
+	jobs, err := k.clientset.BatchV1().Jobs(k.namespace).List(ctx, metav1.ListOptions{
+		LabelSelector: "task_id=" + sanitizedTaskID,
+	})
+	if err != nil {
+		return err
+	}
+	for _, job := range jobs.Items {
+		if err := k.clientset.BatchV1().Jobs(k.namespace).Delete(ctx, job.Name, metav1.DeleteOptions{
+			PropagationPolicy: &policy,
+		}); err != nil && !apierrors.IsNotFound(err) {
+			return err
+		}
+	}
+	return nil
 }
 
 // MockOrchestrator is a no-op implementation for unit testing.

@@ -109,7 +109,18 @@ func (o *selectiveFailureOrchestrator) EnsureWorkerPool(ctx context.Context, job
 	return nil
 }
 
+func (o *selectiveFailureOrchestrator) SpawnWorker(ctx context.Context, taskID string, jobID string, attemptID string, managerAddr string) error {
+	if _, shouldFail := o.failJobs[jobID]; shouldFail {
+		return errors.New("k8s unavailable")
+	}
+	return nil
+}
+
 func (o *selectiveFailureOrchestrator) CancelJob(ctx context.Context, jobID string) error {
+	return nil
+}
+
+func (o *selectiveFailureOrchestrator) DeleteWorkerJob(ctx context.Context, taskID string) error {
 	return nil
 }
 
@@ -686,14 +697,6 @@ func TestScheduler_FailTask_RetryableSuccess(t *testing.T) {
 
 	mock.ExpectCommit()
 
-	// Metadata queries called by GetTaskByID during redispatch
-	mock.ExpectQuery(regexp.QuoteMeta(QueryGetTaskByID)).
-		WithArgs(taskID).
-		WillReturnRows(sqlmock.NewRows([]string{"task_id", "job_id", "task_type", "status", "current_attempt_id", "replica_index"}).
-			AddRow(taskID, jobID, "Map", "In-Progress", "new-attempt", 0))
-
-	expectTaskMetadataQueries(mock, uuid.MustParse(taskID), "m", "r", 1)
-
 	err := scheduler.FailTask(context.Background(), taskID, attemptID, leaseID, "worker exited")
 	if err != nil {
 		t.Errorf("unexpected error: %v", err)
@@ -820,7 +823,7 @@ func TestScheduler_RenewLease_Mismatched(t *testing.T) {
 	}
 }
 
-func TestScheduler_Recover_ResetsTasksAndEnsuresPools(t *testing.T) {
+func TestScheduler_Recover_ResetsTasksAndSchedulesAttempts(t *testing.T) {
 	rec := &recordingOrchestrator{}
 	db, mock, scheduler := setupMockDBWithOrchestrator(t, rec)
 	defer db.Close()
@@ -836,6 +839,20 @@ func TestScheduler_Recover_ResetsTasksAndEnsuresPools(t *testing.T) {
 	mock.ExpectQuery("SELECT job_id FROM JOBS WHERE status = 'Running' AND replica_index = \\$1").
 		WithArgs(0).
 		WillReturnRows(sqlmock.NewRows([]string{"job_id"}).AddRow(jobID))
+
+	// Recover now drives scheduling via GetNextTask and exits when no idle work exists.
+	mock.ExpectBegin()
+	mock.ExpectQuery(regexp.QuoteMeta(QueryCountFailedTasks)).
+		WithArgs(jobID).
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
+	expectReplicaCheck(mock, jobID, 0)
+	mock.ExpectQuery(regexp.QuoteMeta(QuerySelectIdleTask)).
+		WithArgs(jobID, 0, "Map").
+		WillReturnError(sql.ErrNoRows)
+	mock.ExpectQuery(regexp.QuoteMeta(QueryCountPendingTasksByType)).
+		WithArgs(jobID, "Map").
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(1))
+	mock.ExpectRollback()
 
 	if err := scheduler.Recover(context.Background()); err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -907,14 +924,6 @@ func TestScheduler_FailStaleTasks_Success(t *testing.T) {
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
 	mock.ExpectCommit()
-
-	// Metadata queries called by GetTaskByID during redispatch
-	mock.ExpectQuery(regexp.QuoteMeta(QueryGetTaskByID)).
-		WithArgs(taskID).
-		WillReturnRows(sqlmock.NewRows([]string{"task_id", "job_id", "task_type", "status", "current_attempt_id", "replica_index"}).
-			AddRow(taskID, jobID, "Map", "Idle", nil, 0))
-
-	expectTaskMetadataQueries(mock, uuid.MustParse(taskID), "m", "r", 1)
 
 	recovered, err := scheduler.FailStaleTasks(context.Background())
 	if err != nil {

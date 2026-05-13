@@ -5,7 +5,6 @@ import (
 	"strings"
 	"testing"
 
-	appsv1 "k8s.io/api/apps/v1"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -87,7 +86,6 @@ func TestBuildWorkerJobName_DNSLabelBounded(t *testing.T) {
 }
 
 func TestKubeOrchestrator_SpawnWorker_SetsJobLabels(t *testing.T) {
-	t.Skip("SpawnWorker is deprecated in favor of EnsureWorkerPool")
 	client := fake.NewSimpleClientset()
 	orchestrator := NewKubeOrchestrator(client, "default", "worker:latest", "test-secrets")
 
@@ -118,7 +116,6 @@ func TestKubeOrchestrator_SpawnWorker_SetsJobLabels(t *testing.T) {
 }
 
 func TestKubeOrchestrator_DeleteWorkerJob_DeletesJobsByTaskID(t *testing.T) {
-	t.Skip("DeleteWorkerJob is deprecated in pool-based architecture")
 	taskID := "Task-A"
 	sanitized := sanitizeForDNSLabel(taskID)
 
@@ -177,8 +174,56 @@ func TestKubeOrchestrator_DeleteWorkerJob_NoJobsIsIdempotent(t *testing.T) {
 	}
 }
 
+func TestKubeOrchestrator_CancelJob_DeletesAllJobsForJobID(t *testing.T) {
+	jobID := "job-a"
+	sanitizedJobID := sanitizeForDNSLabel(jobID)
+	taskJob := &batchv1.Job{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "worker-task-a-attempt-a",
+			Namespace: "default",
+			Labels: map[string]string{
+				"job_id":  sanitizedJobID,
+				"task_id": "task-a",
+			},
+		},
+	}
+	legacyPool := &batchv1.Job{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "worker-pool-" + sanitizedJobID,
+			Namespace: "default",
+			Labels: map[string]string{
+				"job_id": sanitizedJobID,
+			},
+		},
+	}
+	other := &batchv1.Job{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "worker-task-other",
+			Namespace: "default",
+			Labels: map[string]string{
+				"job_id": sanitizeForDNSLabel("job-b"),
+			},
+		},
+	}
+
+	client := fake.NewSimpleClientset(taskJob, legacyPool, other)
+	orchestrator := NewKubeOrchestrator(client, "default", "worker:latest", "test-secrets")
+	if err := orchestrator.CancelJob(context.Background(), jobID); err != nil {
+		t.Fatalf("CancelJob failed: %v", err)
+	}
+
+	if _, err := client.BatchV1().Jobs("default").Get(context.Background(), taskJob.Name, metav1.GetOptions{}); err == nil {
+		t.Fatalf("expected %s to be deleted", taskJob.Name)
+	}
+	if _, err := client.BatchV1().Jobs("default").Get(context.Background(), legacyPool.Name, metav1.GetOptions{}); err == nil {
+		t.Fatalf("expected %s to be deleted", legacyPool.Name)
+	}
+	if _, err := client.BatchV1().Jobs("default").Get(context.Background(), other.Name, metav1.GetOptions{}); err != nil {
+		t.Fatalf("expected unrelated job to remain: %v", err)
+	}
+}
+
 func TestKubeOrchestrator_SpawnWorker_AlreadyExistsIsIdempotent(t *testing.T) {
-	t.Skip("SpawnWorker is deprecated in favor of EnsureWorkerPool")
 	taskID := "task-id"
 	attemptID := "attempt-id"
 	jobName := buildWorkerJobName(sanitizeForDNSLabel(taskID), attemptID)
@@ -209,7 +254,6 @@ func TestKubeOrchestrator_SpawnWorker_AlreadyExistsIsIdempotent(t *testing.T) {
 }
 
 func TestKubeOrchestrator_SpawnWorker_InjectsRequiredEnv(t *testing.T) {
-	t.Skip("SpawnWorker is deprecated in favor of EnsureWorkerPool")
 	client := fake.NewSimpleClientset()
 	secretName := "custom-worker-secret"
 	orchestrator := NewKubeOrchestrator(client, "default", "worker:latest", secretName)
@@ -264,23 +308,31 @@ func TestKubeOrchestrator_SpawnWorker_InjectsRequiredEnv(t *testing.T) {
 		}
 	}
 
-	// Secret ref checks
-	secretChecks := map[string]string{
-		"S3_ENDPOINT":      "MINIO_ENDPOINT",
-		"S3_ACCESS_KEY":    "MINIO_ACCESS_KEY",
-		"S3_SECRET_KEY":    "MINIO_SECRET_KEY",
-		"MINIO_BUCKET":     "MINIO_BUCKET",
-		"WORKER_RPC_TOKEN": "MANAGER_WORKER_RPC_TOKEN",
+	if envMap["GRPC_TLS_CERT_FILE"].value != "/tls/tls.crt" {
+		t.Errorf("env GRPC_TLS_CERT_FILE: got %q, want %q", envMap["GRPC_TLS_CERT_FILE"].value, "/tls/tls.crt")
 	}
-	for name, wantKey := range secretChecks {
-		if envMap[name].secretKey != wantKey {
-			t.Errorf("env %s: got secret key %q, want %q", name, envMap[name].secretKey, wantKey)
+	if envMap["WORKER_RPC_TOKEN_FILE"].value != "/etc/worker-secrets/rpc-token" {
+		t.Errorf("env WORKER_RPC_TOKEN_FILE: got %q, want %q", envMap["WORKER_RPC_TOKEN_FILE"].value, "/etc/worker-secrets/rpc-token")
+	}
+	for _, forbidden := range []string{"S3_ENDPOINT", "S3_ACCESS_KEY", "S3_SECRET_KEY", "MINIO_ENDPOINT", "MINIO_ACCESS_KEY", "MINIO_SECRET_KEY"} {
+		if _, exists := envMap[forbidden]; exists {
+			t.Errorf("unexpected secret env var %s present", forbidden)
 		}
+	}
+
+	foundSecretVolume := false
+	for _, vol := range job.Spec.Template.Spec.Volumes {
+		if vol.Name == "worker-secrets" && vol.Secret != nil && vol.Secret.SecretName == secretName {
+			foundSecretVolume = true
+			break
+		}
+	}
+	if !foundSecretVolume {
+		t.Fatalf("expected worker-secrets volume sourced from %q", secretName)
 	}
 }
 
 func TestKubeOrchestrator_SpawnWorker_SecurityHardening(t *testing.T) {
-	t.Skip("SpawnWorker is deprecated in favor of EnsureWorkerPool")
 	client := fake.NewSimpleClientset()
 	orchestrator := NewKubeOrchestrator(client, "default", "worker:latest", "")
 
@@ -396,12 +448,12 @@ func TestEnsureWorkerPool_LocalityAffinity(t *testing.T) {
 		}
 
 		sanitized := sanitizeForDNSLabel(jobID)
-		deploy, err := client.AppsV1().Deployments("mapreduce").Get(context.Background(), "worker-pool-"+sanitized, metav1.GetOptions{})
+		job, err := client.BatchV1().Jobs("mapreduce").Get(context.Background(), "worker-pool-"+sanitized, metav1.GetOptions{})
 		if err != nil {
-			t.Fatalf("failed to get deployment: %v", err)
+			t.Fatalf("failed to get job: %v", err)
 		}
 
-		affinity := deploy.Spec.Template.Spec.Affinity
+		affinity := job.Spec.Template.Spec.Affinity
 		if affinity == nil || affinity.PodAffinity == nil {
 			t.Fatal("expected PodAffinity to be set")
 		}
@@ -434,12 +486,12 @@ func TestEnsureWorkerPool_LocalityAffinity(t *testing.T) {
 		}
 
 		sanitized := sanitizeForDNSLabel(jobID)
-		deploy, err := client.AppsV1().Deployments("mapreduce").Get(context.Background(), "worker-pool-"+sanitized, metav1.GetOptions{})
+		job, err := client.BatchV1().Jobs("mapreduce").Get(context.Background(), "worker-pool-"+sanitized, metav1.GetOptions{})
 		if err != nil {
-			t.Fatalf("failed to get deployment: %v", err)
+			t.Fatalf("failed to get job: %v", err)
 		}
 
-		affinity := deploy.Spec.Template.Spec.Affinity
+		affinity := job.Spec.Template.Spec.Affinity
 		if affinity == nil || affinity.PodAffinity == nil {
 			t.Fatal("expected PodAffinity to be set")
 		}
@@ -476,12 +528,12 @@ func TestEnsureWorkerPool_LocalityAffinity(t *testing.T) {
 		}
 
 		sanitized := sanitizeForDNSLabel(jobID)
-		deploy, _ := client.AppsV1().Deployments("mapreduce").Get(context.Background(), "worker-pool-"+sanitized, metav1.GetOptions{})
-		if deploy.Spec.Template.Spec.Affinity == nil {
-			t.Fatalf("failed to get deployment")
+		job, _ := client.BatchV1().Jobs("mapreduce").Get(context.Background(), "worker-pool-"+sanitized, metav1.GetOptions{})
+		if job.Spec.Template.Spec.Affinity == nil {
+			t.Fatalf("failed to get job")
 		}
 
-		affinity := deploy.Spec.Template.Spec.Affinity
+		affinity := job.Spec.Template.Spec.Affinity
 		if affinity == nil || affinity.PodAffinity == nil {
 			t.Fatal("expected PodAffinity to be set")
 		}
@@ -511,8 +563,8 @@ func TestEnsureWorkerPool_LocalityAffinity(t *testing.T) {
 		orchestrator.EnsureWorkerPool(context.Background(), jobID, 1, "manager:8081")
 
 		sanitized := sanitizeForDNSLabel(jobID)
-		deploy, _ := client.AppsV1().Deployments("mapreduce").Get(context.Background(), "worker-pool-"+sanitized, metav1.GetOptions{})
-		if deploy.Spec.Template.Spec.Affinity != nil {
+		job, _ := client.BatchV1().Jobs("mapreduce").Get(context.Background(), "worker-pool-"+sanitized, metav1.GetOptions{})
+		if job.Spec.Template.Spec.Affinity != nil {
 			t.Errorf("expected nil affinity for empty locality key")
 		}
 	})
@@ -531,12 +583,12 @@ func TestEnsureWorkerPool_LocalityAffinity(t *testing.T) {
 		}
 
 		sanitized := sanitizeForDNSLabel(jobID)
-		deploy, err := client.AppsV1().Deployments("mapreduce").Get(context.Background(), "worker-pool-"+sanitized, metav1.GetOptions{})
+		job, err := client.BatchV1().Jobs("mapreduce").Get(context.Background(), "worker-pool-"+sanitized, metav1.GetOptions{})
 		if err != nil {
-			t.Fatalf("failed to get deployment: %v", err)
+			t.Fatalf("failed to get job: %v", err)
 		}
 
-		affinity := deploy.Spec.Template.Spec.Affinity
+		affinity := job.Spec.Template.Spec.Affinity
 		if affinity == nil || affinity.PodAffinity == nil {
 			t.Fatal("expected PodAffinity to be set")
 		}
@@ -565,11 +617,11 @@ func TestEnsureWorkerPool_PreservesExistingReplicasWhenUnspecified(t *testing.T)
 	name := "worker-pool-" + sanitized
 
 	initialReplicas := int32(7)
-	_, err := client.AppsV1().Deployments("mapreduce").Create(context.Background(), &appsv1.Deployment{
+	_, err := client.BatchV1().Jobs("mapreduce").Create(context.Background(), &batchv1.Job{
 		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "mapreduce"},
-		Spec: appsv1.DeploymentSpec{
-			Replicas: &initialReplicas,
-			Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"app": "kubemapreduce-worker", "job_id": sanitized}},
+		Spec: batchv1.JobSpec{
+			Parallelism: &initialReplicas,
+			Completions: &initialReplicas,
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{"app": "kubemapreduce-worker", "job_id": sanitized}},
 				Spec:       corev1.PodSpec{Containers: []corev1.Container{{Name: "worker", Image: "worker:latest"}}},
@@ -584,15 +636,15 @@ func TestEnsureWorkerPool_PreservesExistingReplicasWhenUnspecified(t *testing.T)
 		t.Fatalf("EnsureWorkerPool failed: %v", err)
 	}
 
-	updated, err := client.AppsV1().Deployments("mapreduce").Get(context.Background(), name, metav1.GetOptions{})
+	updated, err := client.BatchV1().Jobs("mapreduce").Get(context.Background(), name, metav1.GetOptions{})
 	if err != nil {
-		t.Fatalf("failed to get updated deployment: %v", err)
+		t.Fatalf("failed to get updated job: %v", err)
 	}
-	if updated.Spec.Replicas == nil {
-		t.Fatal("expected replicas to be set")
+	if updated.Spec.Parallelism == nil {
+		t.Fatal("expected parallelism to be set")
 	}
-	if *updated.Spec.Replicas != initialReplicas {
-		t.Fatalf("expected replicas to remain %d, got %d", initialReplicas, *updated.Spec.Replicas)
+	if *updated.Spec.Parallelism != initialReplicas {
+		t.Fatalf("expected parallelism to remain %d, got %d", initialReplicas, *updated.Spec.Parallelism)
 	}
 }
 

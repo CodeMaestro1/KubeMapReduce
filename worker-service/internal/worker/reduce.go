@@ -11,6 +11,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/minio/minio-go/v7"
 
@@ -47,6 +48,45 @@ func (w *Worker) downloadShuffleInputsFromService(ctx context.Context, a *pb.Tas
 		return nil, nil, fmt.Errorf("create temp shuffle input file: %w", err)
 	}
 	segmentHasData := false
+	segmentHasher := sha256.New()
+	expectedSegmentChecksums := make([]string, 0, len(a.DataLocations))
+	for _, loc := range a.DataLocations {
+		_, checksum := splitChecksumURI(loc)
+		expectedSegmentChecksums = append(expectedSegmentChecksums, checksum)
+	}
+	resolveExpectedChecksum := func(idx int, chunkChecksum string) (string, error) {
+		var expectedFromAssignment string
+		if idx < len(expectedSegmentChecksums) {
+			expectedFromAssignment = expectedSegmentChecksums[idx]
+		}
+		chunkChecksum = strings.TrimSpace(chunkChecksum)
+		if expectedFromAssignment != "" && chunkChecksum != "" && expectedFromAssignment != chunkChecksum {
+			return "", fmt.Errorf("segment %d checksum metadata mismatch: assignment=%s stream=%s", idx, expectedFromAssignment, chunkChecksum)
+		}
+		if expectedFromAssignment != "" {
+			return expectedFromAssignment, nil
+		}
+		return chunkChecksum, nil
+	}
+	finalizeSegment := func(idx int, expected string) error {
+		if err := validateChecksumHex(segmentHasher, expected); err != nil {
+			return fmt.Errorf("segment %d checksum mismatch: %w", idx, err)
+		}
+		if _, err := tmpFile.Seek(0, io.SeekStart); err != nil {
+			return fmt.Errorf("seek temp shuffle input file: %w", err)
+		}
+		readers = append(readers, tmpFile)
+		closers = append(closers, tmpFile)
+		segmentIdx++
+		next, err := openSegment(segmentIdx)
+		if err != nil {
+			return fmt.Errorf("create temp shuffle input file: %w", err)
+		}
+		tmpFile = next
+		segmentHasData = false
+		segmentHasher = sha256.New()
+		return nil
+	}
 
 	for {
 		chunk, err := stream.Recv()
@@ -60,22 +100,23 @@ func (w *Worker) downloadShuffleInputsFromService(ctx context.Context, a *pb.Tas
 		if len(chunk.Data) == 0 {
 			// Empty chunk signals a segment boundary (end of one map output stream).
 			if segmentHasData {
-				if _, err := tmpFile.Seek(0, io.SeekStart); err != nil {
-					tmpFile.Close()
-					return nil, nil, fmt.Errorf("seek temp shuffle input file: %w", err)
-				}
-				readers = append(readers, tmpFile)
-				closers = append(closers, tmpFile)
-				segmentIdx++
-				tmpFile, err = openSegment(segmentIdx)
+				expected, err := resolveExpectedChecksum(segmentIdx, chunk.GetSegmentChecksum())
 				if err != nil {
-					return nil, nil, fmt.Errorf("create temp shuffle input file: %w", err)
+					tmpFile.Close()
+					return nil, nil, err
 				}
-				segmentHasData = false
+				if err := finalizeSegment(segmentIdx, expected); err != nil {
+					tmpFile.Close()
+					return nil, nil, err
+				}
 			}
 			continue
 		}
 		segmentHasData = true
+		if _, err := segmentHasher.Write(chunk.Data); err != nil {
+			tmpFile.Close()
+			return nil, nil, fmt.Errorf("hash shuffle chunk: %w", err)
+		}
 		if _, err := tmpFile.Write(chunk.Data); err != nil {
 			tmpFile.Close()
 			return nil, nil, fmt.Errorf("write shuffle chunk: %w", err)
@@ -83,6 +124,15 @@ func (w *Worker) downloadShuffleInputsFromService(ctx context.Context, a *pb.Tas
 	}
 
 	if segmentHasData {
+		expected, err := resolveExpectedChecksum(segmentIdx, "")
+		if err != nil {
+			tmpFile.Close()
+			return nil, nil, err
+		}
+		if err := validateChecksumHex(segmentHasher, expected); err != nil {
+			tmpFile.Close()
+			return nil, nil, fmt.Errorf("segment %d checksum mismatch: %w", segmentIdx, err)
+		}
 		if _, err := tmpFile.Seek(0, io.SeekStart); err != nil {
 			tmpFile.Close()
 			return nil, nil, fmt.Errorf("seek temp shuffle input file: %w", err)
