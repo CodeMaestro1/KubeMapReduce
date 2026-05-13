@@ -534,6 +534,10 @@ type JobScheduler interface {
 	CancelJob(ctx context.Context, jobID string) error
 	ScheduleJob(ctx context.Context, req manager.ScheduleJobRequest) error
 	UpsertSystemConfig(ctx context.Context, update manager.SystemConfigUpdate) error
+	// GetSystemConfig reads the current cluster-wide configuration from the DDS.
+	// It is used by the GET /internal/config endpoint so the API service can
+	// surface worker configuration to admin callers.
+	GetSystemConfig(ctx context.Context) (manager.SystemConfigUpdate, error)
 }
 
 // Pingable abstracts the database ping method.
@@ -714,6 +718,22 @@ func setupInternalMux(scheduler JobScheduler, db Pingable, cfg *config.Config) *
 			return
 		}
 		w.WriteHeader(http.StatusOK)
+	})
+	mux.HandleFunc("GET /internal/config", func(w http.ResponseWriter, r *http.Request) {
+		if !isAuthorizedInternalRequest(r, cfg.InternalAPIKey, cfg.AllowInsecureInternalCancelAuth) {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		cfgData, err := scheduler.GetSystemConfig(r.Context())
+		if err != nil {
+			log.Printf("failed to read system config: %v", err)
+			http.Error(w, "failed to read config", http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		if err := json.NewEncoder(w).Encode(cfgData); err != nil {
+			log.Printf("failed to encode system config: %v", err)
+		}
 	})
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
