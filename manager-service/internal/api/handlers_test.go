@@ -2149,3 +2149,110 @@ func TestMinioCopier_CopyObject(t *testing.T) {
 		t.Fatalf("expected network error")
 	}
 }
+
+// ── HandleAdminGetWorkerConfig tests ─────────────────────────
+
+func TestHandleAdminGetWorkerConfig_RejectsNonGet(t *testing.T) {
+	h := newTestHandlers()
+	for _, method := range []string{http.MethodPost, http.MethodPut, http.MethodDelete} {
+		req := httptest.NewRequest(method, "/api/v1/admin/config/workers", nil)
+		rec := httptest.NewRecorder()
+		h.HandleAdminGetWorkerConfig(rec, req)
+		if rec.Code != http.StatusMethodNotAllowed {
+			t.Errorf("method %s: expected 405, got %d", method, rec.Code)
+		}
+	}
+}
+
+func TestHandleAdminGetWorkerConfig_ManagerUnreachable(t *testing.T) {
+	h := newTestHandlers()
+	// Point to a guaranteed-closed address so Do() fails.
+	h.managerAddr = "http://127.0.0.1:1"
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/config/workers", nil)
+	rec := httptest.NewRecorder()
+	h.HandleAdminGetWorkerConfig(rec, req)
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503 when manager unreachable, got %d", rec.Code)
+	}
+}
+
+func TestHandleAdminGetWorkerConfig_ManagerReturnsError(t *testing.T) {
+	// Manager returns 500.
+	fakeMgr := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer fakeMgr.Close()
+
+	h := newTestHandlers()
+	h.managerAddr = fakeMgr.URL
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/config/workers", nil)
+	rec := httptest.NewRecorder()
+	h.HandleAdminGetWorkerConfig(rec, req)
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500 propagated from manager, got %d", rec.Code)
+	}
+}
+
+func TestHandleAdminGetWorkerConfig_Success(t *testing.T) {
+	payload := `{"maxConcurrentPods":5,"cpuLimit":"500m","memoryLimit":"1Gi","workerReplicas":2,"maxJobsPerNode":3}`
+	fakeMgr := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			t.Errorf("manager: expected GET, got %s", r.Method)
+		}
+		if r.URL.Path != "/internal/config" {
+			t.Errorf("manager: expected /internal/config, got %s", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprint(w, payload)
+	}))
+	defer fakeMgr.Close()
+
+	h := newTestHandlers()
+	h.managerAddr = fakeMgr.URL
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/config/workers", nil)
+	rec := httptest.NewRecorder()
+	h.HandleAdminGetWorkerConfig(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if ct := rec.Header().Get("Content-Type"); ct != "application/json" {
+		t.Errorf("expected Content-Type application/json, got %q", ct)
+	}
+	if !strings.Contains(rec.Body.String(), `"maxConcurrentPods":5`) {
+		t.Errorf("expected maxConcurrentPods in response body, got %q", rec.Body.String())
+	}
+}
+
+func TestHandleAdminGetWorkerConfig_SetsInternalToken(t *testing.T) {
+	const wantToken = "my-secret-token"
+	tokenSeen := ""
+	fakeMgr := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		tokenSeen = r.Header.Get("X-Internal-Token")
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprint(w, `{}`)
+	}))
+	defer fakeMgr.Close()
+
+	h := newTestHandlers()
+	h.managerAddr = fakeMgr.URL
+	h.internalAPIKey = wantToken
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/config/workers", nil)
+	rec := httptest.NewRecorder()
+	h.HandleAdminGetWorkerConfig(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+	if tokenSeen != wantToken {
+		t.Errorf("expected X-Internal-Token %q, got %q", wantToken, tokenSeen)
+	}
+}
