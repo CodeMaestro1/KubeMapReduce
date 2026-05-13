@@ -628,6 +628,50 @@ func (h *Handlers) HandleAdminConfigWorkers(w http.ResponseWriter, r *http.Reque
 	}
 }
 
+// HandleAdminGetWorkerConfig handles GET /api/v1/admin/config/workers.
+//
+// It proxies the request to the manager's GET /internal/config endpoint and
+// returns the current cluster-wide configuration as JSON. Access is restricted
+// to callers holding an ADMIN role JWT.
+func (h *Handlers) HandleAdminGetWorkerConfig(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		httputil.WriteErrorJSON(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+
+	managerURL, err := buildManagerInternalURL(h.managerAddr, "/internal/config")
+	if err != nil {
+		httputil.WriteErrorJSON(w, http.StatusInternalServerError, "manager internal endpoint misconfigured")
+		return
+	}
+	proxyReq, err := http.NewRequestWithContext(r.Context(), http.MethodGet, managerURL, nil)
+	if err != nil {
+		httputil.WriteErrorJSON(w, http.StatusInternalServerError, "failed to build proxy request")
+		return
+	}
+	if h.internalAPIKey != "" {
+		proxyReq.Header.Set("X-Internal-Token", h.internalAPIKey)
+	}
+
+	resp, err := h.httpClient.Do(proxyReq)
+	if err != nil {
+		http.Error(w, "manager service unreachable", http.StatusServiceUnavailable)
+		return
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		http.Error(w, "failed to read config from manager", resp.StatusCode)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	if _, err := io.Copy(w, resp.Body); err != nil {
+		slog.Error("failed to stream manager config response", "err", err)
+	}
+}
+
 // postSchedule POSTs a ScheduleJobRequest to the Manager's internal schedule endpoint.
 func (h *Handlers) postSchedule(ctx context.Context, req manager.ScheduleJobRequest) error {
 	body, err := json.Marshal(req)
