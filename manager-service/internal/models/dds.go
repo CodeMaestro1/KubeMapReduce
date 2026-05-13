@@ -174,9 +174,13 @@ func (j *Job) IsTerminal() bool {
 // It stores global platform limits that are applied to all jobs. These values
 // are typically managed by the Admin CLI to perform live tuning of the cluster.
 type SystemConfig struct {
-	ConfigID          int       `db:"config_id" json:"configId"`
-	MaxConcurrentPods int       `db:"max_concurrent_pods" json:"maxConcurrentPods"`
-	CPULimit          string    `db:"cpu_limit" json:"cpuLimit"`
-	MemoryLimit       string    `db:"memory_limit" json:"memoryLimit"`
-	UpdatedAt         time.Time `db:"updated_at" json:"updatedAt"`
+	ConfigID              int       `db:"config_id" json:"configId"`
+	MaxConcurrentPods     int       `db:"max_concurrent_pods" json:"maxConcurrentPods"`
+	CPULimit              string    `db:"cpu_limit" json:"cpuLimit"`
+	MemoryLimit           string    `db:"memory_limit" json:"memoryLimit"`
+	WorkerReplicas        int       `db:"worker_replicas" json:"workerReplicas"`
+	MaxJobsPerNode        int       `db:"max_jobs_per_node" json:"maxJobsPerNode"`
+	LocalityKey           string    `db:"locality_key" json:"localityKey"`
+	LocalityLabelSelector string    `db:"locality_label_selector" json:"localityLabelSelector"`
+	UpdatedAt             time.Time `db:"updated_at" json:"updatedAt"`
 }

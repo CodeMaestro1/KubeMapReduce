@@ -10,11 +10,15 @@ import (
 
 func TestSystemConfig_Serialization(t *testing.T) {
 	config := SystemConfig{
-		ConfigID:          1,
-		MaxConcurrentPods: 10,
-		CPULimit:          "500m",
-		MemoryLimit:       "1Gi",
-		UpdatedAt:         time.Now().Truncate(time.Second), // Truncate so JSON marshal/unmarshal comparisons are stable
+		ConfigID:              1,
+		MaxConcurrentPods:     10,
+		CPULimit:              "500m",
+		MemoryLimit:           "1Gi",
+		WorkerReplicas:        3,
+		MaxJobsPerNode:        5,
+		LocalityKey:           "topology.kubernetes.io/zone",
+		LocalityLabelSelector: "app=minio",
+		UpdatedAt:             time.Now().Truncate(time.Second), // Truncate so JSON marshal/unmarshal comparisons are stable
 	}
 
 	data, err := json.Marshal(config)
@@ -29,6 +33,18 @@ func TestSystemConfig_Serialization(t *testing.T) {
 
 	if config.MaxConcurrentPods != unmarshaledConfig.MaxConcurrentPods {
 		t.Errorf("Expected MaxConcurrentPods %d, got %d", config.MaxConcurrentPods, unmarshaledConfig.MaxConcurrentPods)
+	}
+	if config.WorkerReplicas != unmarshaledConfig.WorkerReplicas {
+		t.Errorf("Expected WorkerReplicas %d, got %d", config.WorkerReplicas, unmarshaledConfig.WorkerReplicas)
+	}
+	if config.MaxJobsPerNode != unmarshaledConfig.MaxJobsPerNode {
+		t.Errorf("Expected MaxJobsPerNode %d, got %d", config.MaxJobsPerNode, unmarshaledConfig.MaxJobsPerNode)
+	}
+	if config.LocalityKey != unmarshaledConfig.LocalityKey {
+		t.Errorf("Expected LocalityKey %q, got %q", config.LocalityKey, unmarshaledConfig.LocalityKey)
+	}
+	if config.LocalityLabelSelector != unmarshaledConfig.LocalityLabelSelector {
+		t.Errorf("Expected LocalityLabelSelector %q, got %q", config.LocalityLabelSelector, unmarshaledConfig.LocalityLabelSelector)
 	}
 }
 
