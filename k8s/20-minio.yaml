@@ -106,3 +106,57 @@ spec:
         resources:
           requests:
             storage: 50Gi
+---
+# minio-setup — one-shot Job that runs after MinIO is ready.
+# Configures the 24-hour expiry ILM rule on the mapreduce-inputs bucket
+# so that orphaned temp/<userID>/ objects are automatically purged without
+# any application-side cleanup. This satisfies the "Orphaned Upload
+# Mitigation" requirement: a presigned PUT that is never promoted to
+# inputs/<jobID>/ will be reaped by MinIO within 24 hours.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: minio-setup
+  namespace: mapreduce
+  labels:
+    app.kubernetes.io/name: minio-setup
+spec:
+  backoffLimit: 5
+  template:
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: mc
+          image: quay.io/minio/mc:RELEASE.2024-10-08T09-37-26Z
+          imagePullPolicy: IfNotPresent
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -e
+              mc alias set myminio \
+                http://minio.mapreduce.svc.cluster.local:9000 \
+                "$MINIO_ROOT_USER" "$MINIO_ROOT_PASSWORD"
+              mc mb --ignore-existing myminio/mapreduce-inputs
+              mc ilm add \
+                --prefix "temp/" \
+                --expiry-days 1 \
+                myminio/mapreduce-inputs
+          env:
+            - name: MINIO_ROOT_USER
+              valueFrom:
+                secretKeyRef:
+                  name: minio-creds
+                  key: MINIO_ROOT_USER
+            - name: MINIO_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: minio-creds
+                  key: MINIO_ROOT_PASSWORD
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
