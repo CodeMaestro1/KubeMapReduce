@@ -250,6 +250,16 @@ func (m *mockJobScheduler) UpsertSystemConfig(ctx context.Context, update manage
 	return nil
 }
 
+func (m *mockJobScheduler) GetSystemConfig(ctx context.Context) (manager.SystemConfigUpdate, error) {
+	return manager.SystemConfigUpdate{
+		MaxConcurrentPods: 10,
+		CPULimit:          "500m",
+		MemoryLimit:       "1Gi",
+		WorkerReplicas:    3,
+		MaxJobsPerNode:    5,
+	}, nil
+}
+
 type mockPingable struct {
 	pingFunc func(ctx context.Context) error
 }
