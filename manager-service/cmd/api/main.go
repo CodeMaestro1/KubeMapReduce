@@ -88,6 +88,31 @@ func main() {
 		log.Fatalf("failed to ping database: %v", err)
 	}
 
+	// Open a separate read-only pool when DATABASE_READONLY_DSN is configured
+	// and differs from the primary DSN. This separates read traffic from the
+	// write path (design doc §6.9 CQRS). When the env var is absent or equal
+	// to DATABASE_DSN the roDB pointer stays nil and the store falls back to
+	// the primary pool for all operations.
+	var roDB *sql.DB
+	if cfg.DatabaseReadOnlyDSN != "" && cfg.DatabaseReadOnlyDSN != cfg.DatabaseDSN {
+		roDB, err = sql.Open("postgres", cfg.DatabaseReadOnlyDSN)
+		if err != nil {
+			log.Fatalf("failed to open read-only database: %v", err)
+		}
+		defer roDB.Close()
+
+		roDB.SetMaxOpenConns(cfg.DBMaxOpenConns)
+		roDB.SetMaxIdleConns(cfg.DBMaxIdleConns)
+		roDB.SetConnMaxLifetime(cfg.DBConnMaxLifetime)
+
+		roCtx, roCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer roCancel()
+		if err := roDB.PingContext(roCtx); err != nil {
+			log.Fatalf("failed to ping read-only database: %v", err)
+		}
+		log.Printf("read-only DB pool opened (CQRS mode)")
+	}
+
 	var minioClient *minio.Client
 	if cfg.MinioEndpoint != "" && cfg.MinioAccessKey != "" && cfg.MinioSecretKey != "" {
 		log.Printf("MinIO: endpoint=%s access_key=%s use_ssl=%v", cfg.MinioEndpoint, cfg.MinioAccessKey, cfg.MinioUseSSL)
@@ -106,7 +131,7 @@ func main() {
 		bucketCancel()
 	}
 
-	store := api.NewPostgresJobStore(db, cfg.TotalReplicas)
+	store := api.NewPostgresJobStoreWithReadReplica(db, roDB, cfg.TotalReplicas)
 	handlers := api.NewHandlers(adminClient, store, minioClient, cfg.ManagerAddr, cfg.InternalAPIKey)
 
 	// Register Prometheus collectors and mount the /metrics endpoint
