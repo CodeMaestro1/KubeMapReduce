@@ -269,7 +269,9 @@ const QueryGetReduceOutputs = `
 // ---------------------------------------------------------------------------
 
 // QueryGetTaskStatus retrieves the current status string for a single task.
-// Supports the UI Service's CQRS-style read path for the jobs status CLI command.
+// Used by the Manager's internal status reporting path. The API service
+// routes equivalent read-only queries through the CQRS read-only pool
+// (see PostgresJobStore.readDB and DATABASE_READONLY_DSN).
 const QueryGetTaskStatus = `SELECT status FROM TASKS WHERE task_id = $1`
 
 // QueryGetTaskJobID retrieves the job ID associated with a task ID.

@@ -56,6 +56,12 @@ spec:
                   key: POSTGRES_DB
             - name: DATABASE_DSN
               value: "postgres://$(POSTGRES_USER):$(POSTGRES_PASSWORD)@postgres.mapreduce.svc.cluster.local:5432/$(POSTGRES_DB)?sslmode=require"
+            # DATABASE_READONLY_DSN enables the CQRS read-only pool (design doc §6.9).
+            # Set this to a PostgreSQL read-replica DSN to separate read traffic
+            # from writes. When absent or identical to DATABASE_DSN the API service
+            # falls back to the primary pool for all operations (single-pool mode).
+            # - name: DATABASE_READONLY_DSN
+            #   value: "postgres://$(POSTGRES_USER):$(POSTGRES_PASSWORD)@postgres-ro.mapreduce.svc.cluster.local:5432/$(POSTGRES_DB)?sslmode=require"
             - name: MINIO_ENDPOINT
               valueFrom:
                 secretKeyRef:
