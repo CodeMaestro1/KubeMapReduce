@@ -392,3 +392,42 @@ func TestSetupInternalMux_Schedule(t *testing.T) {
 		}
 	})
 }
+
+func TestSetupInternalMux_GetConfig(t *testing.T) {
+	cfg := &config.Config{
+		InternalAPIKey: "secret-token",
+	}
+
+	t.Run("unauthorized", func(t *testing.T) {
+		mux := setupInternalMux(&mockJobScheduler{}, nil, cfg)
+		req := httptest.NewRequest("GET", "/internal/config", nil)
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusUnauthorized {
+			t.Errorf("expected 401 Unauthorized, got %d", rec.Code)
+		}
+	})
+
+	t.Run("success returns JSON config", func(t *testing.T) {
+		mux := setupInternalMux(&mockJobScheduler{}, nil, cfg)
+		req := httptest.NewRequest("GET", "/internal/config", nil)
+		req.Header.Set("X-Internal-Token", "secret-token")
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Errorf("expected 200 OK, got %d", rec.Code)
+		}
+		if ct := rec.Header().Get("Content-Type"); ct != "application/json" {
+			t.Errorf("expected Content-Type application/json, got %q", ct)
+		}
+		var body manager.SystemConfigUpdate
+		if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+			t.Fatalf("expected valid JSON body: %v", err)
+		}
+		if body.MaxConcurrentPods != 10 {
+			t.Errorf("expected MaxConcurrentPods=10 from mock, got %d", body.MaxConcurrentPods)
+		}
+	})
+}
