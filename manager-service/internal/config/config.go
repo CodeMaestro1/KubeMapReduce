@@ -27,11 +27,20 @@ type Config struct {
 	ServerAddr string
 	GRPCAddr   string
 
-	// Persistence layer connection string.
+	// Persistence layer connection strings.
+	// DatabaseDSN is the primary read-write connection used for all write
+	// operations and as the fallback for reads when no replica is configured.
 	DatabaseDSN       string
 	DBMaxOpenConns    int
 	DBMaxIdleConns    int
 	DBConnMaxLifetime time.Duration
+	// DatabaseReadOnlyDSN is an optional separate connection string for a
+	// PostgreSQL read replica (or the same instance with a read-only role).
+	// When set via DATABASE_READONLY_DSN, the API service routes all read
+	// queries (GetJob, ListJobs, GetJobOutputs) through this pool, isolating
+	// them from the write path as described in design doc §6.9.
+	// When unset it defaults to DatabaseDSN (single-pool, no behaviour change).
+	DatabaseReadOnlyDSN string
 
 	// Distributed scheduling parameters.
 	// TotalReplicas matches the K8s StatefulSet replica count for hashing logic.
@@ -187,6 +196,7 @@ func Load() (*Config, error) {
 		AdminUsername:                   adminUsername,
 		AdminPassword:                   adminPassword,
 		DatabaseDSN:                     getEnv("DATABASE_DSN", "postgres://user:pass@localhost:5432/mapreduce?sslmode=disable"),
+		DatabaseReadOnlyDSN:             getEnv("DATABASE_READONLY_DSN", getEnv("DATABASE_DSN", "postgres://user:pass@localhost:5432/mapreduce?sslmode=disable")),
 		DBMaxOpenConns:                  dbMaxOpenConns,
 		DBMaxIdleConns:                  dbMaxIdleConns,
 		DBConnMaxLifetime:               time.Duration(dbConnMaxLifetimeSec) * time.Second,
