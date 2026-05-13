@@ -29,6 +29,68 @@ func TestNewPostgresJobStore(t *testing.T) {
 	}
 }
 
+func TestNewPostgresJobStoreWithReadReplica(t *testing.T) {
+	t.Run("uses roDB for reads when provided", func(t *testing.T) {
+		primary, _, err := sqlmock.New()
+		if err != nil {
+			t.Fatalf("failed to create primary sqlmock: %v", err)
+		}
+		defer primary.Close()
+
+		replica, _, err := sqlmock.New()
+		if err != nil {
+			t.Fatalf("failed to create replica sqlmock: %v", err)
+		}
+		defer replica.Close()
+
+		store := NewPostgresJobStoreWithReadReplica(primary, replica, 3)
+		if store == nil {
+			t.Fatal("NewPostgresJobStoreWithReadReplica returned nil")
+		}
+		if store.db != primary {
+			t.Error("expected store.db to be the primary pool")
+		}
+		if store.roDB != replica {
+			t.Error("expected store.roDB to be the replica pool")
+		}
+		if store.readDB() != replica {
+			t.Error("readDB() should return the replica when roDB is set")
+		}
+		if store.totalReplicas != 3 {
+			t.Errorf("expected totalReplicas=3, got %d", store.totalReplicas)
+		}
+	})
+
+	t.Run("falls back to primary when roDB is nil", func(t *testing.T) {
+		primary, _, err := sqlmock.New()
+		if err != nil {
+			t.Fatalf("failed to create primary sqlmock: %v", err)
+		}
+		defer primary.Close()
+
+		store := NewPostgresJobStoreWithReadReplica(primary, nil, 1)
+		if store == nil {
+			t.Fatal("NewPostgresJobStoreWithReadReplica returned nil")
+		}
+		if store.readDB() != primary {
+			t.Error("readDB() should fall back to primary when roDB is nil")
+		}
+	})
+
+	t.Run("clamps totalReplicas <= 0 to 1", func(t *testing.T) {
+		primary, _, err := sqlmock.New()
+		if err != nil {
+			t.Fatalf("failed to create primary sqlmock: %v", err)
+		}
+		defer primary.Close()
+
+		store := NewPostgresJobStoreWithReadReplica(primary, nil, 0)
+		if store.totalReplicas != 1 {
+			t.Errorf("expected totalReplicas clamped to 1, got %d", store.totalReplicas)
+		}
+	})
+}
+
 func TestPostgresJobStore_CreateJob_PersistsToDatabase(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	if err != nil {
