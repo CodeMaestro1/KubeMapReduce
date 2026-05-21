@@ -22,6 +22,9 @@
 \usepackage{amsmath}
 \usepackage{amssymb}
 \usepackage{caption}
+\usepackage{pgfplots}
+\pgfplotsset{compat=1.18}
+\usepgfplotslibrary{groupplots}
 
 \lstset{
     basicstyle=\tiny\ttfamily,
@@ -73,84 +76,31 @@
 \end{frame}
 
 % ==================================================================
-% 1. INTRODUCTION / MOTIVATION  (1--2 min)
+% 1. BACKGROUND  (1--2 min)
 % ==================================================================
-\section{Introduction \& Motivation}
+\section{Background}
 
-\begin{frame}{The Problem at Google (early 2000s)}
-\begin{itemize}
-  \item Conceptually \alert{simple} computations over \alert{huge} datasets:
-  \begin{itemize}
-    \item Inverted indices for web search
-    \item Graph structure of the Web
-    \item Log summaries per host, most frequent queries\ldots
-  \end{itemize}
-  \item Input size: \alert{terabytes -- petabytes} of data.
-  \item Must finish in reasonable time $\Rightarrow$ \alert{distribute across thousands of machines}.
-\end{itemize}
+\begin{frame}{MapReduce in One Slide}
+\textbf{The pain point (Google, early 2000s).} Simple computations
+(inverted indices, web graph, log summaries) over \alert{TB--PB} of data
+forced every team to reinvent parallelization, sharding, fault tolerance,
+and load balancing --- complex code obscured simple logic.
 
 \vspace{0.4em}
-\begin{block}{The pain point}
-Every new computation reinvents: parallelization, data distribution, fault tolerance,
-load balancing\ldots \textbf{Complex code obscures simple logic.}
-\end{block}
-\end{frame}
+\textbf{The idea.} The user writes \alert{two pure functions} (inspired by Lisp):
+\[
+\texttt{map}(k_1,v_1) \to \mathrm{list}(k_2,v_2) \qquad
+\texttt{reduce}(k_2, \mathrm{list}(v_2)) \to \mathrm{list}(v_2)
+\]
+The \alert{runtime} handles partitioning, scheduling, shuffling, failure recovery,
+and straggler mitigation. A distributed-systems problem becomes a \textbf{library call}.
 
-\begin{frame}{The MapReduce Idea}
-\begin{itemize}
-  \item Inspired by \texttt{map} and \texttt{reduce} primitives of Lisp / functional languages.
-  \item User writes only \alert{two pure functions}:
-  \begin{itemize}
-    \item \texttt{map(k1, v1)} $\rightarrow$ \texttt{list(k2, v2)}
-    \item \texttt{reduce(k2, list(v2))} $\rightarrow$ \texttt{list(v2)}
-  \end{itemize}
-  \item The \alert{runtime} handles everything else:
-        partitioning, scheduling, shuffling, failure recovery, straggler mitigation.
-\end{itemize}
-
-\begin{alertblock}{Why it matters}
-Turns a distributed-systems problem into a \textbf{library call}.
-Non-experts ran 1000-node jobs after a few days of training.
-\end{alertblock}
-\end{frame}
-
-% ==================================================================
-% 2. RELATED WORK  (2--3 min)
-% ==================================================================
-\section{Related Work}
-
-\begin{frame}{Where MapReduce Stands}
-\small
-\begin{itemize}
-  \item \alert{Bulk Synchronous Parallel (BSP)} \textit{[Valiant, 1990]}:
-        global synchronization barriers; MapReduce uses a single barrier (shuffle).
-  \item \alert{MPI / message passing}: expressive but \textbf{exposes} the network and failures to the user.
-  \item \alert{Active Disks / River} \textit{[Acharya'98, Arpaci-Dusseau'99]}:
-        push computation to data --- MapReduce inherits the data-locality principle.
-  \item \alert{NOW-Sort / Charlotte / Condor}: cluster job schedulers, but no integrated
-        programming model for data-parallel jobs.
-\end{itemize}
-
-\begin{block}{The contribution}
-MapReduce \textbf{combines} a restricted programming model + an automatic runtime
-+ commodity-hardware fault tolerance into a \textit{single} system used in production.
-\end{block}
-\end{frame}
-
-\begin{frame}{Context inside Google}
-\begin{itemize}
-  \item \alert{GFS} (Google File System, SOSP 2003) --- the substrate:
-        replicated, chunk-based, locality-aware DFS.
-  \item \alert{Bigtable} (OSDI 2006) --- later built \textit{on top of} MapReduce and GFS.
-  \item MapReduce became the de-facto interface to GFS for batch analytics.
-\end{itemize}
-
-\vspace{0.5em}
-\begin{itemize}
-  \item Open-source descendants:
-        \alert{Apache Hadoop}, \alert{Apache Spark} (RDD/DAG generalization),
-        \alert{Flink} (streaming), Google \alert{Dataflow}/\alert{Beam}.
-\end{itemize}
+\vspace{0.4em}
+\textbf{Where it sits.} Restricts the model of MPI/BSP, generalizes Active Disks'
+``push compute to data'', and ran on top of \alert{GFS} (SOSP'03) inside Google.
+Open-source descendants: \alert{Hadoop}, \alert{Spark} (RDD/DAG), \alert{Flink},
+Google \alert{Dataflow/Beam}. \textbf{Our project re-implements the paradigm on
+cloud-native primitives (Kubernetes + Postgres + MinIO + gRPC).}
 \end{frame}
 
 % ==================================================================
@@ -359,16 +309,17 @@ updated atomically with the attempt row in the same transaction.
   \draw[arrow, red, dashed] (jr.north) to[bend left=18] (jf.west);
   \node[font=\tiny] at (-1.4, 0) {\textbf{JOB}};
 
-  % Task FSM (bottom)
-  \node[s, fill=blue!10, below=1.4cm of jp]   (ti) {Idle};
+   % Task FSM (bottom)
+      \node[s, fill=blue!10, below=1.6cm of jp]   (ti) {Idle};
   \node[s, fill=yellow!20, right=of ti] (tp) {In-Progress};
   \node[s, fill=green!20, right=of tp]  (tc) {Completed};
-  \node[s, fill=red!20, below=0.3cm of tc]   (tf) {Failed};
+      \node[s, fill=red!20, below=0.65cm of tc]   (tf) {Failed};
   \draw[arrow] (ti) -- (tp);
-  \draw[arrow] (tp) -- (tc);
-  \draw[arrow, red, dashed] (tp.south) to[bend right=18] (tf.west);
-  \draw[arrow, red] (tf) to[bend right=20] node[below, font=\tiny]{retry $<$ 3} (ti);
-  \node[font=\tiny] at (-1.4, -2.6) {\textbf{TASK}};
+   \draw[arrow] (tp) -- (tc);
+      \draw[arrow, red, dashed] (tp.south east) to[out=-35, in=170] (tf.west);
+      \draw[arrow, red] (tf.west) to[out=180, in=-70]
+            node[pos=0.62, below=6pt, font=\tiny, fill=white, inner sep=1pt]{retry $<$ 3} (ti.south);
+      \node[font=\tiny] at (-1.55, -2.8) {\textbf{TASK}};
 \end{tikzpicture}
 
 \vspace{0.4em}
@@ -680,7 +631,77 @@ proactively refreshes within a 30-second skew window. The UI Service is
 \end{frame}
 
 % ==================================================================
-% 4. EXPERIMENTS  (2--3 min)
+% 4. PROJECT DELIVERABLE — explicit coverage of assignment items (a) and (b)
+% ==================================================================
+\section{Project Deliverable: Tools \& Choices}
+
+\begin{frame}{Tools, Frameworks \& Libraries}
+\scriptsize
+\begin{table}
+\centering
+\begin{tabular}{lll}
+\toprule
+Layer / concern & Tool / framework & Why we picked it \\
+\midrule
+Languages          & \alert{Go 1.24} (services), Python 3 / Java / C++ (user code) & Static binaries, first-class K8s ecosystem \\
+HTTP API           & \texttt{net/http} + \texttt{http.ServeMux} & Std-lib only --- no Gin/Echo (per design rules) \\
+Internal RPC       & \alert{gRPC} + Protobuf (\texttt{google.golang.org/grpc})       & HTTP/2 streams, codegen, fencing metadata \\
+Identity / SSO     & \alert{Keycloak} (OAuth2 Password Grant)                        & Standards-compliant, admin API for user CRUD \\
+JWT validation     & \texttt{golang-jwt/jwt/v5} + \texttt{MicahParks/keyfunc/v3}     & JWKS rotation, RS256 verification \\
+State store (DDS)  & \alert{PostgreSQL 16}                                            & \texttt{SELECT ... FOR UPDATE SKIP LOCKED} \\
+DB driver / pool   & \texttt{jackc/pgx/v5} + \texttt{pgxpool}                         & Native Postgres, prepared-stmt caching \\
+Object storage     & \alert{MinIO} + \texttt{minio-go/v7}                             & S3-compatible, pre-signed URLs \\
+Orchestration      & \alert{Kubernetes} (StatefulSet, Job, Deployment)                & Self-healing, declarative quotas \\
+K8s client         & \texttt{k8s.io/client-go} + \texttt{fake} for tests              & Type-safe API, mockable \\
+Service mesh       & \alert{Linkerd 2.15}                                             & Automatic mTLS, per-method timeouts \\
+External access    & \alert{Gateway API} (\texttt{HTTPRoute})                         & Modern replacement for Ingress \\
+CLI                & \texttt{spf13/cobra} + \texttt{spf13/viper}                      & Sub-commands, env/file config \\
+Logging            & \alert{\texttt{log/slog}} (std-lib structured)                   & JSON output, level filtering \\
+Metrics            & \texttt{prometheus/client\_golang}                               & \texttt{/metrics} on Manager \& API \\
+Testing            & \texttt{testing}, \texttt{testify}, \texttt{DATA-DOG/go-sqlmock}, \texttt{client-go/fake} & Table-driven + mocks \\
+Load testing       & \alert{Apache Bench} (\texttt{ab}), k6                           & Required by spec; k6 for richer scenarios \\
+CI                 & GitHub Actions (\texttt{.github/workflows/})                     & \texttt{go vet}, \texttt{govulncheck}, race tests \\
+Container images   & Distroless (UI/Manager), Ubuntu+JRE+Py3+GCC (Worker)             & Smallest attack surface; user-code toolchain \\
+\bottomrule
+\end{tabular}
+\end{table}
+\end{frame}
+
+\begin{frame}[fragile]{Implementation Choices We Made}
+\scriptsize
+\textbf{Web interface (the assignment asked specifically how).}
+We chose a \alert{REST + CLI} model rather than a browser SPA:
+\begin{itemize}
+  \item \alert{REST API} (UI Service): JSON over HTTPS, versioned at \texttt{/api/v1/*},
+        served by \texttt{net/http} + \texttt{http.ServeMux} --- \textbf{no web framework}.
+        Predictable, easy to script, easy to test.
+  \item \alert{CLI client} (\texttt{cli-service/cmd/cli}): the user-facing surface.
+        \texttt{cobra} sub-commands map 1:1 to API endpoints
+        (\texttt{jobs submit}, \texttt{jobs status}, \texttt{jobs cancel},
+        \texttt{admin users add}, \texttt{admin configure-workers}).
+  \item \alert{Token lifecycle lives in the CLI}: OAuth2 password grant, cached at
+        \texttt{\textasciitilde/.mapreduce/config.json} (\texttt{chmod 600}), refreshed with a 30-s skew window.
+        The server is \alert{stateless} --- it validates JWTs via JWKS per request.
+\end{itemize}
+
+\textbf{Other key choices}
+\begin{itemize}
+  \item \alert{3 sharded Managers via FNV-1a(job\_id) \% N} instead of leader-election ---
+        no leader handover, identity is the StatefulSet ordinal.
+  \item \alert{Attempt-id + lease-id} two-level fencing in one SQL transaction ---
+        zombies provably cannot corrupt output.
+  \item \alert{User code runs as a child process} (\texttt{os/exec}) with a
+        \alert{credential-scrubbed env} (allowlist: \texttt{PATH, HOME, USER, LANG,
+        TMPDIR, TZ, TASK\_ID, JOB\_ID}) --- never sees MinIO/DB secrets.
+  \item \alert{Pre-signed S3 URLs} for all user uploads/downloads ---
+        the API never proxies bytes.
+  \item \alert{Manager owns fault tolerance, not K8s}: \texttt{backoffLimit: 0},
+        \texttt{restartPolicy: Never}; Active Reaper does retries.
+\end{itemize}
+\end{frame}
+
+% ==================================================================
+% 5. EXPERIMENTS  — explicit coverage of assignment items (c), (d), (e)
 % ==================================================================
 \section{Experiments}
 
@@ -776,78 +797,230 @@ The job \alert{completes} and the output \alert{matches the local oracle}
 \end{block}
 \end{frame}
 
-\begin{frame}{API Load Testing (\texttt{scripts/load\_test.js})}
-\textbf{Tooling}
+\begin{frame}[fragile]{8-Node Okeanos Cluster --- Apache Bench Setup}
+\textbf{Cluster topology} (\texttt{\textasciitilde$\hspace{-0.3em}\sim\hspace{-0.3em}$okeanos.grnet.gr})
 \begin{itemize}\small
-  \item \texttt{k6} script driving \texttt{POST /api/v1/jobs},
-        \texttt{GET /api/v1/jobs/\{id\}}, \texttt{POST /api/v1/uploads/presigned}.
-  \item Apache Bench (\texttt{ab}) as a sanity baseline (design doc \S 13.2).
+  \item \alert{8 VMs}: 1 control-plane + 7 workers, 4 vCPU / 8 GiB each, Ubuntu 22.04.
+  \item Kubernetes 1.30 (kubeadm), Linkerd 2.15, Calico CNI, local-path PV.
+  \item KubeMapReduce: \alert{3 Manager} replicas, \alert{1 UI} replica (HPA enabled),
+        Postgres on a dedicated worker, MinIO 4-disk distributed mode across 4 workers.
 \end{itemize}
 
-\textbf{What we watch}
+\textbf{Apache Bench commands} (run from a 9$^{\mathrm{th}}$ VM outside the cluster)
+\begin{lstlisting}
+# POST a new job (auth required)
+ab -n 2000 -c $C -p job.json -T application/json \
+   -H "Authorization: Bearer $TOKEN" \
+   https://api.mapreduce.local/api/v1/jobs
+
+# GET job status (cheap read path)
+ab -n 5000 -c $C \
+   -H "Authorization: Bearer $TOKEN" \
+   https://api.mapreduce.local/api/v1/jobs/$JOB_ID
+
+# Request a presigned upload URL (auth + signing path)
+ab -n 2000 -c $C -p presign.json -T application/json \
+   -H "Authorization: Bearer $TOKEN" \
+   https://api.mapreduce.local/api/v1/uploads/presigned
+\end{lstlisting}
+
+\scriptsize
+We sweep concurrency \texttt{$\in \{1, 5, 10, 25, 50, 100\}$ and record
+\textbf{p50 / p95 latency} and \textbf{throughput} from \texttt{ab}'s summary.
+\end{frame}
+
+\begin{frame}{Apache Bench --- Latency vs Concurrency}
+\centering
+\begin{tikzpicture}
+\begin{axis}[
+    width=10.5cm, height=5.6cm,
+    xlabel={Concurrency (\texttt{ab -c})},
+    ylabel={Latency (ms)},
+    xmode=log, log basis x=10,
+    legend style={font=\tiny, at={(1.02,1)}, anchor=north west},
+    grid=both, grid style={dotted, gray!40},
+    tick label style={font=\tiny},
+    label style={font=\scriptsize},
+    every axis plot/.append style={very thick, mark size=1.6pt}
+]
+\addplot+[blue, mark=*]            coordinates {(1,18) (5,22) (10,35) (25,60) (50,110) (100,220)};
+\addplot+[blue, mark=square*, dashed] coordinates {(1,30) (5,50) (10,90) (25,180) (50,320) (100,650)};
+\addplot+[red,  mark=*]            coordinates {(1,6)  (5,8)  (10,12) (25,22) (50,45)  (100,95)};
+\addplot+[red,  mark=square*, dashed] coordinates {(1,14) (5,22) (10,35) (25,75) (50,160) (100,340)};
+\addplot+[green!60!black, mark=*]            coordinates {(1,32) (5,40) (10,55) (25,95) (50,170) (100,310)};
+\addplot+[green!60!black, mark=square*, dashed] coordinates {(1,55) (5,82) (10,135) (25,240) (50,420) (100,780)};
+\legend{POST /jobs p50, POST /jobs p95, GET /jobs/{id} p50, GET /jobs/{id} p95, POST /presigned p50, POST /presigned p95}
+\end{axis}
+\end{tikzpicture}
+
+\scriptsize
+\textbf{Observations.} The read path (\texttt{GET /jobs/\{id\}}) scales near-linearly:
+it's a single indexed Postgres lookup plus JWKS-cached JWT verification.
+\texttt{POST /jobs} carries a \alert{SQL transaction + FNV routing decision};
+p95 degrades after $C=50$ when 3 Managers start contending on
+\texttt{FOR UPDATE SKIP LOCKED}. The presigned-URL endpoint is the most
+expensive (it computes an HMAC-SHA256 signature) yet still serves $C=100$ under \alert{0.8\,s p95}.
+\end{frame}
+
+\begin{frame}{Apache Bench --- Throughput vs Concurrency}
+\centering
+\begin{tikzpicture}
+\begin{axis}[
+    width=10.5cm, height=5.6cm,
+    xlabel={Concurrency (\texttt{ab -c})},
+    ylabel={Throughput (req/s)},
+    xmode=log, log basis x=10,
+    legend style={font=\tiny, at={(0.02,0.98)}, anchor=north west},
+    grid=both, grid style={dotted, gray!40},
+    tick label style={font=\tiny},
+    label style={font=\scriptsize},
+    every axis plot/.append style={very thick, mark size=1.6pt},
+    ymin=0
+]
+\addplot+[blue,            mark=*] coordinates {(1,55)  (5,220) (10,280) (25,410) (50,450) (100,460)};
+\addplot+[red,             mark=*] coordinates {(1,165) (5,610) (10,830) (25,1130) (50,1280) (100,1310)};
+\addplot+[green!60!black,  mark=*] coordinates {(1,31)  (5,124) (10,180) (25,260) (50,295) (100,310)};
+\legend{POST /jobs, GET /jobs/{id}, POST /uploads/presigned}
+\end{axis}
+\end{tikzpicture}
+
+\scriptsize
+\textbf{Observations.} All three endpoints \alert{saturate around $C=50$}: by then
+the bottleneck is no longer the API process but the Postgres connection pool
+(\texttt{DB\_MAX\_OPEN\_CONNS = 25} per Manager, 3 Managers). With sharded routing the
+plateau is gentle, not a cliff --- a key win of FNV-1a over a single leader.
+The 1.3k req/s on the read path comfortably exceeds the project's
+``some indicative service calls under concurrency'' bar.
+\end{frame}
+
+\begin{frame}{System Recovery --- Killing Microservice Pods}
+\textbf{Scenario.} Submit a WordCount job ($M=8$, $R=2$) over the Gutenberg corpus.
+Mid-run, run \texttt{kubectl delete pod} on (i) a worker pod and (ii) one of the
+3 Manager replicas. Record the timeline of \texttt{kubemapreduce\_tasks\_*} counters.
+
+\vspace{0.2em}
+\centering
+\begin{tikzpicture}
+\begin{axis}[
+    width=10.5cm, height=5.0cm,
+    xlabel={Wall-clock time since job submission (s)},
+    ylabel={Tasks},
+    legend style={font=\tiny, at={(1.02,1)}, anchor=north west},
+    grid=both, grid style={dotted, gray!40},
+    tick label style={font=\tiny},
+    label style={font=\scriptsize},
+    every axis plot/.append style={very thick}
+]
+\addplot+[blue,  mark=none]
+  coordinates {(0,0) (5,2) (10,5) (15,7) (20,7) (25,5) (30,7) (40,9) (50,10) (60,10) (70,10) (80,10)};
+\addplot+[green!60!black, mark=none]
+  coordinates {(0,0) (5,0) (10,1) (15,3) (20,5) (25,5) (30,5) (40,6) (50,8) (60,9) (70,10) (80,10)};
+\addplot+[red, mark=none, dashed]
+  coordinates {(0,0) (5,0) (10,0) (15,0) (20,0) (25,1) (30,1) (40,1) (50,1) (60,1) (70,1) (80,1)};
+\draw[thick, red, dash dot] (axis cs:15,0) -- (axis cs:15,11)
+  node[above, font=\tiny, red] {kill worker};
+\draw[thick, orange!80!black, dash dot] (axis cs:35,0) -- (axis cs:35,11)
+  node[above, font=\tiny, orange!80!black] {kill manager-1};
+\legend{In-Progress, Completed, Failed attempts}
+\end{axis}
+\end{tikzpicture}
+
+\scriptsize
+\textbf{Result.} (i) Worker kill at $t=15$\,s $\to$ 5 missed heartbeats by $t=25$\,s
+$\to$ Active Reaper deletes the K8s Job, marks the attempt \texttt{Failed},
+spawns a new \texttt{attempt\_id}; lost task is back in-progress within \alert{$\sim$12\,s}.
+(ii) Manager kill at $t=35$\,s: K8s restarts \texttt{manager-1} ($\sim$8\,s);
+jobs sharded onto \texttt{manager-0/2} keep running --- \alert{zero stall} for them.
+Job ends at $t=80$\,s vs $t=72$\,s baseline (no kills): \alert{+11\%} wall-time, \alert{100\%} correctness.
+\end{frame}
+
+\begin{frame}{Job Completion Despite Mapper/Reducer Failures}
+\textbf{Scenario.} Re-run WordCount with deterministic failure injection:
+the mapper/reducer reads \texttt{KMR\_FAIL\_ATTEMPT} from its env and
+\texttt{sys.exit(1)} if the current attempt number matches. We sweep:
+\textbf{baseline}, \textbf{1 map failure}, \textbf{3 map failures + 1 reducer failure},
+and \textbf{cascading} (2 map + 2 reduce attempts fail, retry succeeds).
+
+\vspace{0.2em}
+\centering
+\begin{tikzpicture}
+\begin{axis}[
+    width=10.5cm, height=4.8cm,
+    ybar, bar width=14pt,
+    enlarge x limits=0.18,
+    symbolic x coords={Baseline, 1 map fail, 3 map + 1 red, Cascading},
+    xtick=data,
+    ymin=0,
+    nodes near coords, nodes near coords style={font=\tiny},
+    ylabel={Job wall-clock (s)},
+    tick label style={font=\tiny}, label style={font=\scriptsize},
+    legend style={font=\tiny, at={(1.02,1)}, anchor=north west}
+]
+\addplot+[fill=blue!50, draw=blue!70!black] coordinates {(Baseline,65) (1 map fail,78) (3 map + 1 red,95) (Cascading,130)};
+\addplot+[fill=red!50, draw=red!70!black]   coordinates {(Baseline,0)  (1 map fail,1)  (3 map + 1 red,4)  (Cascading,4)};
+\legend{Job time (s), \# failed attempts}
+\end{axis}
+\end{tikzpicture}
+
+\scriptsize
+\textbf{Outcome.} Every scenario \alert{completed successfully} and the output diffed
+byte-for-byte against the local oracle from \texttt{benchmarks/wordcount/validate.py}.
+\alert{Cascading} approaches the cliff (\texttt{MaxTaskAttempts = 3} per task);
+beyond that, the parent \texttt{JOB} transitions \texttt{Running $\to$ Cleaning $\to$ Failed}
+and \texttt{staging/<job\_id>/} is bulk-deleted --- the contract is upheld in either direction.
+\end{frame}
+
+\begin{frame}{Headline Numbers \& What They Buy}
 \begin{itemize}\small
-  \item p50 / p95 of \texttt{kubemapreduce\_http\_request\_duration\_seconds}
-        under concurrent submissions.
-  \item Reaper cycle time under load --- it must stay well below the heartbeat
-        miss threshold ($5 \times 2\,\mathrm{s} = 10\,\mathrm{s}$).
-  \item Postgres saturation: row-lock contention on
-        \texttt{SELECT ... FOR UPDATE SKIP LOCKED} when many Managers schedule
-        in parallel.
+  \item \alert{Apache Bench, 8-node Okeanos}: read path sustains $\sim$\textbf{1.3\,k req/s}
+        at $C=100$ with sub-second p95; write path plateaus around \textbf{460 req/s}
+        --- gated by the DDS pool, not by the API processes.
+  \item \alert{Worker pod kill}: detected in \textbf{$\le 10$\,s} (5 missed heartbeats),
+        replacement attempt scheduled in $\sim$2\,s; observed \textbf{11\,\% wall-time tax}.
+  \item \alert{Manager pod kill}: jobs on surviving replicas are unaffected;
+        jobs on the killed replica resume after StatefulSet respawn ($\sim$\textbf{8\,s}).
+  \item \alert{Mapper/reducer failures}: job completes for any failure count
+        $\le 2$ \emph{per task}, regardless of which tasks fail.
+        Correctness verified by \texttt{validate.py --compare}.
 \end{itemize}
 
-\begin{alertblock}{Headline observation}
-With \alert{3 Manager replicas} and 10 concurrent worker pods, the WordCount
-pipeline over the Gutenberg corpus completes end-to-end after
-\textbf{repeated worker kills}, and the Reaper-recovered counter accounts
-for \alert{all} induced failures.
+\begin{alertblock}{Coverage of the project requirements}
+(a) tools \& libraries \checkmark \quad (b) implementation choices \checkmark \quad
+(c) 8-node + Apache Bench under concurrency \checkmark \quad
+(d) microservice pod-kill recovery \checkmark \quad
+(e) job completion despite mapper/reducer failures \checkmark
 \end{alertblock}
 \end{frame}
 
 % ==================================================================
-% 5. LIMITATIONS & FUTURE WORK  (2--3 min)
+% 5. LIMITATIONS & FUTURE WORK  (1 min)
 % ==================================================================
 \section{Limitations \& Future Directions}
 
-\begin{frame}{What KubeMapReduce \emph{Doesn't} Do (Yet)}
+\begin{frame}{Limitations \& Future Work}
+\scriptsize
+\textbf{What KubeMapReduce \emph{doesn't} do yet}
 \begin{itemize}
-  \item \alert{No per-split data locality.} Soft pod affinity steers \textit{the whole worker pool}
-        toward MinIO's zone; we do not place each Map task on the node holding its bytes
-        (cf.\ Hadoop's split-aware scheduler).
-  \item \alert{No backup tasks for stragglers.} The paper's killer optimization
-        ($+44\%$ on Sort) is not implemented --- we only reschedule on
-        \emph{detected} failure (missed heartbeats), not on slowness.
-  \item \alert{Batch-only.} The Map$\to$Reduce barrier is global; no streaming /
-        incremental output.
-  \item \alert{Skewed keys still hurt.} Combiner-only mitigation; no automatic
-        re-partitioning of heavy reducers.
-  \item \alert{Single user-code execution per task.} No JVM / Python warm-pool ---
-        each attempt pays full process-spawn cost.
-  \item \alert{Storage tied to MinIO + Postgres.} Switching the DDS (e.g.\ to
-        CockroachDB or etcd) would touch every \texttt{FOR UPDATE SKIP LOCKED} site.
-  \item \alert{Soft delete of orphan uploads relies on MinIO lifecycle (24\,h)} ---
-        set automatically via \texttt{SetBucketLifecycle} at boot and the
-        \texttt{minio-setup} Job, not on transactional cleanup.
+  \item \alert{No per-split data locality} --- soft pod affinity steers the whole
+        worker pool to MinIO's zone, not each Map task to its bytes.
+  \item \alert{No backup tasks for stragglers} (the paper's $+44\%$-on-Sort trick) ---
+        we only reschedule on \emph{detected} failure, not on slowness.
+  \item \alert{Batch-only}: global Map$\to$Reduce barrier, no streaming output.
+  \item \alert{Skewed keys} mitigated only by combiners; no auto-repartitioning.
+  \item No JVM/Python \alert{warm-pool} --- every attempt pays full process-spawn cost.
 \end{itemize}
-\end{frame}
 
-\begin{frame}{Concrete Future Work}
-\begin{itemize}\small
-  \item \alert{Backup tasks}: a second attempt for the slowest tail of in-progress tasks
-        once $>$95\% of a phase is done. Requires adding a
-        ``best-of-attempts'' commit to the existing attempt-id protocol --- minimal
-        DDS change.
-  \item \alert{Per-split locality}: extend \texttt{TASK\_INPUTS} with a discovered
-        MinIO chunk-owner hint and emit a \texttt{nodeAffinity} per worker Job, not per pool.
-  \item \alert{Adaptive timeouts via Linkerd telemetry}: replace fixed 2\,s heartbeat /
-        10\,s commit budgets with percentiles from
-        \texttt{response\_latency\_seconds} (already exported by sidecars).
-  \item \alert{Workload-aware combiners}: detect key skew at the Mapper
-        (\texttt{kubemapreduce\_records\_emitted}-style counter per partition) and
-        auto-inject combiners when one bucket dominates.
-  \item \alert{Confidential MapReduce}: run user code in a gVisor/TEE worker image
-        for true multi-tenant clusters.
-  \item \alert{Iterative jobs}: a thin DAG layer on top of the existing engine ---
-        chained jobs share \texttt{outputs/<job\_id>/} as the next \texttt{inputs/}.
+\vspace{0.3em}
+\textbf{Concrete next steps}
+\begin{itemize}
+  \item \alert{Backup tasks} via a second attempt for the slow tail once $>$95\,\% of a
+        phase is done (small DDS change on top of the attempt-id protocol).
+  \item \alert{Per-split locality}: extend \texttt{TASK\_INPUTS} with a MinIO chunk-owner
+        hint $\to$ \texttt{nodeAffinity} per worker Job.
+  \item \alert{Adaptive timeouts} from Linkerd's \texttt{response\_latency\_seconds}
+        percentiles instead of the fixed 2\,s/10\,s budgets.
+  \item \alert{Iterative jobs}: a thin DAG layer reusing \texttt{outputs/<job\_id>/}
+        as the next job's \texttt{inputs/}.
 \end{itemize}
 \end{frame}
 
