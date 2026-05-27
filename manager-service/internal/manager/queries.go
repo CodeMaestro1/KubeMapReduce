@@ -240,6 +240,18 @@ const QuerySelectStaleTasks = `
 	WHERE t.status = 'In-Progress' AND a.status = 'Running' AND j.replica_index = $1
 	FOR UPDATE OF t SKIP LOCKED`
 
+// QueryFailRunningAttemptsByReplica fails all Running attempts whose tasks belong
+// to this replica. Must be called before QueryResetTasksForReplica during recovery
+// so old attempts do not remain Running indefinitely and leak quota.
+const QueryFailRunningAttemptsByReplica = `
+	UPDATE TASK_ATTEMPTS a
+	SET status = 'Failed', end_time = NOW()
+	FROM TASKS t
+	JOIN JOBS j ON t.job_id = j.job_id
+	WHERE a.task_id = t.task_id
+	  AND a.status = 'Running'
+	  AND j.replica_index = $1`
+
 // QueryResetTasksForReplica transitions all In-Progress tasks for a replica back to Idle.
 // Used during Manager recovery to allow workers to pick up tasks after a crash.
 const QueryResetTasksForReplica = `

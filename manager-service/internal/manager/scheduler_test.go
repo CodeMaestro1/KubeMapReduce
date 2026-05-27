@@ -822,6 +822,11 @@ func TestScheduler_Recover_ResetsTasksAndSchedulesAttempts(t *testing.T) {
 
 	jobID := uuid.New().String()
 
+	// 0. Fail running attempts for this replica
+	mock.ExpectExec(regexp.QuoteMeta(QueryFailRunningAttemptsByReplica)).
+		WithArgs(0).
+		WillReturnResult(sqlmock.NewResult(0, 2))
+
 	// 1. Reset tasks for this replica
 	mock.ExpectExec(regexp.QuoteMeta(QueryResetTasksForReplica)).
 		WithArgs(0).
@@ -845,6 +850,11 @@ func TestScheduler_Recover_NoRunningJobs(t *testing.T) {
 	rec := &recordingOrchestrator{}
 	db, mock, scheduler := setupMockDBWithOrchestrator(t, rec)
 	defer db.Close()
+
+	// 0. Fail running attempts for this replica
+	mock.ExpectExec(regexp.QuoteMeta(QueryFailRunningAttemptsByReplica)).
+		WithArgs(0).
+		WillReturnResult(sqlmock.NewResult(0, 0))
 
 	// 1. Reset tasks for this replica
 	mock.ExpectExec(regexp.QuoteMeta(QueryResetTasksForReplica)).

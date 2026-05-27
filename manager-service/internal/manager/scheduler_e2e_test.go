@@ -276,6 +276,11 @@ func TestE2E_ManagerRestartRecovery(t *testing.T) {
 
 	jobID := uuid.New().String()
 
+	// 0. Fail running attempts for this replica
+	mock.ExpectExec(regexp.QuoteMeta(QueryFailRunningAttemptsByReplica)).
+		WithArgs(s.replicaIndex).
+		WillReturnResult(sqlmock.NewResult(0, 2))
+
 	// 1. Reset tasks to idle
 	mock.ExpectExec(regexp.QuoteMeta(QueryResetTasksForReplica)).
 		WithArgs(s.replicaIndex).
