@@ -63,7 +63,10 @@ spec:
             # - name: DATABASE_READONLY_DSN
             #   value: "postgres://$(POSTGRES_USER):$(POSTGRES_PASSWORD)@postgres-ro.mapreduce.svc.cluster.local:5432/$(POSTGRES_DB)?sslmode=require"
             - name: MINIO_ENDPOINT
-              value: "34.88.90.202:9000"
+              valueFrom:
+                secretKeyRef:
+                  name: minio-creds
+                  key: S3_ENDPOINT
             - name: MINIO_ACCESS_KEY
               valueFrom:
                 secretKeyRef:
@@ -91,8 +94,6 @@ spec:
                   key: MANAGER_INTERNAL_API_KEY
             - name: MANAGER_ADDR
               value: "http://manager.mapreduce.svc.cluster.local:8081"
-            - name: KEYCLOAK_ISSUER
-              value: "http://34.88.202.54/realms/mapreduce"
           livenessProbe:
             httpGet:
               path: /healthz

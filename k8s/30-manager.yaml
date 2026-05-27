@@ -23,7 +23,7 @@ data:
   # Issuer must match KC_HOSTNAME_URL in 25-keycloak.yaml and the URL
   # the CLI uses to reach Keycloak. Override this per environment.
   # Production: https://auth.mapreduce.local/realms/mapreduce
-  KEYCLOAK_ISSUER: "http://34.88.202.54/realms/mapreduce"
+  KEYCLOAK_ISSUER: "https://auth.mapreduce.local/realms/mapreduce"
   STATEFULSET_REPLICAS: "3"
   HEARTBEAT_INTERVAL_SEC: "2"
   MAX_MISSED_HEARTBEATS: "5"
