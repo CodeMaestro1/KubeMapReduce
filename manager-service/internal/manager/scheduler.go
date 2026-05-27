@@ -200,6 +200,12 @@ func (s *Scheduler) authoritativeManagerAddr(jobID string) string {
 // orchestrator to ensure a physical worker process exists for each. This ensures
 // continuity across Manager crashes without losing progress.
 func (s *Scheduler) Recover(ctx context.Context) error {
+	// 0. Fail all Running attempts for this replica first so old attempt
+	// records do not leak into quota accounting after tasks are reset to Idle.
+	if _, err := s.db.ExecContext(ctx, QueryFailRunningAttemptsByReplica, s.replicaIndex); err != nil {
+		return fmt.Errorf("failed to fail running attempts for replica: %w", err)
+	}
+
 	// 1. Reset all tasks for this replica to Idle so workers can pick them up.
 	res, err := s.db.ExecContext(ctx, QueryResetTasksForReplica, s.replicaIndex)
 	if err != nil {
