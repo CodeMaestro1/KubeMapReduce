@@ -687,14 +687,6 @@ func TestScheduler_FailTask_RetryableSuccess(t *testing.T) {
 		WithArgs(attemptID).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
-	mock.ExpectExec(regexp.QuoteMeta(QueryUpdateTaskInProgress)).
-		WithArgs(sqlmock.AnyArg(), taskID).
-		WillReturnResult(sqlmock.NewResult(1, 1))
-
-	mock.ExpectExec(regexp.QuoteMeta(QueryInsertAttempt)).
-		WithArgs(sqlmock.AnyArg(), taskID, "system-recovery", sqlmock.AnyArg(), sqlmock.AnyArg()).
-		WillReturnResult(sqlmock.NewResult(1, 1))
-
 	mock.ExpectCommit()
 
 	err := scheduler.FailTask(context.Background(), taskID, attemptID, leaseID, "worker exited")
@@ -839,20 +831,6 @@ func TestScheduler_Recover_ResetsTasksAndSchedulesAttempts(t *testing.T) {
 	mock.ExpectQuery("SELECT job_id FROM JOBS WHERE status = 'Running' AND replica_index = \\$1").
 		WithArgs(0).
 		WillReturnRows(sqlmock.NewRows([]string{"job_id"}).AddRow(jobID))
-
-	// Recover now drives scheduling via GetNextTask and exits when no idle work exists.
-	mock.ExpectBegin()
-	mock.ExpectQuery(regexp.QuoteMeta(QueryCountFailedTasks)).
-		WithArgs(jobID).
-		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
-	expectReplicaCheck(mock, jobID, 0)
-	mock.ExpectQuery(regexp.QuoteMeta(QuerySelectIdleTask)).
-		WithArgs(jobID, 0, "Map").
-		WillReturnError(sql.ErrNoRows)
-	mock.ExpectQuery(regexp.QuoteMeta(QueryCountPendingTasksByType)).
-		WithArgs(jobID, "Map").
-		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(1))
-	mock.ExpectRollback()
 
 	if err := scheduler.Recover(context.Background()); err != nil {
 		t.Fatalf("unexpected error: %v", err)

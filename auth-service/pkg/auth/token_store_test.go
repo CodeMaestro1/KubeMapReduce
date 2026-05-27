@@ -56,10 +56,11 @@ func TestSaveAndLoadTokens(t *testing.T) {
 	}()
 
 	original := &StoredTokens{
-		AccessToken:  "acc-tok",
-		RefreshToken: "ref-tok",
-		ExpiresAt:    time.Now().Unix() + 300,
-		ServerURL:    "http://localhost:8081",
+		AccessToken:     "acc-tok",
+		RefreshToken:    "ref-tok",
+		ExpiresAt:       time.Now().Unix() + 300,
+		ServerURL:       "http://localhost:8081",
+		KeycloakBaseURL: "http://keycloak:8080",
 	}
 
 	if err := SaveTokens(original); err != nil {
@@ -174,10 +175,11 @@ func TestLoadTokens_InvalidJSON(t *testing.T) {
 
 func TestStoredTokens_JSONRoundTrip(t *testing.T) {
 	original := StoredTokens{
-		AccessToken:  "at",
-		RefreshToken: "rt",
-		ExpiresAt:    1234567890,
-		ServerURL:    "http://example.com",
+		AccessToken:     "at",
+		RefreshToken:    "rt",
+		ExpiresAt:       1234567890,
+		ServerURL:       "http://example.com",
+		KeycloakBaseURL: "http://keycloak:8080",
 	}
 
 	data, err := json.Marshal(original)

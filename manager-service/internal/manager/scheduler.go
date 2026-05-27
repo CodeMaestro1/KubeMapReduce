@@ -226,68 +226,27 @@ func (s *Scheduler) Recover(ctx context.Context) error {
 	}
 
 	for _, jobID := range jobIDs {
-		s.spawnSchedulableWorkers(ctx, jobID)
-	}
-
-	return nil
-}
-
-// prepareRetryAttemptTx creates a fresh attempt and lease for a retryable task and
-// atomically rebinds TASKS.current_attempt_id to the new attempt within the same transaction.
-func (s *Scheduler) prepareRetryAttemptTx(ctx context.Context, tx *sql.Tx, taskID string, workerID string) (string, error) {
-	attemptID := uuid.New()
-	leaseID := uuid.New()
-	res, err := tx.ExecContext(ctx, QueryUpdateTaskInProgress, attemptID, taskID)
-	if err != nil {
-		return "", err
-	}
-	if n, _ := res.RowsAffected(); n == 0 {
-		return "", fmt.Errorf("task %s: %w", taskID, ErrInvalidStateTransition)
-	}
-	_, err = tx.ExecContext(ctx, QueryInsertAttempt,
-		attemptID,
-		taskID,
-		workerID,
-		leaseID,
-		s.leaseTTL,
-	)
-	if err != nil {
-		return "", err
-	}
-	return attemptID.String(), nil
-}
-
-func (s *Scheduler) spawnWorkerAttempt(ctx context.Context, taskID string, jobID string, attemptID string) {
-	spawnCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-	defer cancel()
-	if err := s.orchestrator.SpawnWorker(spawnCtx, taskID, jobID, attemptID, s.authoritativeManagerAddr(jobID)); err != nil {
-		slog.ErrorContext(ctx, "failed to spawn worker attempt",
-			slog.String("task_id", taskID),
-			slog.String("job_id", jobID),
-			slog.String("attempt_id", attemptID),
-			slog.Any("err", err),
-		)
-	}
-}
-
-func (s *Scheduler) spawnSchedulableWorkers(ctx context.Context, jobID string) {
-	for {
-		task, err := s.GetNextTask(ctx, jobID, "system-scheduler")
-		if err == nil {
-			s.spawnWorkerAttempt(ctx, task.ID, task.JobID, task.ActiveAttemptID)
-			continue
-		}
-		switch {
-		case errors.Is(err, ErrNoIdleTasks), errors.Is(err, ErrJobCompleted), errors.Is(err, ErrQuotaExceeded):
-			return
-		default:
-			slog.ErrorContext(ctx, "failed to schedule worker attempt",
+		spawnCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		// Delete any stale worker pool before recreating — when the Manager
+		// restarts mid-job, old workers lose their gRPC streams and exit,
+		// but the K8s Job survives and EnsureWorkerPool returns AlreadyExists.
+		if err := s.orchestrator.CancelJob(spawnCtx, jobID); err != nil {
+			slog.WarnContext(ctx, "failed to cancel stale worker jobs during recovery",
 				slog.String("job_id", jobID),
 				slog.Any("err", err),
 			)
-			return
+		}
+		err := s.orchestrator.EnsureWorkerPool(spawnCtx, jobID, 4, s.managerAddr)
+		cancel()
+		if err != nil {
+			slog.ErrorContext(ctx, "failed to ensure worker pool during recovery",
+				slog.String("job_id", jobID),
+				slog.Any("err", err),
+			)
 		}
 	}
+
+	return nil
 }
 
 // GetNextTask atomically selects and assigns the next schedulable task for a job.
@@ -806,7 +765,20 @@ func (s *Scheduler) ScheduleJob(ctx context.Context, req ScheduleJobRequest) err
 		return err
 	}
 
-	s.spawnSchedulableWorkers(ctx, req.JobID)
+	// After tx.Commit(), ensure worker pool is running.
+	slog.InfoContext(ctx, "ScheduleJob: triggering worker pool", slog.String("job_id", req.JobID))
+	// Using a default of 4 workers or MTasks if smaller.
+	numWorkers := 4
+	if req.MTasks < numWorkers {
+		numWorkers = req.MTasks
+	}
+	spawnCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if err := s.orchestrator.EnsureWorkerPool(spawnCtx, req.JobID, numWorkers, s.managerAddr); err != nil {
+		slog.ErrorContext(ctx, "failed to ensure worker pool",
+			slog.String("job_id", req.JobID),
+			slog.Any("err", err))
+	}
 
 	return nil
 }
@@ -1230,15 +1202,8 @@ func (s *Scheduler) FailTask(ctx context.Context, taskID string, attemptID strin
 	}
 
 	jobID := lockedJobID
-	retryAttemptID := ""
-
 	if newState == "Failed" {
 		if err := s.updateJobStatusTx(ctx, tx, jobID, "Cleaning"); err != nil {
-			return err
-		}
-	} else {
-		retryAttemptID, err = s.prepareRetryAttemptTx(ctx, tx, taskID, "system-recovery")
-		if err != nil {
 			return err
 		}
 	}
@@ -1271,8 +1236,6 @@ func (s *Scheduler) FailTask(ctx context.Context, taskID string, attemptID strin
 
 	if newState == "Failed" {
 		s.enqueueCleanup(jobID, "Failed")
-	} else if newState == "Idle" {
-		s.spawnWorkerAttempt(ctx, taskID, jobID, retryAttemptID)
 	}
 
 	return nil
@@ -1395,13 +1358,29 @@ func (s *Scheduler) FailStaleTasks(ctx context.Context) (int, error) {
 		s.enqueueCleanup(jobID, "Failed")
 	}
 
-	// Spawn new attempts for jobs that have tasks to respawn.
+	// Ensure worker pool for jobs that have tasks to respawn.
 	uniqueRespawnJobs := make(map[string]struct{})
 	for _, rec := range respawnTasks {
 		uniqueRespawnJobs[rec.jobID] = struct{}{}
 	}
 	for jobID := range uniqueRespawnJobs {
-		s.spawnSchedulableWorkers(ctx, jobID)
+		spawnCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		// Delete any stale worker pool Job first — when a pod is force-deleted
+		// the K8s Job survives and EnsureWorkerPool treats AlreadyExists as
+		// success, leaving us with zero running pods and no recovery.
+		if err := s.orchestrator.CancelJob(spawnCtx, jobID); err != nil {
+			slog.WarnContext(ctx, "failed to cancel stale worker jobs before reaper respawn",
+				slog.String("job_id", jobID),
+				slog.Any("err", err),
+			)
+		}
+		if err := s.orchestrator.EnsureWorkerPool(spawnCtx, jobID, 4, s.managerAddr); err != nil {
+			slog.ErrorContext(ctx, "failed to ensure worker pool during reaper respawn",
+				slog.String("job_id", jobID),
+				slog.Any("err", err),
+			)
+		}
+		cancel()
 	}
 
 	return recoveredCount, nil

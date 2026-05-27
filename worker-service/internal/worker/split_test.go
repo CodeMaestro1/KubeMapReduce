@@ -122,21 +122,23 @@ func TestExtractSplitLines_AtLineBoundaryDoesNotSkip(t *testing.T) {
 }
 
 func TestReadSplitRecords_ExtendsPastChunkUntilNewline(t *testing.T) {
-	store := newChunkingStorage(int(splitReadChunkSize))
+	store := newMockStorage()
 	largeValue := strings.Repeat("x", int(splitReadChunkSize)+128)
 	record := fmt.Sprintf(`{"key":"k","value":"%s"}`+"\n", largeValue)
 	store.put("mapreduce-inputs", "big.jsonl", []byte(record))
 
-	lines, err := readSplitRecords(context.Background(), store, "s3://mapreduce-inputs/big.jsonl", 0, splitReadChunkSize/2, "")
+	rc, err := readSplitRecordsStreaming(context.Background(), store, "s3://mapreduce-inputs/big.jsonl", 0, 0, "")
 	if err != nil {
-		t.Fatalf("readSplitRecords: %v", err)
+		t.Fatalf("readSplitRecordsStreaming: %v", err)
 	}
-	if len(lines) != 1 {
-		t.Fatalf("want 1 line, got %d", len(lines))
+	defer rc.Close()
+
+	data, err := io.ReadAll(rc)
+	if err != nil {
+		t.Fatalf("read from stream: %v", err)
 	}
-	want := strings.TrimSuffix(record, "\n")
-	if string(lines[0]) != want {
-		t.Fatalf("truncated line: got %d bytes, want %d", len(lines[0]), len(want))
+	if string(data) != record {
+		t.Fatalf("truncated line: got %d bytes, want %d", len(data), len(record))
 	}
 }
 

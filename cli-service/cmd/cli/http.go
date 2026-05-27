@@ -89,10 +89,15 @@ func getValidToken() (token string, serverURL string) {
 	ctx, cancel := cliRequestContext()
 	defer cancel()
 
+	// Use stored Keycloak URL if available (saved during login), falling back to env var.
+	kcBaseURL := tokens.KeycloakBaseURL
+	if kcBaseURL == "" {
+		kcBaseURL = keycloakBaseURL()
+	}
 	tokenResp, err := refreshStoredTokens(
 		ctx,
 		cliHTTPClient,
-		keycloakBaseURL(),
+		kcBaseURL,
 		keycloakRealm(),
 		keycloakClientID(),
 		tokens.RefreshToken,
@@ -105,6 +110,7 @@ func getValidToken() (token string, serverURL string) {
 	tokens.RefreshToken = tokenResp.RefreshToken
 	tokens.ExpiresAt = time.Now().Unix() + int64(tokenResp.ExpiresIn)
 	tokens.ServerURL = resolvedServerURL
+	tokens.KeycloakBaseURL = kcBaseURL
 
 	if err := saveStoredTokens(tokens); err != nil {
 		log.Fatalf("failed to update credentials: %v", err)
@@ -117,13 +123,11 @@ func getValidToken() (token string, serverURL string) {
 
 // doAuthRequest executes an authenticated HTTP request using the provided token.
 //
-// It provides a high-level wrapper around [doAuthRequestWithContext], using a
-// default timeout context.
+// It provides a high-level wrapper around [doAuthRequestWithContext], using
+// context.Background so the caller can read resp.Body without the context
+// being canceled early. Request-level timeout is enforced by cliHTTPClient.Timeout.
 func doAuthRequest(method, reqURL, token string, body []byte) (*http.Response, error) {
-	ctx, cancel := cliRequestContext()
-	defer cancel()
-
-	return doAuthRequestWithContext(ctx, method, reqURL, token, body)
+	return doAuthRequestWithContext(context.Background(), method, reqURL, token, body)
 }
 
 // doAuthRequestWithContext executes an authenticated HTTP request with a specific context.

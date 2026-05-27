@@ -15,10 +15,11 @@ import (
 // invocations. The refresh token is used to obtain new access tokens when the
 // current one expires, reducing the frequency of interactive logins.
 type StoredTokens struct {
-	AccessToken  string `json:"access_token"`
-	RefreshToken string `json:"refresh_token"`
-	ExpiresAt    int64  `json:"expires_at"`
-	ServerURL    string `json:"server_url"`
+	AccessToken     string `json:"access_token"`
+	RefreshToken    string `json:"refresh_token"`
+	ExpiresAt       int64  `json:"expires_at"`
+	ServerURL       string `json:"server_url"`
+	KeycloakBaseURL string `json:"keycloak_base_url,omitempty"`
 }
 
 // IsAccessExpired checks if the access token has expired.

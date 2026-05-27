@@ -286,19 +286,6 @@ func TestE2E_ManagerRestartRecovery(t *testing.T) {
 		WithArgs(s.replicaIndex).
 		WillReturnRows(sqlmock.NewRows([]string{"job_id"}).AddRow(jobID))
 
-	mock.ExpectBegin()
-	mock.ExpectQuery(regexp.QuoteMeta(QueryCountFailedTasks)).
-		WithArgs(jobID).
-		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
-	expectReplicaCheck(mock, jobID, s.replicaIndex)
-	mock.ExpectQuery(regexp.QuoteMeta(QuerySelectIdleTask)).
-		WithArgs(jobID, s.replicaIndex, "Map").
-		WillReturnError(sql.ErrNoRows)
-	mock.ExpectQuery(regexp.QuoteMeta(QueryCountPendingTasksByType)).
-		WithArgs(jobID, "Map").
-		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(1))
-	mock.ExpectRollback()
-
 	err := s.Recover(context.Background())
 	if err != nil {
 		t.Fatalf("Recover failed: %v", err)

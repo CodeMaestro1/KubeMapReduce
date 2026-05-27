@@ -188,3 +188,12 @@ benchmarks/data/.swarm/
 __pycache__/
 *.py[cod]
 *$py.class
+
+# Temporary local files
+scratchpad.md
+demo_3m_guide.md
+.swarm/
+docs/superpowers/
+testdata/big-file/input.jsonl
+testdata/job-fail/input.jsonl
+

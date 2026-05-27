@@ -397,24 +397,14 @@ func (k *KubeOrchestrator) EnsureWorkerPool(ctx context.Context, jobID string, n
 		}
 	}
 
+	slog.InfoContext(ctx, "orchestrator: creating job", slog.String("job_name", job.Name), slog.String("namespace", k.namespace))
 	_, err := k.clientset.BatchV1().Jobs(k.namespace).Create(ctx, job, metav1.CreateOptions{})
 	if err == nil {
 		return nil
 	}
 	if apierrors.IsAlreadyExists(err) {
-		existing, getErr := k.clientset.BatchV1().Jobs(k.namespace).Get(ctx, jobName, metav1.GetOptions{})
-		if getErr != nil {
-			return getErr
-		}
-		if numWorkers <= 0 && existing.Spec.Parallelism != nil {
-			job.Spec.Parallelism = existing.Spec.Parallelism
-			job.Spec.Completions = existing.Spec.Completions
-		}
-		existing.Spec.Parallelism = job.Spec.Parallelism
-		existing.Spec.Completions = job.Spec.Completions
-		existing.Spec.BackoffLimit = job.Spec.BackoffLimit
-		_, err = k.clientset.BatchV1().Jobs(k.namespace).Update(ctx, existing, metav1.UpdateOptions{})
-		return err
+		// Idempotent: already exists. We don't update to avoid immutability errors (e.g. spec.completions).
+		return nil
 	}
 	return err
 }
@@ -602,6 +592,7 @@ func (k *KubeOrchestrator) SpawnWorker(ctx context.Context, taskID string, jobID
 		}
 	}
 
+	slog.InfoContext(ctx, "orchestrator: creating job", slog.String("job_name", job.Name), slog.String("namespace", k.namespace))
 	_, err := k.clientset.BatchV1().Jobs(k.namespace).Create(ctx, job, metav1.CreateOptions{})
 	if apierrors.IsAlreadyExists(err) {
 		return nil

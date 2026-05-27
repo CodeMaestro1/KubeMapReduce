@@ -29,18 +29,17 @@ We will create a GKE cluster using `t2d-standard-2` Spot VMs to balance performa
 
 ```bash
 gcloud container clusters create kubemapreduce-gcp \
-    --region=europe-north1 \
+    --zone=europe-north1-a \
     --machine-type=t2d-standard-2 \
-    --num-nodes=1 \
-    --enable-autoscaling \
-    --min-nodes=1 \
-    --max-nodes=5 \
+    --num-nodes=8 \
     --spot \
     --gateway-api=standard \
-    --enable-ip-alias
+    --enable-ip-alias \
+    --disk-size=15 \
+    --disk-type=pd-balanced
 ```
 
-*Note: Spot instances are preemptible. Our fault-tolerant architecture (Active Reaper) is specifically designed to handle node preemptions by automatically re-assigning lost tasks to new workers.*
+*Note: The minimum disk size for Google COS images is 12GB. We use 15GB balanced persistent disks to satisfy this constraint while remaining cost-effective.*
 
 ### 3. Connect `kubectl` to your Cluster
 Install the GKE auth plugin and configure your local `kubeconfig`:
@@ -131,24 +130,36 @@ Wait a few minutes for GCP to provision external IPs:
 ```bash
 kubectl get svc -n mapreduce | grep LoadBalancer
 ```
+Example Output:
+```
+api-external        LoadBalancer   34.118.226.14    35.228.168.214   80:30565/TCP                    107m
+keycloak-external   LoadBalancer   34.118.237.168   34.88.236.143    80:32432/TCP                    107m
+minio-external      LoadBalancer   34.118.232.113   34.88.131.63     9000:31981/TCP,9001:32183/TCP   107m
+```
 
 ### 3. Configure External Endpoints
 Once you have the external IPs, update your configurations.
-Replace `<KEYCLOAK_IP>`, `<MINIO_IP>`, and `<API_IP>` with the actual IPs assigned by GCP.
+In the example above:
+- `<API_IP>` = `35.228.168.214`
+- `<KEYCLOAK_IP>` = `34.88.236.143`
+- `<MINIO_IP>` = `34.88.131.63`
 
-Update `k8s/30-manager.yaml` and `k8s/35-api.yaml` to include these external IPs so pre-signed URLs point to the correct external address, and JWT tokens are validated against the correct issuer.
+#### Update Manager ConfigMap and Manifests
+Open `k8s/30-manager.yaml` and update the following:
+1. `KEYCLOAK_ISSUER`: `http://<KEYCLOAK_IP>/realms/mapreduce`
+2. `MINIO_ENDPOINT`: `<MINIO_IP>:9000`
 
-```yaml
-# In both k8s/30-manager.yaml and k8s/35-api.yaml
-            - name: MINIO_ENDPOINT
-              value: "<MINIO_IP>:9000"
-            - name: KEYCLOAK_ISSUER
-              value: "http://<KEYCLOAK_IP>/realms/mapreduce"
-```
+#### Update API Manifest
+Open `k8s/35-api.yaml` and update the following:
+1. `MINIO_ENDPOINT`: `<MINIO_IP>:9000`
+2. `KEYCLOAK_ISSUER`: `http://<KEYCLOAK_IP>/realms/mapreduce`
+
 Re-apply the manifests and restart the deployments:
 ```bash
-kubectl replace --force -f k8s/30-manager.yaml
-kubectl replace --force -f k8s/35-api.yaml
+kubectl apply -f k8s/30-manager.yaml
+kubectl apply -f k8s/35-api.yaml
+kubectl rollout restart statefulset/manager -n mapreduce
+kubectl rollout restart deployment/api -n mapreduce
 ```
 
 ### 4. Setup Keycloak Realm

@@ -371,8 +371,8 @@ func TestRunReduce_ExecCodeFailure(t *testing.T) {
 	store.put("code", "reducer.py", []byte("# mock"))
 
 	w := newTestWorker(t, nil, store)
-	w.execCode = func(_ context.Context, _ string, _ string, _ io.Reader) ([]byte, error) {
-		return nil, fmt.Errorf("exec failed")
+	w.execCodeStream = func(_ context.Context, _, _ string, _ io.Reader) (io.ReadCloser, func() error, error) {
+		return nil, nil, fmt.Errorf("exec failed")
 	}
 	a := reduceAssignment([]string{"s3://mapreduce-staging/job-1/part.jsonl"})
 

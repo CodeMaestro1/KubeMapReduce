@@ -21,7 +21,7 @@ const recordOverheadBytes = 32
 // defaultSpillThresholdBytes is the fallback in-memory budget when the caller
 // passes a non-positive threshold. It mirrors the production default of
 // MAP_SORT_SPILL_THRESHOLD_MB=256.
-const defaultSpillThresholdBytes int64 = 256 * 1024 * 1024
+const defaultSpillThresholdBytes int64 = 64 * 1024 * 1024
 
 // spillingSorter sorts a stream of [shuffle.Record] values by key while
 // enforcing an in-memory byte budget.
