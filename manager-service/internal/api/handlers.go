@@ -53,7 +53,7 @@ const (
 	maxJobsPerNode    = 1000
 )
 
-var defaultTargetSplitSizeBytes int64 = 64 * 1024 * 1024
+var defaultTargetSplitSizeBytes int64 = 1 * 1024 * 1024
 
 // safeFilenamePattern validates that a filename is a simple basename with no traversal or special chars.
 // Only alphanumeric, hyphens, underscores, and single dots in the middle are allowed.

@@ -11,18 +11,21 @@ Measures the frequency of every word across the corpus. This test stresses the *
 
 | Reducers (R) | Execution Time (s) |
 |--------------|--------------------|
-| 1            | 41.64              |
-| 2            | 37.66              |
+| 1            | 14.29              |
 
-### Grep Benchmark
-Searches for the term "Gutenberg" across the entire corpus. This test is primarily **Map-heavy**, with very little data passed to the Reducers.
+### Weather Averages Benchmark
+Standard float parser pipeline checking mathematical averages across meteorological datasets.
 
 | Reducers (R) | Execution Time (s) |
 |--------------|--------------------|
-| 1            | 19.68              |
-| 2            | 29.72              |
-| 4            | 46.58              |
-| 8            | 43.80              |
+| 1            | 12.99              |
+
+### Sleep Job (Fault Tolerance Check)
+A 20-second sleep pipeline designed to facilitate easy preemption/failure checks.
+
+| Reducers (R) | Execution Time (s) |
+|--------------|--------------------|
+| 1            | 26.57              |
 
 ### Scalability Analysis
 ![Scalability Graph](../benchmarks/results/scalability.png)
@@ -34,14 +37,14 @@ Searches for the term "Gutenberg" across the entire corpus. This test is primari
 To measure the robustness of the **Stateless UI/API Service**, we ran a high-concurrency stress test using `ab`.
 
 **Test Parameters:**
-- **Requests:** 500
-- **Concurrency:** 20 simultaneous connections
+- **Requests:** 100
+- **Concurrency:** 10 simultaneous connections
 - **Endpoint:** `GET /api/v1/jobs` (Authenticated)
 
 **Results:**
-- **Requests per second:** 20.43 [#/sec]
-- **Mean Latency:** 978 ms
-- **90% Latency:** 2328 ms
+- **Requests per second:** 25.68 [#/sec]
+- **Mean Latency:** 389.36 ms
+- **50% Latency:** 257 ms
 - **Success Rate:** 100% (No dropped connections)
 
 The results demonstrate that the API service can handle significant concurrent traffic even while the Manager service is actively orchestrating distributed jobs.

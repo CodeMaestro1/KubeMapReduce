@@ -110,7 +110,11 @@ func main() {
 		Password: userPassword,
 		Role:     normalizedRole,
 	}); err != nil {
-		log.Fatalf("failed to create user: %v", err)
+		if strings.Contains(err.Error(), "status 409") {
+			fmt.Printf("==> User %q already exists, skipping user creation.\n", strings.TrimSpace(*username))
+		} else {
+			log.Fatalf("failed to create user: %v", err)
+		}
 	}
 
 	fmt.Printf("==> Created %s user %q in realm %q.\n", normalizedRole, strings.TrimSpace(*username), cfg.Realm)

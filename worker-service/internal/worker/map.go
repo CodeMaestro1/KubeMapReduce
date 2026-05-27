@@ -31,43 +31,68 @@ func (w *Worker) runMap(ctx context.Context, a *pb.TaskAssignment) (outputURIs, 
 	}
 	defer cleanup()
 
-	// Collect input JSONL lines from all input splits. Newer task assignments
-	// carry per-split metadata; legacy assignments fall back to the single
-	// byte-range fields on TaskAssignment.
-	var inputLines [][]byte
+	// Create a streaming reader for all input splits.
+	var readers []io.Reader
+	var closers []io.Closer
 	for _, split := range taskInputSplits(a) {
-		lines, readErr := readSplitRecords(ctx, w.storage, split.uri, split.byteStart, split.byteEnd, split.checksum)
+		rc, readErr := readSplitRecordsStreaming(ctx, w.storage, split.uri, split.byteStart, split.byteEnd, split.checksum)
 		if readErr != nil {
+			// Cleanup already opened readers
+			for _, c := range closers {
+				c.Close()
+			}
 			return nil, nil, fmt.Errorf("read split %s: %w", split.uri, readErr)
 		}
-		inputLines = append(inputLines, lines...)
+		readers = append(readers, rc)
+		closers = append(closers, rc)
 	}
+	inputReader := io.MultiReader(readers...)
+	defer func() {
+		for _, c := range closers {
+			c.Close()
+		}
+	}()
 
-	// Execute mapper: JSONL in, JSONL out.
-	mapOut, err := w.execCode(ctx, codePath, a.RuntimeEnv, jsonlReader(inputLines))
+	// Execute mapper streaming: JSONL in, JSONL out.
+	stdout, wait, err := w.execCodeStream(ctx, codePath, a.RuntimeEnv, inputReader)
 	if err != nil {
 		return nil, nil, fmt.Errorf("mapper: %w", err)
 	}
+	defer stdout.Close()
 
-	records, err := parseJSONLRecords(mapOut)
-	if err != nil {
-		return nil, nil, fmt.Errorf("parse mapper output: %w", err)
+	// Pipe mapper output directly into the spilling sorter.
+	sorter := newSpillingSorter(w.spillThresholdBytes(), w.cfg.TempDir)
+	defer sorter.cleanup()
+
+	sc := bufio.NewScanner(stdout)
+	sc.Buffer(make([]byte, 64*1024), shuffle.DefaultMaxRecordBytes)
+	for sc.Scan() {
+		line := sc.Bytes()
+		if len(bytes.TrimSpace(line)) == 0 {
+			continue
+		}
+		var rec shuffle.Record
+		if err := json.Unmarshal(line, &rec); err != nil {
+			return nil, nil, fmt.Errorf("decode mapper record: %w", err)
+		}
+		if err := sorter.Add(rec); err != nil {
+			return nil, nil, fmt.Errorf("sorter add: %w", err)
+		}
+	}
+	if err := sc.Err(); err != nil {
+		return nil, nil, fmt.Errorf("read mapper output: %w", err)
 	}
 
-	// Sort records by key with an in-memory budget; spill sorted runs to disk
-	// when the budget is exceeded so very large mapper outputs cannot OOM the
-	// worker (issue #152). The returned reader yields the merged sorted JSONL
-	// stream and MUST be closed to release any spill files.
-	sortedReader, err := sortRecordsSpilling(records, w.spillThresholdBytes(), w.cfg.TempDir)
+	if err := wait(); err != nil {
+		return nil, nil, fmt.Errorf("mapper wait: %w", err)
+	}
+
+	// Finalize sorting (merges spilled runs if any).
+	sortedReader, err := sorter.Finalize()
 	if err != nil {
 		return nil, nil, fmt.Errorf("sort map output: %w", err)
 	}
-	records = nil // help GC: data now lives in sortedReader / on disk
-	defer func() {
-		if sortedReader != nil {
-			sortedReader.Close()
-		}
-	}()
+	defer sortedReader.Close()
 
 	// Optional combiner pass (input is already sorted).
 	if a.CombinerLocation != "" {
@@ -77,24 +102,45 @@ func (w *Worker) runMap(ctx context.Context, a *pb.TaskAssignment) (outputURIs, 
 		}
 		defer cCleanup()
 
-		combinedOut, cExecErr := w.execCode(ctx, cPath, a.RuntimeEnv, sortedReader)
-		// Combiner has fully consumed the sorted stream; release spill files now.
-		_ = sortedReader.Close()
-		sortedReader = nil
+		combinedStdout, cWait, cExecErr := w.execCodeStream(ctx, cPath, a.RuntimeEnv, sortedReader)
 		if cExecErr != nil {
 			return nil, nil, fmt.Errorf("combiner: %w", cExecErr)
 		}
-		combinedRecords, parseErr := parseJSONLRecords(combinedOut)
-		if parseErr != nil {
-			return nil, nil, fmt.Errorf("parse combiner output: %w", parseErr)
+		defer combinedStdout.Close()
+
+		// Re-sort combiner output if needed, or pipe directly to partitioning.
+		// Since combiners are usually used for reduction, we spill again to be safe.
+		cSorter := newSpillingSorter(w.spillThresholdBytes(), w.cfg.TempDir)
+		defer cSorter.cleanup()
+
+		csc := bufio.NewScanner(combinedStdout)
+		csc.Buffer(make([]byte, 64*1024), shuffle.DefaultMaxRecordBytes)
+		for csc.Scan() {
+			line := csc.Bytes()
+			if len(bytes.TrimSpace(line)) == 0 {
+				continue
+			}
+			var rec shuffle.Record
+			if err := json.Unmarshal(line, &rec); err != nil {
+				return nil, nil, fmt.Errorf("decode combiner record: %w", err)
+			}
+			if err := cSorter.Add(rec); err != nil {
+				return nil, nil, fmt.Errorf("combiner sorter add: %w", err)
+			}
 		}
-		// Combiner output is not guaranteed sorted; re-sort with the same
-		// memory budget, spilling to disk when exceeded.
-		sortedReader, err = sortRecordsSpilling(combinedRecords, w.spillThresholdBytes(), w.cfg.TempDir)
+		if err := csc.Err(); err != nil {
+			return nil, nil, fmt.Errorf("read combiner output: %w", err)
+		}
+		if err := cWait(); err != nil {
+			return nil, nil, fmt.Errorf("combiner wait: %w", err)
+		}
+
+		// Replace sortedReader with combined stream.
+		_ = sortedReader.Close()
+		sortedReader, err = cSorter.Finalize()
 		if err != nil {
-			return nil, nil, fmt.Errorf("sort combiner output: %w", err)
+			return nil, nil, fmt.Errorf("finalize combiner sort: %w", err)
 		}
-		combinedRecords = nil // help GC
 	}
 
 	// Hash-partition into R buckets by streaming the sorted JSONL output
@@ -114,7 +160,7 @@ func (w *Worker) runMap(ctx context.Context, a *pb.TaskAssignment) (outputURIs, 
 	}()
 
 	totalRecords := 0
-	sc := bufio.NewScanner(sortedReader)
+	sc = bufio.NewScanner(sortedReader)
 	sc.Buffer(make([]byte, 64*1024), shuffle.DefaultMaxRecordBytes)
 	for sc.Scan() {
 		line := sc.Bytes()

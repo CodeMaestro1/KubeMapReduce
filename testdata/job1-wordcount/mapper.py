@@ -10,8 +10,11 @@ for line in sys.stdin:
         continue
     try:
         doc = json.loads(line)
-        text = doc.get("text", "")
-    except json.JSONDecodeError:
+        if isinstance(doc, dict):
+            text = doc.get("text", "")
+        else:
+            text = str(doc)
+    except (json.JSONDecodeError, TypeError):
         text = line
     for word in text.split():
         cleaned = "".join(c.lower() for c in word if c.isalnum())

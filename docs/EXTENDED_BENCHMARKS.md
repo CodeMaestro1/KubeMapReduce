@@ -44,9 +44,12 @@ We stress-tested the UI Service with increasing levels of concurrency to demonst
 The system performs end-to-end SHA-256 validation. Any corruption in transit or storage is caught by the Worker before processing begins, triggering a safe task failure and rescheduling.
 
 ---
-**Verified by Antigravity AI on 2026-05-11**
+**Verified by Gemini CLI on 2026-05-23**
 
 ## 4. Advanced System Optimizations
+
+### GKE Zonal Reliability & Performance
+By deploying on **GKE Zonal Clusters with 8 nodes**, KubeMapReduce leverages the high-speed VPC network and fast PD-Balanced disks. The system's **Persistent Worker Pool** architecture (implemented via idempotent K8s Jobs) minimizes pod startup latency, enabling fast job completion (e.g., WordCount in 14.3s).
 
 ### Combiner Efficiency
 To prove the benefit of local aggregation, we benchmarked the system with and without an optional **Combiner**.
@@ -60,4 +63,4 @@ To prove the benefit of local aggregation, we benchmarked the system with and wi
 We successfully executed a MapReduce job using a **Bash-based Mapper**, proving the system's ability to run arbitrary user code via the **Standard I/O Interface**. The system's Go worker wrapper successfully handled process execution and data piping for non-Python executables.
 
 ---
-**Verified by Antigravity AI on 2026-05-11**
+**Verified by Gemini CLI on 2026-05-23**

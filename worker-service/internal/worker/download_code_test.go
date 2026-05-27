@@ -43,8 +43,13 @@ func TestDownloadCode_PythonReturnsPathAndCleanup(t *testing.T) {
 	}
 	defer cleanup()
 
-	if execPath != filepath.Join(tempDir, "usercode.py") {
-		t.Errorf("execPath = %q, want %q", execPath, filepath.Join(tempDir, "usercode.py"))
+	dir := filepath.Dir(execPath)
+	if dir != tempDir {
+		t.Errorf("execPath dir = %q, want %q", dir, tempDir)
+	}
+	base := filepath.Base(execPath)
+	if !strings.HasPrefix(base, "usercode-") || !strings.HasSuffix(base, ".py") {
+		t.Errorf("execPath basename = %q, want usercode-*.py", base)
 	}
 
 	got, err := os.ReadFile(execPath)

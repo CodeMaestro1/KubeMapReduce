@@ -234,8 +234,14 @@ func newTestWorker(t *testing.T, grpcClient pb.WorkerServiceClient, store object
 			return "/fake/code", func() {}, nil
 		},
 		execCode: func(_ context.Context, _ string, _ string, stdin io.Reader) ([]byte, error) {
-			// Echo stdin back as output (identity mapper/reducer).
 			return io.ReadAll(stdin)
+		},
+		execCodeStream: func(_ context.Context, _, _ string, stdin io.Reader) (io.ReadCloser, func() error, error) {
+			data, err := io.ReadAll(stdin)
+			if err != nil {
+				return nil, nil, err
+			}
+			return io.NopCloser(bytes.NewReader(data)), func() error { return nil }, nil
 		},
 	}
 }
@@ -357,13 +363,13 @@ func TestWorker_MapUsesPerSplitMetadata(t *testing.T) {
 	}
 
 	w := newTestWorker(t, &mockGRPCClient{}, store)
-	w.execCode = func(_ context.Context, _ string, _ string, stdin io.Reader) ([]byte, error) {
+	w.execCodeStream = func(_ context.Context, _, _ string, stdin io.Reader) (io.ReadCloser, func() error, error) {
 		data, err := io.ReadAll(stdin)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		inputSeen <- data
-		return data, nil
+		return io.NopCloser(bytes.NewReader(data)), func() error { return nil }, nil
 	}
 
 	if _, _, err := w.runMap(context.Background(), assignment); err != nil {
@@ -414,8 +420,12 @@ func TestWorker_MapRejectsBadPerSplitChecksum(t *testing.T) {
 	}
 
 	w := newTestWorker(t, &mockGRPCClient{}, store)
-	w.execCode = func(_ context.Context, _ string, _ string, stdin io.Reader) ([]byte, error) {
-		return io.ReadAll(stdin)
+	w.execCodeStream = func(_ context.Context, _, _ string, stdin io.Reader) (io.ReadCloser, func() error, error) {
+		data, err := io.ReadAll(stdin)
+		if err != nil {
+			return nil, nil, err
+		}
+		return io.NopCloser(bytes.NewReader(data)), func() error { return nil }, nil
 	}
 
 	_, _, err := w.runMap(context.Background(), assignment)
@@ -509,11 +519,17 @@ func TestWorker_SIGTERMCausesTaskFailed(t *testing.T) {
 		prepareCode: func(_ context.Context, _ objectStorage, _ string, _ string) (string, func(), error) {
 			return "/fake/code", func() {}, nil
 		},
-		// Block until ctx is cancelled to simulate long-running work.
 		execCode: func(execCtx context.Context, _ string, _ string, _ io.Reader) ([]byte, error) {
-			cancel() // simulate SIGTERM during execution.
+			cancel()
 			<-execCtx.Done()
 			return nil, execCtx.Err()
+		},
+		execCodeStream: func(execCtx context.Context, _, _ string, _ io.Reader) (io.ReadCloser, func() error, error) {
+			cancel()
+			return io.NopCloser(bytes.NewReader(nil)), func() error {
+				<-execCtx.Done()
+				return execCtx.Err()
+			}, nil
 		},
 	}
 
@@ -584,6 +600,13 @@ func TestWorker_SIGTERMReportsFailureBeforeExecReturns(t *testing.T) {
 			<-execCtx.Done()
 			return nil, execCtx.Err()
 		},
+		execCodeStream: func(execCtx context.Context, _, _ string, _ io.Reader) (io.ReadCloser, func() error, error) {
+			cancel()
+			return io.NopCloser(bytes.NewReader(nil)), func() error {
+				<-execCtx.Done()
+				return execCtx.Err()
+			}, nil
+		},
 	}
 
 	done := make(chan error, 1)
@@ -650,6 +673,12 @@ func TestWorker_HeartbeatTerminateCausesTaskFailed(t *testing.T) {
 		execCode: func(execCtx context.Context, _ string, _ string, _ io.Reader) ([]byte, error) {
 			<-execCtx.Done()
 			return nil, execCtx.Err()
+		},
+		execCodeStream: func(execCtx context.Context, _, _ string, _ io.Reader) (io.ReadCloser, func() error, error) {
+			return io.NopCloser(bytes.NewReader(nil)), func() error {
+				<-execCtx.Done()
+				return execCtx.Err()
+			}, nil
 		},
 	}
 

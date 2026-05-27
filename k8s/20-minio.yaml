@@ -134,11 +134,11 @@ spec:
             - -c
             - |
               set -e
-              mc alias set myminio \
+              mc --config-dir /tmp/.mc alias set myminio \
                 http://minio.mapreduce.svc.cluster.local:9000 \
                 "$MINIO_ROOT_USER" "$MINIO_ROOT_PASSWORD"
-              mc mb --ignore-existing myminio/mapreduce-inputs
-              mc ilm add \
+              mc --config-dir /tmp/.mc mb --ignore-existing myminio/mapreduce-inputs
+              mc --config-dir /tmp/.mc ilm add \
                 --prefix "temp/" \
                 --expiry-days 1 \
                 myminio/mapreduce-inputs

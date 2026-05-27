@@ -75,10 +75,11 @@ func runLogin(args []string) error {
 	}
 
 	if err := auth.SaveTokens(&auth.StoredTokens{
-		AccessToken:  tokenResp.AccessToken,
-		RefreshToken: tokenResp.RefreshToken,
-		ExpiresAt:    time.Now().Unix() + int64(tokenResp.ExpiresIn),
-		ServerURL:    apiURL(),
+		AccessToken:     tokenResp.AccessToken,
+		RefreshToken:    tokenResp.RefreshToken,
+		ExpiresAt:       time.Now().Unix() + int64(tokenResp.ExpiresIn),
+		ServerURL:       apiURL(),
+		KeycloakBaseURL: keycloakBaseURL(),
 	}); err != nil {
 		return fmt.Errorf("failed to save credentials: %w", err)
 	}

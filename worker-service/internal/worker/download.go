@@ -147,14 +147,13 @@ func downloadCode(ctx context.Context, storage objectStorage, codeURI, tempDir s
 	}
 
 	ext := strings.ToLower(filepath.Ext(key))
-	codePath := filepath.Join(tempDir, "usercode"+ext)
-
-	// Create file with O_EXCL to prevent symlink attacks and race conditions.
-	// This ensures we create a new file, not overwrite an existing one.
-	f, err := os.OpenFile(codePath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o755)
+	pattern := "usercode-*" + ext
+	f, err := os.CreateTemp(tempDir, pattern)
 	if err != nil {
-		return "", func() {}, fmt.Errorf("create code file (check for symlinks): %w", err)
+		return "", func() {}, fmt.Errorf("create code file: %w", err)
 	}
+	codePath := f.Name()
+
 	if _, err := f.Write(data); err != nil {
 		f.Close()
 		os.Remove(codePath)
@@ -162,15 +161,10 @@ func downloadCode(ctx context.Context, storage objectStorage, codeURI, tempDir s
 	}
 	f.Close()
 
-	// Verify the file is not a symlink (defense against TOCTOU attacks).
-	fi, err := os.Lstat(codePath)
-	if err != nil {
+	// Ensure the file is readable/executable. os.CreateTemp defaults to 0o600.
+	if err := os.Chmod(codePath, 0o755); err != nil {
 		os.Remove(codePath)
-		return "", func() {}, fmt.Errorf("stat code file: %w", err)
-	}
-	if fi.Mode()&os.ModeSymlink != 0 {
-		os.Remove(codePath)
-		return "", func() {}, fmt.Errorf("code file is a symlink; rejecting")
+		return "", func() {}, fmt.Errorf("chmod code file: %w", err)
 	}
 
 	switch ext {

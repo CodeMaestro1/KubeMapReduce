@@ -22,54 +22,86 @@ import (
 //   - Lines are read until the reader has consumed past byteEnd.
 //
 // When byteEnd == 0 the entire object is read with no boundary trimming.
-func readSplitRecords(ctx context.Context, storage objectStorage, dataURI string, byteStart, byteEnd int64, checksum string) ([][]byte, error) {
+// readSplitRecordsStreaming returns an io.Reader that streams JSONL records from
+// MinIO with boundary alignment. It avoids buffering the entire split in RAM.
+func readSplitRecordsStreaming(ctx context.Context, storage objectStorage, dataURI string, byteStart, byteEnd int64, checksum string) (io.ReadCloser, error) {
 	bucket, key, err := parseS3URI(dataURI)
 	if err != nil {
 		return nil, err
 	}
 
-	var raw []byte
-	atBoundary := true // assumed true for the byteEnd==0 path and byteStart==0
 	if byteEnd == 0 {
 		rc, err := storage.GetObject(ctx, bucket, key, minio.GetObjectOptions{})
 		if err != nil {
 			return nil, fmt.Errorf("GetObject %s/%s: %w", bucket, key, err)
 		}
-		defer rc.Close()
-		raw, err = io.ReadAll(rc)
-		if err != nil {
-			return nil, err
-		}
-		byteEnd = int64(len(raw)) - 1
-		if byteEnd < 0 {
-			return nil, nil // empty object
-		}
-	} else {
-		// Determine whether byteStart sits exactly on a line boundary before
-		// downloading the main range so that extractSplitLines can make the
-		// correct skip decision without re-fetching any bytes.
-		if byteStart > 0 {
-			atBoundary, err = fetchPrecedingByte(ctx, storage, bucket, key, byteStart)
-			if err != nil {
-				return nil, fmt.Errorf("checking split boundary at offset %d: %w", byteStart, err)
-			}
-		}
-		raw, err = getRawRange(ctx, storage, bucket, key, byteStart, byteEnd)
-		if err != nil {
-			return nil, err
-		}
-		// Validate SHA-256 of exactly the claimed [byteStart, byteEnd] bytes.
-		if checksum != "" {
-			rangeLen := byteEnd - byteStart + 1
-			if int64(len(raw)) >= rangeLen {
-				if err := validateChecksum(raw[:rangeLen], checksum); err != nil {
-					return nil, fmt.Errorf("split checksum: %w", err)
-				}
+		return rc, nil
+	}
+
+	// Download the exact byte range for checksum validation and line processing.
+	rawRange, err := getRawRange(ctx, storage, bucket, key, byteStart, byteEnd)
+	if err != nil {
+		return nil, err
+	}
+
+	// Validate SHA-256 of exactly the claimed [byteStart, byteEnd] bytes.
+	if checksum != "" {
+		rangeLen := byteEnd - byteStart + 1
+		if int64(len(rawRange)) >= rangeLen {
+			if err := validateChecksum(rawRange[:rangeLen], checksum); err != nil {
+				return nil, fmt.Errorf("split checksum: %w", err)
 			}
 		}
 	}
 
-	return extractSplitLines(raw, byteStart, byteEnd, atBoundary)
+	// Determine boundary alignment.
+	atBoundary := true
+	if byteStart > 0 {
+		atBoundary, err = fetchPrecedingByte(ctx, storage, bucket, key, byteStart)
+		if err != nil {
+			return nil, fmt.Errorf("checking split boundary at offset %d: %w", byteStart, err)
+		}
+	}
+
+	// Stream lines from the validated buffer via a pipe.
+	pr, pw := io.Pipe()
+	go func() {
+		br := bufio.NewReaderSize(bytes.NewReader(rawRange), shuffle.DefaultMaxRecordBytes)
+		var offset int64
+
+		if byteStart > 0 && !atBoundary {
+			skipped, err := br.ReadBytes('\n')
+			if err != nil {
+				pw.CloseWithError(fmt.Errorf("skip partial line: %w", err))
+				return
+			}
+			offset += int64(len(skipped))
+		}
+
+		for {
+			line, err := br.ReadBytes('\n')
+			if err != nil && err != io.EOF {
+				pw.CloseWithError(fmt.Errorf("read line: %w", err))
+				return
+			}
+			if len(line) > 0 {
+				if _, writeErr := pw.Write(line); writeErr != nil {
+					pw.CloseWithError(writeErr)
+					return
+				}
+				offset += int64(len(line))
+			}
+			if err == io.EOF {
+				break
+			}
+			if byteStart+offset > byteEnd {
+				break
+			}
+		}
+		pw.Close()
+	}()
+
+	return pr, nil
 }
 
 // extractSplitLines applies JSONL boundary rules to raw bytes that begin at
