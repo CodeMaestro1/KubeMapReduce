@@ -14,6 +14,11 @@ import (
 	"time"
 )
 
+// ErrUserAlreadyExists is returned by CreateUser when the Keycloak user
+// already exists (HTTP 409). Callers should check with errors.Is to avoid
+// brittle string matching.
+var ErrUserAlreadyExists = errors.New("user already exists")
+
 const (
 	defaultAdminHTTPTimeout = 10 * time.Second
 	adminTokenRefreshSkew   = 30 * time.Second
@@ -129,6 +134,9 @@ func (c *KeycloakAdminClient) CreateUser(ctx context.Context, req CreateUserRequ
 	}
 	defer httpResp.Body.Close()
 
+	if httpResp.StatusCode == http.StatusConflict {
+		return ErrUserAlreadyExists
+	}
 	if err := ensureStatus(httpResp, http.StatusCreated, "create user"); err != nil {
 		return err
 	}

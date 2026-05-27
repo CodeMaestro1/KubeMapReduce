@@ -19,9 +19,10 @@ spec:
                 secretKeyRef:
                   name: keycloak-creds
                   key: KEYCLOAK_ADMIN_PASSWORD
+            - name: SETUP_USER_PASSWORD
+              value: "admin"
           args:
             - "--username=platform-admin"
-            - "--password=admin"
             - "--role=ADMIN"
       restartPolicy: OnFailure
   backoffLimit: 10

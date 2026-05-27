@@ -21,6 +21,11 @@ import (
 // before the entire job is marked as Failed.
 const MaxTaskAttempts = 3
 
+// defaultReaperPoolSize is the number of worker replicas spawned by
+// FailStaleTasks when a stale worker pool needs to be replaced. It mirrors
+// the default in ScheduleJob (see scheduleJobWorkerCount).
+const defaultReaperPoolSize = 4
+
 // DefaultMaxConcurrentPods is the fallback pod concurrency ceiling used when the
 // SYSTEM_CONFIG table has no seed row (e.g. a fresh cluster). It is intentionally
 // a single authoritative constant so that every subsystem that needs this default
@@ -767,8 +772,7 @@ func (s *Scheduler) ScheduleJob(ctx context.Context, req ScheduleJobRequest) err
 
 	// After tx.Commit(), ensure worker pool is running.
 	slog.InfoContext(ctx, "ScheduleJob: triggering worker pool", slog.String("job_id", req.JobID))
-	// Using a default of 4 workers or MTasks if smaller.
-	numWorkers := 4
+	numWorkers := defaultReaperPoolSize
 	if req.MTasks < numWorkers {
 		numWorkers = req.MTasks
 	}
@@ -1364,7 +1368,7 @@ func (s *Scheduler) FailStaleTasks(ctx context.Context) (int, error) {
 		uniqueRespawnJobs[rec.jobID] = struct{}{}
 	}
 	for jobID := range uniqueRespawnJobs {
-		spawnCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		spawnCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 		// Delete any stale worker pool Job first — when a pod is force-deleted
 		// the K8s Job survives and EnsureWorkerPool treats AlreadyExists as
 		// success, leaving us with zero running pods and no recovery.
@@ -1374,7 +1378,7 @@ func (s *Scheduler) FailStaleTasks(ctx context.Context) (int, error) {
 				slog.Any("err", err),
 			)
 		}
-		if err := s.orchestrator.EnsureWorkerPool(spawnCtx, jobID, 4, s.managerAddr); err != nil {
+		if err := s.orchestrator.EnsureWorkerPool(spawnCtx, jobID, defaultReaperPoolSize, s.managerAddr); err != nil {
 			slog.ErrorContext(ctx, "failed to ensure worker pool during reaper respawn",
 				slog.String("job_id", jobID),
 				slog.Any("err", err),

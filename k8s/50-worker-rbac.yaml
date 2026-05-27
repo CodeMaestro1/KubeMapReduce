@@ -88,7 +88,6 @@ roleRef:
   kind: ClusterRole
   name: manager-node-viewer
 ---
----
 # Dedicated, deliberately-unprivileged ServiceAccount for Worker Jobs.
 # The Manager applies this SA to every Worker Job manifest it creates so the
 # pod token cannot be used to escalate against the K8s API.

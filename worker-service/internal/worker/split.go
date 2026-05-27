@@ -21,9 +21,10 @@ import (
 //     a line boundary and the first record is retained in full.
 //   - Lines are read until the reader has consumed past byteEnd.
 //
-// When byteEnd == 0 the entire object is read with no boundary trimming.
+// When byteEnd == 0 the entire object is downloaded and buffered in RAM.
 // readSplitRecordsStreaming returns an io.Reader that streams JSONL records from
-// MinIO with boundary alignment. It avoids buffering the entire split in RAM.
+// MinIO with boundary alignment. Full-object reads (byteEnd==0) buffer the
+// entire payload; range reads (byteStart>0) stream chunk-by-chunk.
 func readSplitRecordsStreaming(ctx context.Context, storage objectStorage, dataURI string, byteStart, byteEnd int64, checksum string) (io.ReadCloser, error) {
 	bucket, key, err := parseS3URI(dataURI)
 	if err != nil {
