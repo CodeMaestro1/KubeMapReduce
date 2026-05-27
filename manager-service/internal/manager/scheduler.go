@@ -1384,6 +1384,14 @@ func (s *Scheduler) FailStaleTasks(ctx context.Context) (int, error) {
 				slog.Any("err", err),
 			)
 		}
+		// Fail all Running DB attempts for the job — the cancelled workers'
+		// attempts would otherwise stay Running forever, leaking quota.
+		if _, err := s.db.ExecContext(spawnCtx, QueryFailRunningAttemptsByJob, jobID); err != nil {
+			slog.WarnContext(ctx, "failed to fail running attempts for job during reaper respawn",
+				slog.String("job_id", jobID),
+				slog.Any("err", err),
+			)
+		}
 		if err := s.orchestrator.EnsureWorkerPool(spawnCtx, jobID, defaultReaperPoolSize, s.managerAddr); err != nil {
 			slog.ErrorContext(ctx, "failed to ensure worker pool during reaper respawn",
 				slog.String("job_id", jobID),

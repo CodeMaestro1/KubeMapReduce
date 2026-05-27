@@ -913,6 +913,11 @@ func TestScheduler_FailStaleTasks_Success(t *testing.T) {
 
 	mock.ExpectCommit()
 
+	// Reaper's respawn loop fails Running attempts for the job.
+	mock.ExpectExec(regexp.QuoteMeta(QueryFailRunningAttemptsByJob)).
+		WithArgs(jobID).
+		WillReturnResult(sqlmock.NewResult(0, 0))
+
 	recovered, err := scheduler.FailStaleTasks(context.Background())
 	if err != nil {
 		t.Errorf("unexpected error: %v", err)
