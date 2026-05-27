@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"log"
@@ -44,7 +45,7 @@ func main() {
 	// Optional: create initial user
 	username := flag.String("username", "", "Username to create after bootstrap (optional)")
 	email := flag.String("email", "", "Email for the new user")
-	password := flag.String("password", "", "Password for the new user")
+	password := flag.String("password", getEnv("SETUP_USER_PASSWORD", ""), "Password for the new user (or SETUP_USER_PASSWORD env)")
 	promptPassword := flag.Bool("prompt-password", false, "Prompt securely for new user password (input hidden)")
 	role := flag.String("role", "ADMIN", "Role to assign: ADMIN or USER")
 
@@ -110,7 +111,7 @@ func main() {
 		Password: userPassword,
 		Role:     normalizedRole,
 	}); err != nil {
-		if strings.Contains(err.Error(), "status 409") {
+		if errors.Is(err, auth.ErrUserAlreadyExists) {
 			fmt.Printf("==> User %q already exists, skipping user creation.\n", strings.TrimSpace(*username))
 		} else {
 			log.Fatalf("failed to create user: %v", err)

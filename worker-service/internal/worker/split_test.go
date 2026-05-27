@@ -142,6 +142,32 @@ func TestReadSplitRecords_ExtendsPastChunkUntilNewline(t *testing.T) {
 	}
 }
 
+func TestReadSplitRecords_RangeBoundary(t *testing.T) {
+	// Two records; request a range starting mid-record1, verifying the
+	// partial first record is skipped (boundary alignment) and only
+	// complete records after it are returned.
+	records := `{"key":"k1","value":"v1"}` + "\n" + `{"key":"k2","value":"v2"}` + "\n"
+	store := &rangeAwareStorage{bucket: "mapreduce-inputs", key: "range.jsonl", payload: []byte(records)}
+
+	byteStart := int64(5) // mid-record1
+	byteEnd := int64(len(records) - 1)
+	rc, err := readSplitRecordsStreaming(context.Background(), store, "s3://mapreduce-inputs/range.jsonl", byteStart, byteEnd, "")
+	if err != nil {
+		t.Fatalf("readSplitRecordsStreaming: %v", err)
+	}
+	defer rc.Close()
+
+	data, err := io.ReadAll(rc)
+	if err != nil {
+		t.Fatalf("read from stream: %v", err)
+	}
+	// Only record2 should be returned; record1 is partial and skipped.
+	want := `{"key":"k2","value":"v2"}` + "\n"
+	if string(data) != want {
+		t.Fatalf("got %q, want %q", string(data), want)
+	}
+}
+
 // ── validateChecksum ──────────────────────────────────────────────────────────
 
 func TestValidateChecksum_Match(t *testing.T) {

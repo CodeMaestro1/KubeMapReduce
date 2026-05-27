@@ -154,7 +154,10 @@ spec:
             - name: DATABASE_DSN
               value: "postgres://$(POSTGRES_USER):$(POSTGRES_PASSWORD)@postgres.mapreduce.svc.cluster.local:5432/$(POSTGRES_DB)?sslmode=require"
             - name: MINIO_ENDPOINT
-              value: "34.88.90.202:9000"
+              valueFrom:
+                secretKeyRef:
+                  name: minio-creds
+                  key: S3_ENDPOINT
             - name: MINIO_ACCESS_KEY
               valueFrom:
                 secretKeyRef:
